@@ -88,6 +88,9 @@ inline bool PPCIsDynamicMmio(uint32_t address) {
     return (address >= 0x7FC00000u && address < 0x7FD00000u) ||
            (address >= 0x7FE00000u && address < 0x7FF00000u);
 }
+// GPU/APU register access, owned by the runtime's device emulation.
+uint32_t PPCMmioRead32(uint32_t address);
+void PPCMmioWrite32(uint32_t address, uint32_t value);
 inline bool PPCIsInvalidGuestAddress(uint32_t address) {
     return address < 0x10000u;
 }
@@ -106,7 +109,7 @@ inline uint16_t PPCLoadU16(uint8_t* base, uint32_t address) {
 }
 inline uint32_t PPCLoadU32(uint8_t* base, uint32_t address) {
     if (PPCIsInvalidGuestAddress(address)) { PPCTraceInvalidGuestLoad(address, 4); return 0; }
-    return PPCIsDynamicMmio(address) ? 0u : __builtin_bswap32(*(volatile uint32_t*)(base + address));
+    return PPCIsDynamicMmio(address) ? PPCMmioRead32(address) : __builtin_bswap32(*(volatile uint32_t*)(base + address));
 }
 inline uint64_t PPCLoadU64(uint8_t* base, uint32_t address) {
     if (PPCIsInvalidGuestAddress(address)) { PPCTraceInvalidGuestLoad(address, 8); return 0; }
@@ -126,7 +129,8 @@ inline uint64_t PPCLoadU64(uint8_t* base, uint32_t address) {
 #endif
 
 inline void PPCStoreU32(uint8_t* base, uint32_t address, uint32_t value) {
-    if (!PPCIsInvalidGuestAddress(address) && !PPCIsDynamicMmio(address))
+    if (PPCIsDynamicMmio(address)) PPCMmioWrite32(address, value);
+    else if (!PPCIsInvalidGuestAddress(address))
         *(volatile uint32_t*)(base + address) = __builtin_bswap32(value);
 }
 inline void PPCStoreU64(uint8_t* base, uint32_t address, uint64_t value) {
@@ -139,9 +143,8 @@ inline void PPCStoreU64(uint8_t* base, uint32_t address, uint64_t value) {
 #ifndef PPC_STORE_U64
 #define PPC_STORE_U64(x, y) PPCStoreU64(base, uint32_t(x), uint64_t(y))
 #endif
-// Xenon MMIO is not guest RAM. Until a renderer owns these registers,
-// return reset values for reads and discard writes so translated hardware
-// paths remain observable without faulting on reserved address ranges.
+// Xenon MMIO is not guest RAM. 32-bit accesses reach the runtime's register
+// emulation; other widths read zero and discard writes.
 #ifndef PPC_MM_LOAD_U8
 #define PPC_MM_LOAD_U8(x)  (uint8_t(0))
 #endif
@@ -151,7 +154,7 @@ inline void PPCStoreU64(uint8_t* base, uint32_t address, uint64_t value) {
 #endif
 
 #ifndef PPC_MM_LOAD_U32
-#define PPC_MM_LOAD_U32(x) (uint32_t(0))
+#define PPC_MM_LOAD_U32(x) PPCMmioRead32(uint32_t(x))
 #endif
 
 #ifndef PPC_MM_LOAD_U64
@@ -174,7 +177,7 @@ inline void PPCStoreU64(uint8_t* base, uint32_t address, uint64_t value) {
 #define PPC_STORE_U64(x, y) PPCStoreU64(base, uint32_t(x), uint64_t(y))
 #endif
 
-// MMIO writes are ignored until renderer register emulation is available.
+// 32-bit MMIO goes to the runtime; narrower and wider accesses are ignored.
 #ifndef PPC_MM_STORE_U8
 #define PPC_MM_STORE_U8(x, y)   do { (void)(x); (void)(y); } while (0)
 #endif
@@ -184,7 +187,7 @@ inline void PPCStoreU64(uint8_t* base, uint32_t address, uint64_t value) {
 #endif
 
 #ifndef PPC_MM_STORE_U32
-#define PPC_MM_STORE_U32(x, y)  do { (void)(x); (void)(y); } while (0)
+#define PPC_MM_STORE_U32(x, y)  PPCMmioWrite32(uint32_t(x), uint32_t(y))
 #endif
 
 #ifndef PPC_MM_STORE_U64

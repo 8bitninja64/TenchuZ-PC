@@ -21,3 +21,7 @@ savevmx_14_address = 0x826547C0
 restvmx_14_address = 0x82654A58
 savevmx_64_address = 0x82654854
 restvmx_64_address = 0x82654AEC
+# C runtime setjmp/longjmp, translated to host setjmp/longjmp at call sites.
+# The guest jmp_buf (over 300 bytes) holds the 256-byte host jmp_buf.
+setjmp_address = 0x82657B00
+longjmp_address = 0x826578C0

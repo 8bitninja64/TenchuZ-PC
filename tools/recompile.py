@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import struct
 import subprocess
 import sys
 import tomllib
@@ -50,6 +51,51 @@ def write_run_config(out: Path) -> Path:
     return path
 
 
+def generate_import_support(out: Path) -> None:
+    """Weak fail-fast stubs for every import, and the kernel data import slots.
+
+    The runtime's strong PPC_FUNC(__imp__X) definitions replace the stubs, so
+    an import that is reached before it is implemented stops with its name.
+    """
+    shared = (out / "ppc_recomp_shared.h").read_text()
+    names = sorted(set(re.findall(r"PPC_EXTERN_FUNC\((__imp__\w+)\)", shared)))
+    (out / "ppc_imports.cpp").write_bytes(("#include \"ppc_recomp_shared.h\"\n" + "".join(
+        f'PPC_WEAK_FUNC({name}) {{ PPC_RECOMP_FAILURE(ctx, uint32_t(ctx.lr), '
+        f'"unimplemented import {name[7:]}"); }}\n' for name in names)).encode())
+
+    sys.path.insert(0, str(ROOT / "tools"))
+    from xex_image import decode_xex
+    xex = (ROOT / "game/default.xex").read_bytes()
+    _, image = decode_xex(xex)
+    word = lambda data, offset: struct.unpack_from(">I", data, offset)[0]
+    fields = dict(struct.unpack_from(">II", xex, 24 + i * 8) for i in range(word(xex, 20)))
+    start = fields[0x103FF]
+    string_size, libraries = word(xex, start + 4), word(xex, start + 8)
+    library_names = [s.decode() for s in xex[start + 12:start + 12 + string_size].split(b"\0") if s]
+    tables = ROOT.parent / "_Tools/XenonRecomp/XenonUtils/xbox"
+    position = start + 12 + string_size
+    data_imports = []
+    for _ in range(libraries):
+        size = word(xex, position)
+        library_index, count = struct.unpack_from(">HH", xex, position + 36)
+        library = library_names[library_index].split(".")[0]
+        exports = {int(ordinal, 16): name for ordinal, name in re.findall(
+            r"XE_EXPORT\([^,]+,\s*0x([0-9A-Fa-f]+),\s*(\w+)", (tables / f"{library}_table.inc").read_text())}
+        records = []
+        for index in range(count):
+            address = word(xex, position + 40 + index * 4)
+            value = word(image, address - 0x82000000)
+            records.append((address, value & 0xFFFF, value >> 24))
+        callable_ordinals = {ordinal for _, ordinal, kind in records if kind}
+        data_imports += [(address, exports[ordinal]) for address, ordinal, kind in records
+                         if kind == 0 and ordinal not in callable_ordinals]
+        position += size
+    (out / "tenchu_data_imports.h").write_bytes((
+        "#pragma once\n#include <cstdint>\n#include <utility>\n"
+        "inline constexpr std::pair<uint32_t, const char*> kDataImports[] = {\n" + "".join(
+            f'    {{0x{address:08X}, "{name}"}},\n' for address, name in data_imports) + "};\n").encode())
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "build/generated")
@@ -81,7 +127,8 @@ def main() -> int:
         chunks = [f"ppc_recomp.{index}.cpp" for index in range(int(units[-1]))]
         (out / "sources.cmake").write_text("set(TENCHU_PPC_SOURCES\n" + "".join(
             f'  "${{TENCHU_GENERATED_DIR}}/{name}"\n'
-            for name in chunks + ["ppc_func_mapping.cpp"]) + ")\n")
+            for name in chunks + ["ppc_func_mapping.cpp", "ppc_imports.cpp"]) + ")\n")
+        generate_import_support(out)
     print(json.dumps(counts, indent=2))
     print(f"Generation log: {log_path}")
     return 0
