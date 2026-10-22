@@ -220,6 +220,10 @@ void execute(Reader& reader, int depth);
 void executeType3(Reader& reader, uint32_t header, int depth) {
     const uint32_t opcode = (header >> 8) & 0x7F;
     const uint32_t count = ((header >> 16) & 0x3FFF) + 1;
+    if ((header & 1) && (opcode == 0x22 || opcode == 0x36))
+        TZ_TRACE("pred", "[cp] predicated draw %s: mask %016llX select %016llX",
+                 (gs.binSelect & gs.binMask) ? "runs" : "skipped", (unsigned long long)gs.binMask,
+                 (unsigned long long)gs.binSelect);
     if ((header & 1) && !(gs.binSelect & gs.binMask)) {
         reader.skip(count);
         return;

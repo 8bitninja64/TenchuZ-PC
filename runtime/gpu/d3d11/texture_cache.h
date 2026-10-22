@@ -36,6 +36,8 @@ public:
     ID3D11SamplerState* sampler(const TextureFetch& fetch);
     // Drops cached uploads when a resolve overwrites guest memory.
     void invalidate(uint32_t physicalAddress);
+    // Uploads are revalidated against guest memory at most once per frame.
+    void beginFrame() { ++frame_; }
 
 private:
     struct Entry {
@@ -48,6 +50,7 @@ private:
     ID3D11DeviceContext* context_ = nullptr;
     std::map<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>, Entry> entries_;
     std::map<uint32_t, ID3D11SamplerState*> samplers_;
+    uint64_t frame_ = 1;
 };
 
 }  // namespace tz::gpu

@@ -137,8 +137,10 @@ ID3D11ShaderResourceView* TextureCache::view(const TextureFetch& fetch) {
 
     const auto key = std::make_tuple(address, fetch.format(), width, height, fetch.words[0] & 0xFFC00000u);
     auto& entry = entries_[key];
+    if (entry.view && entry.lastCheckFrame == frame_) return entry.view;
     const uint8_t* guest = memory->host(Memory::fromPhysical(address));
     const uint64_t hash = hashBytes(guest, guestSize);
+    entry.lastCheckFrame = frame_;
     if (entry.view && entry.hash == hash) return entry.view;
 
     std::vector<uint8_t> raw(guest, guest + guestSize);

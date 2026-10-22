@@ -263,6 +263,10 @@ struct XenosBackend::Impl {
         ID3D11Texture2D* texture = nullptr;
         ID3D11RenderTargetView* color = nullptr;
         ID3D11DepthStencilView* depth = nullptr;
+        // Single-sample copy used by resolves of multisampled targets.
+        ID3D11Texture2D* resolveScratch = nullptr;
+        ID3D11ShaderResourceView* resolveScratchView = nullptr;
+        ID3D11ShaderResourceView* view = nullptr;  // single-sample targets only
         UINT width = 0, height = 0, samples = 1;
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     };
@@ -294,8 +298,20 @@ struct XenosBackend::Impl {
             logf("[d3d11] cannot create %ux%u render target", desc.Width, desc.Height);
             return nullptr;
         }
-        if (isDepth) device->CreateDepthStencilView(target.texture, nullptr, &target.depth);
-        else device->CreateRenderTargetView(target.texture, nullptr, &target.color);
+        if (isDepth) {
+            device->CreateDepthStencilView(target.texture, nullptr, &target.depth);
+        } else {
+            device->CreateRenderTargetView(target.texture, nullptr, &target.color);
+            if (samples > 1) {
+                desc.SampleDesc.Count = 1;
+                desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                device->CreateTexture2D(&desc, nullptr, &target.resolveScratch);
+                if (target.resolveScratch)
+                    device->CreateShaderResourceView(target.resolveScratch, nullptr, &target.resolveScratchView);
+            } else {
+                device->CreateShaderResourceView(target.texture, nullptr, &target.view);
+            }
+        }
         target.width = desc.Width;
         target.height = desc.Height;
         target.samples = samples;
@@ -889,18 +905,13 @@ struct XenosBackend::Impl {
                 // Multisampled targets are averaged first; the copy shader then
                 // places the rectangle and applies the red/blue swap.
                 ID3D11Texture2D* single = nullptr;
-                ID3D11Texture2D* copySource = source->texture;
+                ID3D11ShaderResourceView* sourceView = source->view;
                 if (source->samples > 1) {
-                    D3D11_TEXTURE2D_DESC desc{};
-                    source->texture->GetDesc(&desc);
-                    desc.SampleDesc.Count = 1;
-                    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                    if (FAILED(device->CreateTexture2D(&desc, nullptr, &single))) return;
-                    context->ResolveSubresource(single, 0, source->texture, 0, source->format);
-                    copySource = single;
+                    if (!source->resolveScratch) return;
+                    context->ResolveSubresource(source->resolveScratch, 0, source->texture, 0, source->format);
+                    single = source->resolveScratch;
+                    sourceView = source->resolveScratchView;
                 }
-                ID3D11ShaderResourceView* sourceView = nullptr;
-                device->CreateShaderResourceView(copySource, nullptr, &sourceView);
                 const bool swap = (reg(reg::RB_COPY_DEST_INFO) >> 24) & 1;
                 const int32_t constants[8] = {int32_t(rect.left), int32_t(rect.top), int32_t(destX), int32_t(destY),
                                               swap ? 1 : 0, 0, 0, 0};
@@ -929,8 +940,6 @@ struct XenosBackend::Impl {
                     snprintf(path, sizeof(path), "build/resolved/source_%08X.bmp", destination);
                     saveTexture(single, path);
                 }
-                release(sourceView);
-                release(single);
             }
         }
         if (clearColor && source) {
@@ -1019,6 +1028,7 @@ struct XenosBackend::Impl {
                  it != resolved.end() ? "resolved" : "missing", (unsigned long long)draws);
         draws = 0;
         ++frames;
+        textures.beginFrame();
     }
 };
 
