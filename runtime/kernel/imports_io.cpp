@@ -137,6 +137,7 @@ uint32_t openFile(PPCContext& ctx, uint32_t handleOut, uint32_t access, uint32_t
     store32(handleOut, createHandle(object));
     completeIo(ioStatus, kStatusSuccess, information);
     TZ_TRACE("file", "[file] open %s ok", guestName.c_str());
+    if (traceEnabled("bt")) logf("[bt] open %s from%s", guestName.c_str(), guestBacktrace(ctx).c_str());
     (void)ctx;
     return kStatusSuccess;
 }

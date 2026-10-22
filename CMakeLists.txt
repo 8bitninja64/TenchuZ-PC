@@ -41,7 +41,8 @@ add_library(TenchuRuntime STATIC
     runtime/kernel/imports_net.cpp
     runtime/kernel/diagnostics.cpp
     runtime/gpu/null_gpu.cpp
-    runtime/audio/null_audio.cpp)
+    runtime/audio/null_audio.cpp
+    runtime/movie/movie_player.cpp)
 target_include_directories(TenchuRuntime PUBLIC "${CMAKE_SOURCE_DIR}/runtime")
 target_compile_options(TenchuRuntime PRIVATE /clang:-msse4.1 -Wno-unused-parameter)
 target_link_libraries(TenchuRuntime PUBLIC TenchuPPC bcrypt xinput winmm shell32 ole32)

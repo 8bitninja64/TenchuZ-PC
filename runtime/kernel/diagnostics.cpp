@@ -47,3 +47,56 @@ PPC_FUNC(sub_82413CB0) {
     }
     __imp__sub_82413CB0(ctx, base);
 }
+
+// D3D functions that emit WAIT_REG_MEM packets (TENCHU_TRACE=d3dwait).
+#define TZ_TRACE_WRAP(address)                                                                   \
+    extern "C" PPC_FUNC(__imp__sub_##address);                                                   \
+    PPC_FUNC(sub_##address) {                                                                    \
+        TZ_TRACE("d3dwait", "[d3d] sub_" #address " r3=%08X r4=%08X r5=%08X r6=%08X lr=%08X",     \
+                 ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));               \
+        __imp__sub_##address(ctx, base);                                                         \
+    }
+TZ_TRACE_WRAP(8241BDE0)
+TZ_TRACE_WRAP(8241BF50)
+TZ_TRACE_WRAP(8241D770)
+TZ_TRACE_WRAP(8241E768)
+TZ_TRACE_WRAP(82426498)
+TZ_TRACE_WRAP(8242AC58)
+TZ_TRACE_WRAP(8242ED10)
+
+// D3D segment kicks (TENCHU_TRACE=kickseg): (device, segments*, count).
+extern "C" PPC_FUNC(__imp__sub_824262B8);
+PPC_FUNC(sub_824262B8) {
+    if (traceEnabled("kickseg")) {
+        for (uint32_t i = 0; i < ctx.r5.u32 && i < 4; ++i)
+            logf("[kickseg] %-20s lr %08X segment %08X size %X", currentThread()->name.c_str(), uint32_t(ctx.lr),
+                 load32(ctx.r4.u32 + i * 8 + 4), load32(ctx.r4.u32 + i * 8));
+    }
+    __imp__sub_824262B8(ctx, base);
+}
+
+// Scratch-1 release paths (TENCHU_TRACE=release).
+namespace {
+uint32_t scratchOne() { return load32(0xE000B004); }
+}
+extern "C" PPC_FUNC(__imp__sub_8241BD50);
+PPC_FUNC(sub_8241BD50) {
+    const uint32_t before = scratchOne(), param = ctx.r3.u32;
+    __imp__sub_8241BD50(ctx, base);
+    TZ_TRACE("release", "[release] vsync callback param %08X scratch1 %X -> %X", param, before, scratchOne());
+}
+extern "C" PPC_FUNC(__imp__sub_82425D88);
+PPC_FUNC(sub_82425D88) {
+    const uint32_t before = scratchOne(), source = ctx.r3.u32;
+    __imp__sub_82425D88(ctx, base);
+    const uint32_t after = scratchOne();
+    if (before != after) TZ_TRACE("release", "[release] interrupt source %u scratch1 %X -> %X", source, before, after);
+}
+
+// Recorded command list interpreter (TENCHU_TRACE=cmdlist): (list*, state*).
+extern "C" PPC_FUNC(__imp__sub_824318A8);
+PPC_FUNC(sub_824318A8) {
+    TZ_TRACE("cmdlist", "[cmdlist] run list %08X state %08X first %08X lr %08X", ctx.r3.u32, ctx.r4.u32,
+             load32(ctx.r3.u32), uint32_t(ctx.lr));
+    __imp__sub_824318A8(ctx, base);
+}

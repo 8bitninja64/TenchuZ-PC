@@ -4,6 +4,7 @@
 #include "kernel/kernel.h"
 #include "ppc_recomp_shared.h"
 #include <array>
+#include <intrin.h>
 #include <chrono>
 #include <thread>
 
@@ -15,8 +16,8 @@ namespace {
 enum : uint32_t {
     kRegRbRptr = 0x01C4,
     kRegRbWptr = 0x01C5,
-    kRegScratchUmsk = 0x0570,
-    kRegScratchAddr = 0x0571,
+    kRegScratchUmsk = 0x01DC,
+    kRegScratchAddr = 0x01DD,
     kRegScratch0 = 0x0578,
     kRegCoherStatusHost = 0x0A31,
     kRegEdramTiming = 0x0F00,
@@ -42,9 +43,25 @@ struct Gpu {
     std::atomic<uint64_t> frames{0};
     std::atomic<uint64_t> draws{0};
     uint64_t exitAfterFrames = 0;
+    std::atomic<int64_t> lastVblankNs{0};
+    std::atomic<uint32_t> vblanks{0};
+    // Tiling predication: packets with header bit 0 run only when
+    // (binSelect & binMask) != 0.
+    uint64_t binMask = ~0ull;
+    uint64_t binSelect = ~0ull;
     bool started = false;
 };
 Gpu gpu;
+// Guest address of the packet being executed, and indirect buffer depth.
+thread_local uint32_t packetAddress = 0;
+thread_local int packetDepth = 0;
+thread_local uint32_t ibStack[8] = {};
+
+// Per-frame command processor time accounting (TENCHU_TRACE=gputime).
+std::atomic<int64_t> waitRegMemNs{0}, waitMemNs{0}, interruptNs{0}, idleNs{0};
+int64_t nanosSince(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+}
 
 uint32_t gpuSwap(uint32_t value, uint32_t endian) {
     switch (endian & 3) {
@@ -65,15 +82,24 @@ uint32_t readPhysical(uint32_t address) {
     return gpuSwap(*memory->host<uint32_t>(Memory::fromPhysical(address & ~3u)), address & 3);
 }
 
-void dispatchInterrupt(uint32_t source) {
+// The handler runs as hardware thread `processor` (PCR +0x10C); D3D uses it to
+// acknowledge per-CPU interrupt requests.
+void dispatchInterrupt(uint32_t source, uint32_t processor) {
     const uint32_t callback = gpu.interruptCallback.load();
+    if (source != 0) TZ_TRACE("irq", "[irq] source %u -> callback %08X", source, callback);
     if (!callback) return;
     std::lock_guard lock(gpu.interruptMutex);
+    *memory->host(currentContext().r13.u32 + 0x10C) = uint8_t(processor);
     callGuest(callback, {source, gpu.interruptData.load()});
+    if (source != 0) TZ_TRACE("irq", "[irq] source %u handled; scratch0 memory %08X", source,
+                              load32(Memory::fromPhysical(gpu.registers[kRegScratchAddr])));
 }
 
 void writeRegister(uint32_t index, uint32_t value) {
     index &= 0xFFFF;
+    if (index == kRegScratchUmsk || index == kRegScratchAddr || (index >= kRegScratch0 && index < kRegScratch0 + 8))
+        TZ_TRACE("scratch", "[cp] reg %04X = %08X (packet %08X depth %d, IBs %08X %08X)", index, value, packetAddress,
+                 packetDepth, ibStack[0], ibStack[1]);
     gpu.registers[index] = value;
     if (index >= kRegScratch0 && index < kRegScratch0 + 8) {
         const uint32_t slot = index - kRegScratch0;
@@ -123,12 +149,48 @@ void execute(Reader& reader, int depth);
 void executeType3(Reader& reader, uint32_t header, int depth) {
     const uint32_t opcode = (header >> 8) & 0x7F;
     const uint32_t count = ((header >> 16) & 0x3FFF) + 1;
+    if ((header & 1) && !(gpu.binSelect & gpu.binMask)) {
+        reader.skip(count);
+        return;
+    }
     switch (opcode) {
+    case 0x50:  // SET_BIN_MASK
+        gpu.binMask = reader.read();
+        gpu.binMask |= uint64_t(reader.read()) << 32;
+        reader.skip(count - 2);
+        break;
+    case 0x51:  // SET_BIN_SELECT
+        gpu.binSelect = reader.read();
+        gpu.binSelect |= uint64_t(reader.read()) << 32;
+        reader.skip(count - 2);
+        break;
+    case 0x60:  // SET_BIN_MASK_LO
+        gpu.binMask = (gpu.binMask & 0xFFFFFFFF00000000ull) | reader.read();
+        reader.skip(count - 1);
+        break;
+    case 0x61:  // SET_BIN_MASK_HI
+        gpu.binMask = (gpu.binMask & 0xFFFFFFFFull) | uint64_t(reader.read()) << 32;
+        reader.skip(count - 1);
+        break;
+    case 0x62:  // SET_BIN_SELECT_LO
+        gpu.binSelect = (gpu.binSelect & 0xFFFFFFFF00000000ull) | reader.read();
+        reader.skip(count - 1);
+        break;
+    case 0x63:  // SET_BIN_SELECT_HI
+        gpu.binSelect = (gpu.binSelect & 0xFFFFFFFFull) | uint64_t(reader.read()) << 32;
+        reader.skip(count - 1);
+        break;
     case 0x3F:    // INDIRECT_BUFFER
     case 0x37: {  // INDIRECT_BUFFER_PFD
         const uint32_t address = reader.read();
         const uint32_t size = reader.read() & 0xFFFFF;
         reader.skip(count - 2);
+        if (traceEnabled("ib") && depth == 0) {
+            uint32_t hash = 2166136261u;
+            for (uint32_t i = 0; i < size; ++i) hash = (hash ^ load32(Memory::fromPhysical(address) + i * 4)) * 16777619u;
+            logf("[cp] IB %08X size %X hash %08X from ring index %X", address, size, hash, (packetAddress - reader.base) / 4);
+        }
+        if (depth < 8) ibStack[depth] = address;
         if (depth > 4) fatal("Indirect buffers nested too deeply");
         Reader indirect{Memory::fromPhysical(address), 0, 0, size, false};
         execute(indirect, depth + 1);
@@ -142,16 +204,29 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
                  reference, mask);
         const auto start = std::chrono::steady_clock::now();
         bool warned = false;
-        for (;;) {
+        for (uint32_t attempt = 0;; ++attempt) {
             const uint32_t value = info & 0x10 ? readPhysical(poll) : gpu.registers[poll & 0xFFFF].load();
             if (compare(info, value & mask, reference)) break;
-            if (!warned && std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) {
+            // Handshakes with the CPU usually resolve within microseconds:
+            // spin, then yield, and only sleep for long waits.
+            if (attempt < 256) {
+                _mm_pause();
+                continue;
+            }
+            const auto elapsed = std::chrono::steady_clock::now() - start;
+            if (!warned && elapsed > std::chrono::seconds(2)) {
                 logf("[gpu] WAIT_REG_MEM stalled: %s %08X value %08X ref %08X mask %08X fn %u",
                      info & 0x10 ? "mem" : "reg", poll, value, reference, mask, info & 7);
                 warned = true;
             }
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            if (elapsed < std::chrono::milliseconds(4)) SwitchToThread();
+            else std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+        const int64_t waited = nanosSince(start);
+        (info & 0x10 ? waitMemNs : waitRegMemNs) += waited;
+        if (waited > 5000000)
+            TZ_TRACE("slowwait", "[cp] slow wait %.1f ms: %s %08X ref %08X", waited / 1e6, info & 0x10 ? "mem" : "reg",
+                     poll, reference);
         break;
     }
     case 0x21: {  // REG_RMW
@@ -177,7 +252,9 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
     case 0x58: {  // EVENT_WRITE_SHD
         const uint32_t initiator = reader.read(), address = reader.read(), value = reader.read();
         reader.skip(count - 3);
-        writePhysical(address, initiator >> 31 ? uint32_t(gpu.frames.load()) : value);
+        if (initiator >> 31) TZ_TRACE("shd", "[cp] EVENT_WRITE_SHD counter to %08X (vblank %u)", address, gpu.vblanks.load());
+        // Bit 31 of the initiator writes the vblank counter instead of the value.
+        writePhysical(address, initiator >> 31 ? gpu.vblanks.load() : value);
         break;
     }
     case 0x3D: {  // MEM_WRITE
@@ -185,10 +262,14 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         for (uint32_t i = 1; i < count; ++i) writePhysical(address + (i - 1) * 4, reader.read());
         break;
     }
-    case 0x54: {  // INTERRUPT
-        reader.skip(count);
-        TZ_TRACE("cp", "[cp] interrupt");
-        dispatchInterrupt(1);
+    case 0x54: {  // INTERRUPT: one dispatch per CPU in the mask
+        const uint32_t cpuMask = reader.read();
+        reader.skip(count - 1);
+        TZ_TRACE("cp", "[cp] interrupt mask %02X", cpuMask);
+        const auto start = std::chrono::steady_clock::now();
+        for (uint32_t cpu = 0; cpu < 6; ++cpu)
+            if (cpuMask & (1u << cpu)) dispatchInterrupt(1, cpu);
+        interruptNs += nanosSince(start);
         break;
     }
     case 0x2D:    // SET_CONSTANT
@@ -217,8 +298,16 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
     }
 }
 
+void publishReadPointer(uint32_t index) {
+    gpu.registers[kRegRbRptr] = index;
+    if (gpu.rptrWriteback) store32(Memory::fromPhysical(gpu.rptrWriteback), index);
+}
+
 void execute(Reader& reader, int depth) {
     while (reader.available()) {
+        if (reader.ring) publishReadPointer(reader.index);
+        packetAddress = reader.base + reader.index * 4;
+        packetDepth = depth;
         const uint32_t header = reader.read();
         switch (header >> 30) {
         case 0: {  // register writes
@@ -248,7 +337,9 @@ void commandProcessorMain() {
         uint32_t writeIndex;
         {
             std::unique_lock lock(gpu.mutex);
+            const auto idleStart = std::chrono::steady_clock::now();
             gpu.wake.wait(lock, [] { return gpu.ringDwords && gpu.registers[kRegRbWptr] != gpu.readIndex; });
+            idleNs += nanosSince(idleStart);
             writeIndex = gpu.registers[kRegRbWptr] % gpu.ringDwords;
         }
         Reader ring{Memory::fromPhysical(gpu.ringBase), gpu.ringDwords, gpu.readIndex, writeIndex, true};
@@ -256,19 +347,23 @@ void commandProcessorMain() {
         {
             std::lock_guard lock(gpu.mutex);
             gpu.readIndex = writeIndex;
-            gpu.registers[kRegRbRptr] = writeIndex;
-            if (gpu.rptrWriteback) store32(Memory::fromPhysical(gpu.rptrWriteback), writeIndex);
+            publishReadPointer(writeIndex);
         }
     }
 }
 
 void vblankMain() {
     createSystemThread("gpu-vblank");
+    // TENCHU_VBLANK_US overrides the 60 Hz interval (diagnostics only).
+    char value[32]{};
+    const int64_t interval = GetEnvironmentVariableA("TENCHU_VBLANK_US", value, sizeof(value)) ? atoll(value) : 16667;
     auto next = std::chrono::steady_clock::now();
     for (;;) {
-        next += std::chrono::microseconds(16667);
+        next += std::chrono::microseconds(interval);
         std::this_thread::sleep_until(next);
-        dispatchInterrupt(0);
+        gpu.lastVblankNs = std::chrono::steady_clock::now().time_since_epoch().count();
+        ++gpu.vblanks;
+        dispatchInterrupt(0, 2);
     }
 }
 
@@ -310,7 +405,13 @@ uint32_t PPCMmioRead32(uint32_t address) {
         switch (index) {
         case kRegEdramTiming: return 0x08100748;
         case kRegBcControl: return 0x0000200E;
-        case kRegD1ModeVCounter: return 0x000002D0;
+        case kRegD1ModeVCounter: {
+            // 750 lines per 60 Hz frame; lines 720-749 are vertical blank.
+            const int64_t now = std::chrono::steady_clock::now().time_since_epoch().count();
+            const int64_t sinceVblank = now - gpu.lastVblankNs.load();
+            const int64_t line = (sinceVblank / 1000) * 750 / 16667;
+            return uint32_t((line + 720) % 750);
+        }
         case kRegInterruptStatus: return 1;
         case kRegD1ModeViewportSize: return 0x050002D0;
         default: return gpu.registers[index];
@@ -324,6 +425,9 @@ void PPCMmioWrite32(uint32_t address, uint32_t value) {
     if (address >= kGpuMmioBase && address < kGpuMmioBase + 0x10000) {
         const uint32_t index = (address - kGpuMmioBase) / 4;
         if (index == kRegRbWptr) {
+            TZ_TRACE("kick", "[kick] wptr %X (rptr %X) by %s lr %08X", value, gpu.readIndex,
+                     currentThread() ? currentThread()->name.c_str() : "host",
+                     currentThread() ? uint32_t(currentThread()->context.lr) : 0);
             {
                 std::lock_guard lock(gpu.mutex);
                 gpu.registers[index] = value;
@@ -360,6 +464,7 @@ PPC_FUNC(__imp__VdEnableRingBufferRPtrWriteBack) {
 }
 
 PPC_FUNC(__imp__VdSetGraphicsInterruptCallback) {
+    logf("[gpu] interrupt callback %08X data %08X", ctx.r3.u32, ctx.r4.u32);
     gpu.interruptData = ctx.r4.u32;
     gpu.interruptCallback = ctx.r3.u32;
     startGpu();
@@ -396,6 +501,13 @@ PPC_FUNC(__imp__VdSwap) {
     // The 64-dword slot reserved in the command buffer becomes filler.
     for (uint32_t i = 0; i < 64; ++i) store32(ctx.r3.u32 + i * 4, 0x80000000);
     const uint64_t frame = ++gpu.frames;
+    if (traceEnabled("gputime")) {
+        static auto last = std::chrono::steady_clock::now();
+        logf("[gputime] frame %llu: %.1f ms total, cp idle %.1f, reg waits %.1f, mem waits %.1f, interrupts %.1f",
+             (unsigned long long)frame, nanosSince(last) / 1e6, idleNs.exchange(0) / 1e6, waitRegMemNs.exchange(0) / 1e6,
+             waitMemNs.exchange(0) / 1e6, interruptNs.exchange(0) / 1e6);
+        last = std::chrono::steady_clock::now();
+    }
     if (frame == 1 || frame % 600 == 0 || traceEnabled("swap"))
         logf("[gpu] VdSwap frame %llu (%llu draw packets so far)", (unsigned long long)frame,
              (unsigned long long)gpu.draws.load());

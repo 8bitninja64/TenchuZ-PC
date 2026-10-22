@@ -34,11 +34,13 @@ PPC_FUNC(__imp__ExTerminateThread) { throw ThreadExit{ctx.r3.u32}; }
 
 PPC_FUNC(__imp__KeResumeThread) {
     auto thread = threadByKthread(ctx.r3.u32);
+    TZ_TRACE("thread", "[thread] KeResumeThread %08X -> %s", ctx.r3.u32, thread ? thread->name.c_str() : "unknown");
     ctx.r3.u64 = thread ? ResumeThread(thread->host) : 0;
 }
 
 PPC_FUNC(__imp__NtResumeThread) {
     auto object = lookupHandleAs<ThreadObject>(ctx.r3.u32);
+    TZ_TRACE("thread", "[thread] NtResumeThread %08X -> %s", ctx.r3.u32, object ? object->thread->name.c_str() : "unknown");
     if (!object) { ctx.r3.u64 = kStatusInvalidHandle; return; }
     const DWORD previous = ResumeThread(object->thread->host);
     if (ctx.r4.u32) store32(ctx.r4.u32, previous);
@@ -54,6 +56,7 @@ PPC_FUNC(__imp__NtSuspendThread) {
 }
 
 PPC_FUNC(__imp__KeSetAffinityThread) {
+    TZ_TRACE("thread", "[thread] KeSetAffinityThread %08X affinity %X", ctx.r3.u32, ctx.r4.u32);
     // Returns the previous affinity; host scheduling is left to Windows.
     if (ctx.r5.u32) store32(ctx.r5.u32, 0x3F);
     ctx.r3.u64 = 0x3F;
@@ -77,8 +80,16 @@ PPC_FUNC(__imp__KeUnlockL2) {}
 
 // ---- Dispatcher objects -----------------------------------------------------------
 
-PPC_FUNC(__imp__KeSetEvent) { ctx.r3.u64 = uint32_t(setEvent(ctx.r3.u32)); }
-PPC_FUNC(__imp__KeResetEvent) { ctx.r3.u64 = uint32_t(resetEvent(ctx.r3.u32)); }
+PPC_FUNC(__imp__KeSetEvent) {
+    TZ_TRACE("evt", "[evt] %-20s KeSetEvent %08X type %u state %d lr %08X", currentThread()->name.c_str(), ctx.r3.u32,
+             *memory->host(ctx.r3.u32), int32_t(load32(ctx.r3.u32 + 4)), uint32_t(ctx.lr));
+    ctx.r3.u64 = uint32_t(setEvent(ctx.r3.u32));
+}
+PPC_FUNC(__imp__KeResetEvent) {
+    TZ_TRACE("evt", "[evt] %-20s KeResetEvent %08X state %d lr %08X", currentThread()->name.c_str(), ctx.r3.u32,
+             int32_t(load32(ctx.r3.u32 + 4)), uint32_t(ctx.lr));
+    ctx.r3.u64 = uint32_t(resetEvent(ctx.r3.u32));
+}
 
 PPC_FUNC(__imp__KeInitializeSemaphore) {
     // (semaphore, count, limit): header type 5 plus limit at +0x10.
@@ -104,7 +115,12 @@ PPC_FUNC(__imp__KeWaitForSingleObject) {
     // (object, reason, mode, alertable, timeout*)
     int64_t storage;
     const int64_t* timeout = readTimeout(ctx.r7.u32, storage);
-    ctx.r3.u64 = waitForObjects({ctx.r3.u32}, false, ctx.r6.u32 != 0, timeout);
+    TZ_TRACE("evt", "[evt] %-20s KeWaitForSingleObject %08X type %u state %d lr %08X%s", currentThread()->name.c_str(),
+             ctx.r3.u32, *memory->host(ctx.r3.u32), int32_t(load32(ctx.r3.u32 + 4)), uint32_t(ctx.lr),
+             timeout ? " (timeout)" : "");
+    const uint32_t object = ctx.r3.u32;
+    ctx.r3.u64 = waitForObjects({object}, false, ctx.r6.u32 != 0, timeout);
+    TZ_TRACE("evt", "[evt] %-20s   woke %08X status %X", currentThread()->name.c_str(), object, ctx.r3.u32);
 }
 
 PPC_FUNC(__imp__KeWaitForMultipleObjects) {
@@ -113,6 +129,9 @@ PPC_FUNC(__imp__KeWaitForMultipleObjects) {
     for (uint32_t i = 0; i < objects.size(); ++i) objects[i] = load32(ctx.r4.u32 + i * 4);
     int64_t storage;
     const int64_t* timeout = readTimeout(ctx.r9.u32, storage);
+    TZ_TRACE("evt", "[evt] %-20s KeWaitForMultipleObjects count %u first %08X all %u lr %08X",
+             currentThread()->name.c_str(), uint32_t(objects.size()), objects.empty() ? 0 : objects[0],
+             ctx.r5.u32 == 0, uint32_t(ctx.lr));
     ctx.r3.u64 = waitForObjects(objects, ctx.r5.u32 == 0, ctx.r8.u32 != 0, timeout);
 }
 

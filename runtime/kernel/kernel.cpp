@@ -227,6 +227,25 @@ void logf(const char* format, ...) {
     va_end(args);
 }
 
+std::string guestBacktrace(const PPCContext& ctx, int depth) {
+    std::string result;
+    char cell[12];
+    snprintf(cell, sizeof(cell), " %08X", uint32_t(ctx.lr));
+    result += cell;
+    uint32_t sp = ctx.r1.u32;
+    for (int i = 0; i < depth; ++i) {
+        if (sp < 0x40000000 || sp >= 0x80000000) break;
+        const uint32_t previous = load32(sp);
+        if (previous <= sp || previous >= 0x80000000) break;
+        const uint32_t lr = load32(previous - 8);
+        if (lr < 0x82000000 || lr >= 0x83000000) break;
+        snprintf(cell, sizeof(cell), " %08X", lr);
+        result += cell;
+        sp = previous;
+    }
+    return result;
+}
+
 void fatal(const char* format, ...) {
     va_list args;
     va_start(args, format);
@@ -581,7 +600,85 @@ void initializeKernel(const std::filesystem::path& directory) {
          functions, tlsSize, defaultStackSize);
 }
 
+namespace {
+// Periodically prints where every guest thread is (TENCHU_TRACE=watch).
+void startWatchdog() {
+    if (!traceEnabled("watch")) return;
+    std::thread([] {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            std::vector<std::shared_ptr<GuestThread>> threads;
+            {
+                std::lock_guard lock(threadMutex);
+                for (const auto& [kthread, weak] : threadsByKthread)
+                    if (auto thread = weak.lock()) threads.push_back(thread);
+            }
+            for (const auto& thread : threads) {
+                const auto& ctx = thread->context;
+                std::string recent;
+                char cell[12];
+                const uint32_t count = (std::min)(ctx.traceIndex, 64u);
+                for (uint32_t i = count > 12 ? count - 12 : 0; i < count; ++i) {
+                    const uint32_t entry = ctx.trace[(ctx.traceIndex - count + i) & 63];
+                    if (entry >= 0x82653F00 && entry < 0x82654C00) continue;
+                    snprintf(cell, sizeof(cell), " %08X", entry);
+                    recent += cell;
+                }
+                logf("[watch] %-24s fn %08X lr %08X |%s", thread->name.c_str(), ctx.lastFunction, uint32_t(ctx.lr),
+                     recent.c_str());
+                logf("[watch]   backtrace:%s", guestBacktrace(ctx, 24).c_str());
+            }
+        }
+    }).detach();
+}
+}  // namespace
+
+namespace {
+// Samples each thread's current guest function every millisecond for ten
+// seconds after a delay, then prints the hottest functions (TENCHU_TRACE=prof).
+void startProfiler() {
+    if (!traceEnabled("prof")) return;
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::seconds(8));
+        std::map<std::string, std::map<uint32_t, uint32_t>> samples;
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (std::chrono::steady_clock::now() < end) {
+            {
+                std::lock_guard lock(threadMutex);
+                for (const auto& [kthread, weak] : threadsByKthread)
+                    if (auto thread = weak.lock()) {
+                        // Attribute to the latest entry that is not a register save/restore helper.
+                        const auto& ctx = thread->context;
+                        uint32_t function = 0;
+                        for (uint32_t back = 1; back <= 16 && back <= ctx.traceIndex; ++back) {
+                            const uint32_t entry = ctx.trace[(ctx.traceIndex - back) & 63];
+                            if (entry < 0x82653F00 || entry >= 0x82654C00) { function = entry; break; }
+                        }
+                        ++samples[thread->name + "#" + std::to_string(thread->id)][function];
+                    }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        for (const auto& [name, histogram] : samples) {
+            std::vector<std::pair<uint32_t, uint32_t>> sorted;
+            uint32_t total = 0;
+            for (const auto& [function, count] : histogram) { sorted.emplace_back(count, function); total += count; }
+            std::sort(sorted.rbegin(), sorted.rend());
+            std::string line;
+            char cell[32];
+            for (size_t i = 0; i < sorted.size() && i < 12; ++i) {
+                snprintf(cell, sizeof(cell), " %08X:%u%%", sorted[i].second, sorted[i].first * 100 / total);
+                line += cell;
+            }
+            logf("[prof] %-24s%s", name.c_str(), line.c_str());
+        }
+    }).detach();
+}
+}  // namespace
+
 void runTitle() {
+    startWatchdog();
+    startProfiler();
     auto thread = attachThread(defaultStackSize, "main");
     auto object = std::make_shared<ThreadObject>();
     object->thread = thread;

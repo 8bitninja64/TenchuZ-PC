@@ -188,6 +188,9 @@ bool traceEnabled(const char* category);
 void logf(const char* format, ...);
 #define TZ_TRACE(category, ...) do { if (::tz::traceEnabled(category)) ::tz::logf(__VA_ARGS__); } while (0)
 [[noreturn]] void fatal(const char* format, ...);
+// Return addresses of the current guest call chain, walking frame back chains
+// (each frame stores its caller's LR at back chain - 8).
+std::string guestBacktrace(const PPCContext& ctx, int depth = 16);
 
 // Guest printf (sprintf, _vsnprintf, DbgPrint).
 struct GuestArgs {
