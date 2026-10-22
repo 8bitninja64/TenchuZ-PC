@@ -121,11 +121,43 @@ std::map<uint32_t, std::weak_ptr<GuestThread>> threadsByKthread;
 std::atomic<uint32_t> nextThreadId{1};
 std::atomic<uint32_t> nextPcrSlot{0};
 
+// Exited threads return their PCR page, stack and TLS block for reuse.
+std::mutex recycleMutex;
+std::vector<uint32_t> freePcrSlots;
+std::vector<uint32_t> freeTlsBlocks;
+
+uint32_t takePcrSlot() {
+    std::lock_guard lock(recycleMutex);
+    if (!freePcrSlots.empty()) {
+        const uint32_t slot = freePcrSlots.back();
+        freePcrSlots.pop_back();
+        return slot;
+    }
+    return nextPcrSlot.fetch_add(1);
+}
+
+uint32_t takeTlsBlock() {
+    std::lock_guard lock(recycleMutex);
+    if (!freeTlsBlocks.empty()) {
+        const uint32_t block = freeTlsBlocks.back();
+        freeTlsBlocks.pop_back();
+        return block;
+    }
+    return memory->allocateKernel(tlsSize + 64 * 4, 16);
+}
+
+void recycleThreadState(const GuestThread& thread) {
+    std::lock_guard lock(recycleMutex);
+    freePcrSlots.push_back((thread.pcr - Memory::kPcrBegin) / 0x1000);
+    freeTlsBlocks.push_back(thread.tls);
+    memory->free(thread.stackBase);
+}
+
 // Per-thread kernel structures. The PCR page holds the TLS pointer at +0,
 // the current KTHREAD at +0x100 and the processor number at +0x10C.
 void setupThreadState(GuestThread& thread, uint32_t stackSize, uint32_t processor) {
-    const uint32_t slot = nextPcrSlot.fetch_add(1);
-    if (slot >= 0x100) fatal("Too many guest threads");
+    const uint32_t slot = takePcrSlot();
+    if (slot >= 0x100) fatal("Too many live guest threads");
     thread.pcr = Memory::kPcrBegin + slot * 0x1000;
     if (slot == 0 && !memory->commit(Memory::kPcrBegin, 0x100000)) fatal("Cannot commit PCR pages");
     std::memset(memory->host(thread.pcr), 0, 0x1000);
@@ -133,7 +165,7 @@ void setupThreadState(GuestThread& thread, uint32_t stackSize, uint32_t processo
     thread.stackBase = memory->allocateStack(stackSize);
     if (!thread.stackBase) fatal("Cannot allocate a %u byte guest stack", stackSize);
     thread.kthread = createDispatcherObject(kThread, 0x200, 0);
-    thread.tls = memory->allocateKernel(tlsSize + 64 * 4, 16);
+    thread.tls = takeTlsBlock();
     if (!thread.kthread || !thread.tls) fatal("Kernel memory exhausted");
     std::memcpy(memory->host(thread.tls), tlsTemplate.data(), tlsTemplate.size());
     thread.id = nextThreadId.fetch_add(1);
@@ -336,6 +368,12 @@ DWORD WINAPI guestThreadMain(void* parameter) {
     (void)ctx;
     TZ_TRACE("thread", "[thread] %u exited with %u", tlsThread->id, code);
     finishThread(*object, code);
+    {
+        // The KTHREAD stays valid for waiters; the rest is reused.
+        std::lock_guard lock(threadMutex);
+        threadsByKthread.erase(tlsThread->kthread);
+    }
+    recycleThreadState(*tlsThread);
     tlsThread.reset();
     return 0;
 }

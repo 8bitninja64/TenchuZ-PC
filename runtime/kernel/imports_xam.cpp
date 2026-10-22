@@ -249,8 +249,8 @@ PPC_FUNC(__imp__XamContentCreate) {
         if (dispositionPtr) store32(dispositionPtr, disposition);
         if (licensePtr) store32(licensePtr, 0);
     }
-    TZ_TRACE("xam", "[xam] XamContentCreate %s type %08X '%s' mode %u -> %u", root.c_str(), contentType,
-             contentFileName(contentData).c_str(), mode, result);
+    TZ_TRACE("xam", "[xam] XamContentCreate %s device %08X type %08X '%s' flags %08X -> %u (lr %08X)", root.c_str(),
+             load32(contentData), contentType, contentFileName(contentData).c_str(), flags, result, uint32_t(ctx.lr));
     ctx.r3.u64 = complete(overlapped, result);
 }
 
@@ -263,6 +263,8 @@ PPC_FUNC(__imp__XamContentClose) {
 PPC_FUNC(__imp__XamContentCreateEnumerator) {
     // (user, deviceId, contentType, flags, maxItems, bufferSize*, handle*)
     const uint32_t deviceId = ctx.r4.u32, contentType = ctx.r5.u32, maxItems = ctx.r7.u32;
+    TZ_TRACE("xam", "[xam] XamContentCreateEnumerator device %08X type %08X flags %08X max %u", deviceId, contentType,
+             ctx.r6.u32, maxItems);
     auto enumerator = std::make_shared<EnumeratorObject>();
     enumerator->itemSize = kContentDataSize;
     std::error_code error;
@@ -300,11 +302,21 @@ PPC_FUNC(__imp__XamEnumerate) {
     }
     if (ctx.r7.u32) store32(ctx.r7.u32, returned);
     const uint32_t result = returned ? kErrorSuccess : kErrorNoMoreFiles;
+    TZ_TRACE("xam", "[xam] XamEnumerate handle %08X flags %08X size %X -> %u items, result %u, itemsPtr %08X overlapped %08X",
+             ctx.r3.u32, ctx.r4.u32, ctx.r6.u32, returned, result, ctx.r7.u32, ctx.r8.u32);
     ctx.r3.u64 = complete(ctx.r8.u32, result, returned);
 }
 
 PPC_FUNC(__imp__XamContentGetCreator) {
-    // (user, contentData*, isCreator*, xuid*, overlapped)
+    // (user, contentData*, isCreator*, xuid*, overlapped). Games use this to test
+    // whether a package exists, so missing content must fail.
+    const uint32_t contentData = ctx.r4.u32;
+    const auto folder = contentRoot(load32(contentData + 4)) / std::filesystem::u8path(contentFileName(contentData));
+    if (!std::filesystem::is_directory(folder)) {
+        TZ_TRACE("xam", "[xam] XamContentGetCreator '%s': not found", contentFileName(contentData).c_str());
+        ctx.r3.u64 = complete(ctx.r7.u32, kErrorPathNotFound);
+        return;
+    }
     if (ctx.r5.u32) store32(ctx.r5.u32, 1);
     if (ctx.r6.u32) store64(ctx.r6.u32, kXuid);
     ctx.r3.u64 = complete(ctx.r7.u32, kErrorSuccess);
@@ -312,6 +324,7 @@ PPC_FUNC(__imp__XamContentGetCreator) {
 
 PPC_FUNC(__imp__XamContentGetDeviceData) {
     // (deviceId, XDEVICE_DATA*): id, type, total u64, free u64, name[28]
+    TZ_TRACE("xam", "[xam] XamContentGetDeviceData %08X", ctx.r3.u32);
     if (ctx.r3.u32 != kHardDrive) { ctx.r3.u64 = kErrorDeviceNotConnected; return; }
     const uint32_t data = ctx.r4.u32;
     std::memset(memory->host(data), 0, 0x50);
@@ -326,6 +339,7 @@ PPC_FUNC(__imp__XamContentGetDeviceData) {
 PPC_FUNC(__imp__XamContentGetDeviceState) {
     // (deviceId, overlapped)
     const uint32_t result = ctx.r3.u32 == kHardDrive ? kErrorSuccess : kErrorDeviceNotConnected;
+    TZ_TRACE("xam", "[xam] XamContentGetDeviceState %08X -> %u", ctx.r3.u32, result);
     ctx.r3.u64 = complete(ctx.r4.u32, result);
 }
 
@@ -335,6 +349,7 @@ PPC_FUNC(__imp__XamContentSetThumbnail) { ctx.r3.u64 = complete(ctx.r6.u32, kErr
 
 PPC_FUNC(__imp__XamShowDeviceSelectorUI) {
     // (user, contentType, flags, totalRequested u64, deviceId*, overlapped)
+    TZ_TRACE("xam", "[xam] XamShowDeviceSelectorUI user %u type %08X flags %08X", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     store32(ctx.r7.u32, kHardDrive);
     ctx.r3.u64 = complete(ctx.r8.u32, kErrorSuccess);
 }
