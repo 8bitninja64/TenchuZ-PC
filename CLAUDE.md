@@ -48,7 +48,35 @@ Original code following Darkness's architecture (not copied files).
 (or `all`), `TENCHU_EXIT_AFTER_FRAMES=N` for automated runs.
 Build: `cmake -S . -B build/native -G "Visual Studio 17 2022" -A x64 -T ClangCL`.
 
+## Status (2026-10-23)
+- Boots through logo/opening (movies skipped in runtime/movie), title screen and
+  into character creation at a steady 30 fps under the null GPU. Use
+  `TENCHU_INPUT_SCRIPT` to press buttons.
+- Fixed along the way (see git log): XAPI heap needs MEM_LARGE_PAGES 64 KiB commit
+  rounding; eieio stores are ordinary memory unless in MMIO ranges; scratch
+  registers are 0x1DC/0x1DD; INTERRUPT dispatches per CPU in its mask with the PCR
+  processor number set; predicated type-3 packets (header bit 0) depend on bin
+  mask/select.
+
+## D3D facts (device at *VdGlobalDevice = 0x40001600)
+- Present = sub_8241BDE0 (park GPU on SCRATCH1 + vsync callback 8241BD50) then
+  sub_8241BF50. Interrupt handler 82425D88. Kick-off thread 82431D28 runs recorded
+  command lists (interpreter 824318A8) handed over through interrupts.
+- Kick (ring IB submission) sub_824262B8; resolve-like sub_8241CC58.
+- Fence/status block *(dev+10768) = physical 0xB000 (+0 fence, +4 consumed CB ptr).
+- FXO files are a custom effect format (magic A3D70141), no XDK shader containers.
+
+## Renderer plan
+Command-stream renderer on D3D11 (Darkness uses D3D11): the null GPU's command
+processor already parses everything. Translate Xenos microcode (from IM_LOAD /
+IM_LOAD_IMMEDIATE) to SM5 HLSL using register state for constants, vertex fetch
+via raw buffers in the shader, EDRAM targets as host render targets, resolves as
+host copies (enables resolution scaling). Movies: Media Foundation in the
+sub_82296FF8 hook.
+
 ## Next steps
-1. Keep booting past the first frames with the null renderer (fix crashes/stalls).
-2. Graphics: identify XDK D3D functions (signatures/Ghidra), hook them, translate
-   Xenos shader microcode (from the FXO effects) to HLSL.
+1. Shader capture + Xenos microcode disassembler/translator.
+2. Window, D3D11 device, present on VdSwap.
+3. Draw path: vertex/index fetch, render state, textures (untiling, formats),
+   EDRAM render targets and resolves.
+4. Audio (XAudio render client -> XAudio2, XMA via FFmpeg as Darkness does), movies.
