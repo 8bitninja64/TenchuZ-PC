@@ -15,8 +15,9 @@ public:
     ID3D11Device* device() const { return device_; }
     ID3D11DeviceContext* context() const { return context_; }
 
-    // Shows a frame. `source` is the front buffer contents when available.
-    void present(ID3D11ShaderResourceView* source);
+    // Shows a frame. `source` is the front buffer contents when available;
+    // `swapRedBlue` is set when it was resolved with red and blue exchanged.
+    void present(ID3D11ShaderResourceView* source, bool swapRedBlue = false);
 
 private:
     void resizeIfNeeded();
@@ -28,6 +29,7 @@ private:
     ID3D11RenderTargetView* backBufferView_ = nullptr;
     ID3D11VertexShader* blitVertexShader_ = nullptr;
     ID3D11PixelShader* blitPixelShader_ = nullptr;
+    ID3D11PixelShader* blitSwappedPixelShader_ = nullptr;
     ID3D11SamplerState* linearSampler_ = nullptr;
     HWND window_ = nullptr;
     UINT width_ = 0, height_ = 0;

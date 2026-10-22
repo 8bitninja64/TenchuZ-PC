@@ -24,6 +24,7 @@ Output vs(uint id : SV_VertexID) {
     return o;
 }
 float4 ps(Output i) : SV_Target { return float4(source.Sample(linearSampler, i.uv).rgb, 1.0); }
+float4 psSwapped(Output i) : SV_Target { return float4(source.Sample(linearSampler, i.uv).bgr, 1.0); }
 )";
 
 template <typename T> void release(T*& object) {
@@ -81,7 +82,10 @@ bool D3D11Renderer::initialize(HWND target) {
     }
     ID3DBlob* vs = compile(kBlitShader, "vs", "vs_5_0");
     ID3DBlob* ps = compile(kBlitShader, "ps", "ps_5_0");
-    if (!vs || !ps) return false;
+    ID3DBlob* swapped = compile(kBlitShader, "psSwapped", "ps_5_0");
+    if (!vs || !ps || !swapped) return false;
+    device_->CreatePixelShader(swapped->GetBufferPointer(), swapped->GetBufferSize(), nullptr, &blitSwappedPixelShader_);
+    release(swapped);
     device_->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &blitVertexShader_);
     device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &blitPixelShader_);
     release(vs);
@@ -110,7 +114,7 @@ void D3D11Renderer::resizeIfNeeded() {
     height_ = height;
 }
 
-void D3D11Renderer::present(ID3D11ShaderResourceView* source) {
+void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue) {
     resizeIfNeeded();
     ++frame_;
     if (source) {
@@ -126,7 +130,7 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source) {
         context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context_->IASetInputLayout(nullptr);
         context_->VSSetShader(blitVertexShader_, nullptr, 0);
-        context_->PSSetShader(blitPixelShader_, nullptr, 0);
+        context_->PSSetShader(swapRedBlue ? blitSwappedPixelShader_ : blitPixelShader_, nullptr, 0);
         context_->PSSetShaderResources(0, 1, &source);
         context_->PSSetSamplers(0, 1, &linearSampler_);
         context_->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);

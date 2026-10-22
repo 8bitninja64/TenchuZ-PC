@@ -49,9 +49,18 @@ std::string maskText(uint32_t mask) {
     return text;
 }
 
-std::string sourceText(const AluInstruction& alu, int source, bool scalar) {
+std::string sourceText(const AluInstruction& alu, int source, bool scalar, int* constantOrdinal = nullptr) {
     const uint32_t reg = alu.sourceRegister(source);
     std::string text = alu.negate(source) ? "-" : "";
+    if (!alu.sourceIsTemp(source) && constantOrdinal) {
+        const bool relative = (*constantOrdinal)++ == 0 ? alu.const0RelAbs() : alu.const1RelAbs();
+        if (relative) {
+            text += std::string("c[") + std::to_string(reg) + (alu.addressAbsolute() ? "+a0]" : "+aL]");
+            const uint32_t swizzle = alu.swizzle(source);
+            return text + (scalar ? std::string(".") + "xyzw"[((swizzle >> 6) + 3) & 3] + "xyzw"[swizzle & 3]
+                                  : swizzleText(swizzle, 4));
+        }
+    }
     if (alu.sourceIsTemp(source)) {
         text += (reg & 0x80 ? "|r" : "r") + std::to_string(reg & 0x3F) + (reg & 0x40 ? "[aL]" : "") +
                 (reg & 0x80 ? "|" : "");
@@ -152,7 +161,8 @@ std::string disassemble(const Program& program) {
                                        (alu.vectorClamp() ? "_sat " : " ") +
                                        destText(program.type, alu.vectorDest(), alu.exportData()) +
                                        maskText(alu.vectorWriteMask());
-                    for (int s = 1; s <= vectorOperandCount(vop); ++s) text += ", " + sourceText(alu, s, false);
+                    int constants = 0;
+                    for (int s = 1; s <= vectorOperandCount(vop); ++s) text += ", " + sourceText(alu, s, false, &constants);
                     out += "      " + text + "\n";
                 }
                 if (alu.scalarWriteMask() || (uint32_t(sop) >= 27 && uint32_t(sop) <= 39)) {

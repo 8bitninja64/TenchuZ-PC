@@ -52,6 +52,20 @@ struct Interpolators { float4 position : SV_Position; float4 t[16] : TEXCOORD0; 
 float4 main(Interpolators input) : SV_Target { return float4(1, 0, 1, 1); }
 )";
 
+// Resolve copy: reads source texels with an optional red/blue swap.
+const char* kCopyShader = R"(
+Texture2D<float4> source : register(t0);
+cbuffer Copy : register(b0) { int2 sourceOrigin; int2 destOrigin; uint swap; uint3 unused; };
+float4 vs(uint id : SV_VertexID) : SV_Position {
+    float2 uv = float2((id << 1) & 2, id & 2);
+    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+float4 ps(float4 position : SV_Position) : SV_Target {
+    float4 color = source.Load(int3(int2(position.xy) - destOrigin + sourceOrigin, 0));
+    return swap ? color.bgra : color;
+}
+)";
+
 // Expands Xenos rectangle lists: three corners in, the fourth extrapolated.
 const char* kRectangleGeometryShader = R"(
 struct Interpolators { float4 position : SV_Position; float4 t[16] : TEXCOORD0; };
@@ -208,6 +222,9 @@ struct XenosBackend::Impl {
     std::unordered_map<uint64_t, CompiledShader> shaderCache;
     ID3D11GeometryShader* rectangleShader = nullptr;
     ID3D11PixelShader* flatShader = nullptr;
+    ID3D11VertexShader* copyVertexShader = nullptr;
+    ID3D11PixelShader* copyPixelShader = nullptr;
+    ID3D11Buffer* copyConstants = nullptr;
 
     CompiledShader* shader(uint64_t hash, xenos::ShaderType type) {
         auto [it, inserted] = shaderCache.try_emplace(hash);
@@ -289,17 +306,39 @@ struct XenosBackend::Impl {
     }
 
     // ---- Resolved textures (guest memory written by EDRAM copies) ------------------
+    // A resolve destination is a whole tiled texture (RB_COPY_DEST_PITCH gives its
+    // pitch and height); tiled resolves land at offsets inside it.
     struct ResolvedTexture {
         ID3D11Texture2D* texture = nullptr;
         ID3D11ShaderResourceView* view = nullptr;
         UINT width = 0, height = 0;
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        uint32_t guestSize = 0;  // bytes covered in guest memory (tiled, 4 bytes per pixel)
+        ID3D11RenderTargetView* target = nullptr;
+        bool swapped = false;    // red and blue exchanged (RB_COPY_DEST_INFO bit 24)
     };
-    std::map<uint32_t, ResolvedTexture> resolved;  // by physical address
+    std::map<uint32_t, ResolvedTexture> resolved;  // by physical base address
+
+    // The resolved texture covering an address, and the pixel offset of that address.
+    ResolvedTexture* containingResolved(uint32_t address, uint32_t& baseAddress, UINT& x, UINT& y) {
+        auto it = resolved.upper_bound(address);
+        if (it == resolved.begin()) return nullptr;
+        --it;
+        if (!it->second.texture || address >= it->first + it->second.guestSize) return nullptr;
+        // 32x32 macro tiles of 4 KiB, row-major across the 32-aligned width.
+        const uint32_t macroTile = (address - it->first) / 4096;
+        const uint32_t macroPerRow = (it->second.width + 31) / 32;
+        x = (macroTile % macroPerRow) * 32;
+        y = (macroTile / macroPerRow) * 32;
+        baseAddress = it->first;
+        return &it->second;
+    }
 
     ResolvedTexture* resolvedTexture(uint32_t address, UINT width, UINT height, DXGI_FORMAT format) {
         auto& entry = resolved[address];
+        entry.guestSize = ((width + 31) & ~31u) * ((height + 31) & ~31u) * 4;
         if (entry.texture && (entry.width != width || entry.height != height || entry.format != format)) {
+            release(entry.target);
             release(entry.view);
             release(entry.texture);
         }
@@ -312,9 +351,10 @@ struct XenosBackend::Impl {
             desc.Format = format;
             desc.SampleDesc.Count = 1;
             desc.Usage = D3D11_USAGE_DEFAULT;
-            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
             if (FAILED(device->CreateTexture2D(&desc, nullptr, &entry.texture))) return nullptr;
             device->CreateShaderResourceView(entry.texture, nullptr, &entry.view);
+            device->CreateRenderTargetView(entry.texture, nullptr, &entry.target);
             entry.width = width;
             entry.height = height;
             entry.format = format;
@@ -388,7 +428,8 @@ struct XenosBackend::Impl {
         if (state) return state;
         D3D11_RASTERIZER_DESC desc{};
         desc.FillMode = D3D11_FILL_SOLID;
-        const bool cullFront = key & 1, cullBack = key & 2;
+        static const bool noCull = traceEnabled("nocull");
+        const bool cullFront = !noCull && (key & 1), cullBack = !noCull && (key & 2);
         desc.CullMode = cullFront && !cullBack ? D3D11_CULL_FRONT : cullBack && !cullFront ? D3D11_CULL_BACK
                                                                                            : D3D11_CULL_NONE;
         // Face bit 2: 0 = counter-clockwise front faces. The host y flip keeps winding.
@@ -442,6 +483,17 @@ struct XenosBackend::Impl {
             device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &flatShader);
         release(code);
         release(errors);
+        if (SUCCEEDED(D3DCompile(kCopyShader, strlen(kCopyShader), "copy", nullptr, nullptr, "vs", "vs_5_0", 0, 0, &code,
+                                 &errors)))
+            device->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &copyVertexShader);
+        release(code);
+        release(errors);
+        if (SUCCEEDED(D3DCompile(kCopyShader, strlen(kCopyShader), "copy", nullptr, nullptr, "ps", "ps_5_0", 0, 0, &code,
+                                 &errors)))
+            device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &copyPixelShader);
+        release(code);
+        release(errors);
+        copyConstants = createConstantBuffer(32);
 
         const uint32_t white = 0xFFFFFFFF;
         D3D11_TEXTURE2D_DESC texture{};
@@ -545,9 +597,13 @@ struct XenosBackend::Impl {
             states[slot] = textures.sampler(fetch);
             auto it = resolved.find(fetch.baseAddress() & 0x1FFFFFFF);
             if (it != resolved.end() && it->second.view) {
+                if (traceFrame()) logf("[draw]   texture %u uses resolved %08X", uint32_t(slot), it->first);
                 views[slot] = it->second.view;
                 continue;
             }
+            if (traceFrame())
+                logf("[draw]   texture %u at %08X format %u %ux%u", uint32_t(slot), fetch.baseAddress(), fetch.format(),
+                     fetch.width(), fetch.height());
             if (auto* view = textures.view(fetch)) views[slot] = view;
         }
     }
@@ -675,8 +731,17 @@ struct XenosBackend::Impl {
         const D3D11_VIEWPORT viewport{0, 0, width, height, 0, 1};
         context->RSSetViewports(1, &viewport);
         const uint32_t scissorTl = reg(reg::PA_SC_WINDOW_SCISSOR_TL), scissorBr = reg(reg::PA_SC_WINDOW_SCISSOR_BR);
-        const D3D11_RECT scissor{LONG(scissorTl & 0x7FFF), LONG((scissorTl >> 16) & 0x7FFF),
-                                 LONG(scissorBr & 0x7FFF), LONG((scissorBr >> 16) & 0x7FFF)};
+        D3D11_RECT scissor{LONG(scissorTl & 0x7FFF), LONG((scissorTl >> 16) & 0x7FFF),
+                           LONG(scissorBr & 0x7FFF), LONG((scissorBr >> 16) & 0x7FFF)};
+        // The window offset moves the scissor too unless bit 31 disables it.
+        if (!(scissorTl >> 31)) {
+            const uint32_t windowOffset = reg(reg::PA_SC_WINDOW_OFFSET);
+            const LONG dx = int32_t(windowOffset << 17) >> 17, dy = int32_t(windowOffset << 1) >> 17;
+            scissor.left = (std::max)(0L, scissor.left + dx);
+            scissor.right = (std::max)(0L, scissor.right + dx);
+            scissor.top = (std::max)(0L, scissor.top + dy);
+            scissor.bottom = (std::max)(0L, scissor.bottom + dy);
+        }
         context->RSSetScissorRects(1, &scissor);
         context->RSSetState(rasterState(reg(reg::PA_SU_SC_MODE_CNTL), (reg(reg::PA_CL_CLIP_CNTL) >> 16) & 1));
         const uint32_t blendControl[4] = {reg(reg::RB_BLENDCONTROL0), reg(reg::RB_BLENDCONTROL1),
@@ -685,7 +750,8 @@ struct XenosBackend::Impl {
                                      asFloat(reg(reg::RB_BLEND_RED + 2)), asFloat(reg(reg::RB_BLEND_RED + 3))};
         context->OMSetBlendState(blendState(blendControl, colorMask), blendColor, 0xFFFFFFFF);
         const uint32_t stencil = reg(reg::RB_STENCILREFMASK);
-        context->OMSetDepthStencilState(depthState(depthControl, stencil), stencil & 0xFF);
+        static const bool noDepth = traceEnabled("nodepth");
+        context->OMSetDepthStencilState(depthState(noDepth ? 0 : depthControl, stencil), stencil & 0xFF);
 
         context->IASetInputLayout(nullptr);
         context->IASetPrimitiveTopology(topology);
@@ -699,7 +765,13 @@ struct XenosBackend::Impl {
         }
         context->GSSetShader(rectangles ? rectangleShader : nullptr, nullptr, 0);
         if (ps) {
-            static const bool flat = traceEnabled("flat");
+            // TENCHU_FLAT_PRIM=<type> limits the magenta override to one primitive type.
+            static const int flatPrimitive = [] {
+                char value[16]{};
+                return GetEnvironmentVariableA("TENCHU_FLAT_PRIM", value, sizeof(value)) ? atoi(value) : -1;
+            }();
+            static const bool flatAll = traceEnabled("flat");
+            const bool flat = flatAll || int(primitive) == flatPrimitive;
             context->PSSetShader(flat ? flatShader : ps->pixel, nullptr, 0);
             ID3D11Buffer* psBuffers[2] = {pixelConstants, sharedConstants};
             context->PSSetConstantBuffers(0, 2, psBuffers);
@@ -717,8 +789,25 @@ struct XenosBackend::Impl {
                  reg(reg::RB_SURFACE_INFO), reg(reg::RB_COLOR_INFO), reg(reg::RB_DEPTH_INFO), depthControl, colorMask,
                  reg(reg::PA_SU_SC_MODE_CNTL), reg(reg::PA_CL_CLIP_CNTL), vte, scale[0], scale[1], scale[2], offset[0], offset[1], offset[2], scissor.left, scissor.top,
                  scissor.right, scissor.bottom, firstTarget->width, firstTarget->height);
+            logf("[draw]   window offset %08X scissor tl %08X br %08X blend %08X colorcontrol %08X alpharef %08X",
+                 reg(reg::PA_SC_WINDOW_OFFSET), scissorTl, scissorBr, reg(reg::RB_BLENDCONTROL0),
+                 reg(reg::RB_COLORCONTROL), reg(reg::RB_ALPHA_REF));
+        }
+        ID3D11Query* statistics = nullptr;
+        if (traceFrame()) {
+            const D3D11_QUERY_DESC query{D3D11_QUERY_PIPELINE_STATISTICS, 0};
+            device->CreateQuery(&query, &statistics);
+            context->Begin(statistics);
         }
         context->Draw(UINT(indices.size()), 0);
+        if (statistics) {
+            context->End(statistics);
+            D3D11_QUERY_DATA_PIPELINE_STATISTICS data{};
+            while (context->GetData(statistics, &data, sizeof(data), 0) == S_FALSE) {}
+            logf("[draw]   stats: vs %llu, clipper in %llu out %llu, ps %llu", data.VSInvocations, data.CInvocations,
+                 data.CPrimitives, data.PSInvocations);
+            release(statistics);
+        }
         ++draws;
     }
     uint64_t draws = 0;
@@ -767,33 +856,81 @@ struct XenosBackend::Impl {
             const uint32_t info = reg(infoRegisters[sourceSelect]);
             source = renderTarget(info & 0xFFF, pitch, (info >> 16) & 0xF, samples, false);
         }
-        TZ_TRACE("resolve", "[d3d11] resolve src %u rect %ld,%ld-%ld,%ld -> %08X cmd %u clear %d%d", sourceSelect,
-                 rect.left, rect.top, rect.right, rect.bottom, reg(reg::RB_COPY_DEST_BASE), command, clearColor,
-                 clearDepth);
+        TZ_TRACE("resolve", "[d3d11] resolve src %u rect %ld,%ld-%ld,%ld -> %08X pitch %08X info %08X cmd %u clear %d%d",
+                 sourceSelect, rect.left, rect.top, rect.right, rect.bottom, reg(reg::RB_COPY_DEST_BASE),
+                 reg(reg::RB_COPY_DEST_PITCH), reg(reg::RB_COPY_DEST_INFO), command, clearColor, clearDepth);
 
         if (source && command != 3 && rect.right > rect.left && rect.bottom > rect.top) {
             rect.right = (std::min)(LONG(source->width), rect.right);
             rect.bottom = (std::min)(LONG(source->height), rect.bottom);
-            const UINT width = UINT(rect.right - rect.left), height = UINT(rect.bottom - rect.top);
             const uint32_t destination = reg(reg::RB_COPY_DEST_BASE) & 0x1FFFFFFF;
-            textures.invalidate(destination);
-            if (auto* target = resolvedTexture(destination, width, height, source->format)) {
-                const D3D11_BOX box{UINT(rect.left), UINT(rect.top), 0, UINT(rect.right), UINT(rect.bottom), 1};
+            const uint32_t destPitch = reg(reg::RB_COPY_DEST_PITCH);
+            const UINT destWidth = (std::max)(1u, destPitch & 0x3FFF), destHeight = (std::max)(1u, (destPitch >> 16) & 0x3FFF);
+            uint32_t base = destination;
+            UINT destX = 0, destY = 0;
+            ResolvedTexture* target = containingResolved(destination, base, destX, destY);
+            if (target && (target->width != destWidth || target->height != destHeight || target->format != source->format)) {
+                // A different texture now lives here.
+                if (base != destination) target = nullptr;
+                destX = destY = 0;
+                base = destination;
+            }
+            if (!target || base == destination) {
+                target = resolvedTexture(destination, destWidth, destHeight, source->format);
+                destX = destY = 0;
+            }
+            textures.invalidate(base);
+            TZ_TRACE("resolve", "[d3d11]   into %08X at %u,%u (%ux%u)", base, destX, destY, target ? target->width : 0,
+                     target ? target->height : 0);
+            if (target) {
+                // Clip the copy to the destination texture.
+                rect.right = (std::min)(rect.right, LONG(rect.left + (target->width - (std::min)(destX, target->width))));
+                rect.bottom = (std::min)(rect.bottom, LONG(rect.top + (target->height - (std::min)(destY, target->height))));
+                // Multisampled targets are averaged first; the copy shader then
+                // places the rectangle and applies the red/blue swap.
+                ID3D11Texture2D* single = nullptr;
+                ID3D11Texture2D* copySource = source->texture;
                 if (source->samples > 1) {
-                    // Resolve the whole target, then copy the rectangle.
                     D3D11_TEXTURE2D_DESC desc{};
                     source->texture->GetDesc(&desc);
                     desc.SampleDesc.Count = 1;
-                    desc.BindFlags = 0;
-                    ID3D11Texture2D* single = nullptr;
-                    if (SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &single))) {
-                        context->ResolveSubresource(single, 0, source->texture, 0, source->format);
-                        context->CopySubresourceRegion(target->texture, 0, 0, 0, 0, single, 0, &box);
-                        release(single);
-                    }
-                } else {
-                    context->CopySubresourceRegion(target->texture, 0, 0, 0, 0, source->texture, 0, &box);
+                    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                    if (FAILED(device->CreateTexture2D(&desc, nullptr, &single))) return;
+                    context->ResolveSubresource(single, 0, source->texture, 0, source->format);
+                    copySource = single;
                 }
+                ID3D11ShaderResourceView* sourceView = nullptr;
+                device->CreateShaderResourceView(copySource, nullptr, &sourceView);
+                const bool swap = (reg(reg::RB_COPY_DEST_INFO) >> 24) & 1;
+                const int32_t constants[8] = {int32_t(rect.left), int32_t(rect.top), int32_t(destX), int32_t(destY),
+                                              swap ? 1 : 0, 0, 0, 0};
+                writeBuffer(copyConstants, constants, sizeof(constants));
+                context->OMSetRenderTargets(1, &target->target, nullptr);
+                const D3D11_VIEWPORT viewport{float(destX), float(destY), float(rect.right - rect.left),
+                                              float(rect.bottom - rect.top), 0, 1};
+                context->RSSetViewports(1, &viewport);
+                context->RSSetState(nullptr);
+                context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+                context->OMSetDepthStencilState(nullptr, 0);
+                context->IASetInputLayout(nullptr);
+                context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                context->VSSetShader(copyVertexShader, nullptr, 0);
+                context->GSSetShader(nullptr, nullptr, 0);
+                context->PSSetShader(copyPixelShader, nullptr, 0);
+                context->PSSetShaderResources(0, 1, &sourceView);
+                context->PSSetConstantBuffers(0, 1, &copyConstants);
+                context->Draw(3, 0);
+                ID3D11ShaderResourceView* none = nullptr;
+                context->PSSetShaderResources(0, 1, &none);
+                target->swapped = swap;
+                if (traceFrame() && traceEnabled("dumpresolved") && single) {
+                    CreateDirectoryA("build/resolved", nullptr);
+                    char path[96];
+                    snprintf(path, sizeof(path), "build/resolved/source_%08X.bmp", destination);
+                    saveTexture(single, path);
+                }
+                release(sourceView);
+                release(single);
             }
         }
         if (clearColor && source) {
@@ -819,11 +956,65 @@ struct XenosBackend::Impl {
         }
     }
 
+    // Saves an RGBA8 texture as a 32-bit BMP (debugging).
+    void saveTexture(ID3D11Texture2D* texture, const char* path) {
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM || desc.SampleDesc.Count != 1) return;
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        desc.MiscFlags = 0;
+        ID3D11Texture2D* staging = nullptr;
+        if (FAILED(device->CreateTexture2D(&desc, nullptr, &staging))) return;
+        context->CopyResource(staging, texture);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+            BITMAPFILEHEADER file{};
+            BITMAPINFOHEADER info{};
+            info.biSize = sizeof(info);
+            info.biWidth = LONG(desc.Width);
+            info.biHeight = LONG(desc.Height);
+            info.biPlanes = 1;
+            info.biBitCount = 32;
+            file.bfType = 0x4D42;
+            file.bfOffBits = sizeof(file) + sizeof(info);
+            file.bfSize = file.bfOffBits + desc.Width * desc.Height * 4;
+            if (FILE* out = fopen(path, "wb")) {
+                fwrite(&file, sizeof(file), 1, out);
+                fwrite(&info, sizeof(info), 1, out);
+                std::vector<uint8_t> row(desc.Width * 4);
+                for (UINT y = desc.Height; y-- > 0;) {
+                    const uint8_t* source = static_cast<const uint8_t*>(mapped.pData) + size_t(y) * mapped.RowPitch;
+                    for (UINT x = 0; x < desc.Width; ++x) {
+                        row[x * 4 + 0] = source[x * 4 + 2];
+                        row[x * 4 + 1] = source[x * 4 + 1];
+                        row[x * 4 + 2] = source[x * 4 + 0];
+                        row[x * 4 + 3] = source[x * 4 + 3];
+                    }
+                    fwrite(row.data(), 1, row.size(), out);
+                }
+                fclose(out);
+            }
+            context->Unmap(staging, 0);
+        }
+        release(staging);
+    }
+
     // ---- Swap ---------------------------------------------------------------------
     void swap(uint32_t frontBuffer) {
         auto it = resolved.find(frontBuffer & 0x1FFFFFFF);
         if (it == resolved.end()) it = resolved.find(Memory::physicalAddress(frontBuffer));
-        renderer.present(it != resolved.end() ? it->second.view : nullptr);
+        if (traceFrame() && traceEnabled("dumpresolved")) {
+            CreateDirectoryA("build/resolved", nullptr);
+            for (const auto& [address, entry] : resolved) {
+                char path[96];
+                snprintf(path, sizeof(path), "build/resolved/%08X_%ux%u.bmp", address, entry.width, entry.height);
+                if (entry.texture) saveTexture(entry.texture, path);
+            }
+        }
+        renderer.present(it != resolved.end() ? it->second.view : nullptr,
+                         it != resolved.end() && it->second.swapped);
         TZ_TRACE("swap", "[d3d11] swap %08X (%s), %llu draws", frontBuffer,
                  it != resolved.end() ? "resolved" : "missing", (unsigned long long)draws);
         draws = 0;
