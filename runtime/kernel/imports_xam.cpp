@@ -3,6 +3,7 @@
 #include "kernel.h"
 #include "filesystem.h"
 #include "ppc_recomp_shared.h"
+#include <chrono>
 #include <fstream>
 #include <xinput.h>
 
@@ -401,10 +402,78 @@ PPC_FUNC(__imp__XNotifyGetNext) {
 // ---- Input -------------------------------------------------------------------------------
 // XINPUT_STATE { packet; buttons u16; triggers u8 x2; thumbs s16 x4 }
 
+namespace {
+// TENCHU_INPUT_SCRIPT="ms:buttons,..." drives controller 0 for automated runs.
+// Buttons are '+'-separated names; '-' releases everything.
+struct ScriptedInput {
+    std::vector<std::pair<uint32_t, uint16_t>> steps;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    bool active = false;
+};
+
+uint16_t buttonMask(const std::string& name) {
+    static const std::pair<const char*, uint16_t> buttons[] = {
+        {"up", 0x0001}, {"down", 0x0002}, {"left", 0x0004}, {"right", 0x0008}, {"start", 0x0010},
+        {"back", 0x0020}, {"ls", 0x0040}, {"rs", 0x0080}, {"lb", 0x0100}, {"rb", 0x0200},
+        {"a", 0x1000}, {"b", 0x2000}, {"x", 0x4000}, {"y", 0x8000}};
+    for (const auto& [label, mask] : buttons)
+        if (name == label) return mask;
+    return 0;
+}
+
+ScriptedInput& scriptedInput() {
+    static ScriptedInput script = [] {
+        ScriptedInput result;
+        char text[4096]{};
+        if (!GetEnvironmentVariableA("TENCHU_INPUT_SCRIPT", text, sizeof(text))) return result;
+        std::string spec = text;
+        size_t position = 0;
+        while (position < spec.size()) {
+            size_t end = spec.find(',', position);
+            if (end == std::string::npos) end = spec.size();
+            const std::string step = spec.substr(position, end - position);
+            const size_t colon = step.find(':');
+            if (colon != std::string::npos) {
+                uint16_t mask = 0;
+                std::string names = step.substr(colon + 1);
+                size_t at = 0;
+                while (at <= names.size()) {
+                    size_t plus = names.find('+', at);
+                    if (plus == std::string::npos) plus = names.size();
+                    mask |= buttonMask(names.substr(at, plus - at));
+                    at = plus + 1;
+                }
+                result.steps.emplace_back(uint32_t(std::stoul(step.substr(0, colon))), mask);
+            }
+            position = end + 1;
+        }
+        result.active = !result.steps.empty();
+        return result;
+    }();
+    return script;
+}
+
+uint16_t scriptedButtons() {
+    auto& script = scriptedInput();
+    const auto elapsed = uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      std::chrono::steady_clock::now() - script.start).count());
+    uint16_t buttons = 0;
+    for (const auto& [time, mask] : script.steps)
+        if (time <= elapsed) buttons = mask;
+    return buttons;
+}
+}  // namespace
+
 PPC_FUNC(__imp__XamInputGetState) {
     // (user, flags, state*)
     XINPUT_STATE state{};
-    if (ctx.r3.u32 >= 4 || XInputGetState(ctx.r3.u32, &state) != ERROR_SUCCESS) {
+    const bool scripted = ctx.r3.u32 == 0 && scriptedInput().active;
+    TZ_TRACE("input", "[input] XamInputGetState user %u flags %X lr %08X", ctx.r3.u32, ctx.r4.u32, uint32_t(ctx.lr));
+    if (scripted) {
+        static std::atomic<uint32_t> packet{0};
+        state.Gamepad.wButtons = scriptedButtons();
+        state.dwPacketNumber = ++packet;
+    } else if (ctx.r3.u32 >= 4 || XInputGetState(ctx.r3.u32, &state) != ERROR_SUCCESS) {
         ctx.r3.u64 = kErrorDeviceNotConnected;
         return;
     }
