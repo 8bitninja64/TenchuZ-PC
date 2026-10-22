@@ -362,10 +362,35 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         break;
     }
     case 0x22:  // DRAW_INDX
-    case 0x36:  // DRAW_INDX_2
-        ++gs.draws;
+    case 0x36: {  // DRAW_INDX_2
+        const uint64_t draw = ++gs.draws;
+        // TENCHU_REGDUMP=<first>,<count> prints register state at those draws.
+        static const std::pair<uint64_t, uint64_t> dumpRange = [] {
+            char value[64]{};
+            if (!GetEnvironmentVariableA("TENCHU_REGDUMP", value, sizeof(value))) return std::pair<uint64_t, uint64_t>{0, 0};
+            uint64_t first = 0, number = 1;
+            sscanf_s(value, "%llu,%llu", &first, &number);
+            return std::pair<uint64_t, uint64_t>{first, number};
+        }();
+        if (dumpRange.first && draw >= dumpRange.first && draw < dumpRange.first + dumpRange.second) {
+            std::string words;
+            char cell[16];
+            for (uint32_t i = 0; i < count && i < 8; ++i) {
+                snprintf(cell, sizeof(cell), " %08X", load32(packetAddress + 4 + i * 4));
+                words += cell;
+            }
+            logf("[regdump] draw %llu opcode %02X:%s  vs %016llX ps %016llX", (unsigned long long)draw, opcode,
+                 words.c_str(), (unsigned long long)shaders.current[0], (unsigned long long)shaders.current[1]);
+            for (uint32_t index = 0x2000; index < 0x2400; ++index)
+                if (const uint32_t value = gs.registers[index]) logf("[regdump]   %04X = %08X", index, value);
+            for (uint32_t index = 0x4800; index < 0x4800 + 192; index += 2)
+                if (gs.registers[index] | gs.registers[index + 1])
+                    logf("[regdump]   fetch %u (%04X) = %08X %08X", (index - 0x4800) / 2, index,
+                         gs.registers[index].load(), gs.registers[index + 1].load());
+        }
         reader.skip(count);
         break;
+    }
     default:
         TZ_TRACE("cp", "[cp] type3 opcode %02X count %u", opcode, count);
         reader.skip(count);

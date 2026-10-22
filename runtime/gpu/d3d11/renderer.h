@@ -20,6 +20,8 @@ public:
 
 private:
     void resizeIfNeeded();
+    // TENCHU_SCREENSHOTS=<dir>,<every N frames> saves presented frames as BMP.
+    void captureIfRequested();
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;
     IDXGISwapChain1* swapChain_ = nullptr;
