@@ -1,5 +1,6 @@
 #include "xenos_backend.h"
 #include "gpu/registers.h"
+#include "gpu/d3d11/texture_cache.h"
 #include "kernel/kernel.h"
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
@@ -38,6 +39,7 @@ struct SharedConstants {
     uint32_t vertexEndian[16];
     uint32_t vertexBase[16];
     float textureSize[16][4];
+    uint32_t textureSwizzle[16];
     float positionScale[4];
     float positionOffset[4];
     float alphaTest[4];
@@ -325,6 +327,7 @@ struct XenosBackend::Impl {
     std::map<std::pair<uint32_t, uint32_t>, ID3D11DepthStencilState*> depthStates;
     std::map<uint32_t, ID3D11RasterizerState*> rasterStates;
     std::map<uint32_t, ID3D11SamplerState*> samplers;
+    TextureCache textures;
     ID3D11Texture2D* whiteTexture = nullptr;
     ID3D11ShaderResourceView* whiteView = nullptr;
 
@@ -451,6 +454,7 @@ struct XenosBackend::Impl {
         D3D11_SUBRESOURCE_DATA data{&white, 4, 4};
         device->CreateTexture2D(&texture, &data, &whiteTexture);
         device->CreateShaderResourceView(whiteTexture, nullptr, &whiteView);
+        textures.initialize(device, context);
     }
 
     // ---- Indices -------------------------------------------------------------------
@@ -524,6 +528,28 @@ struct XenosBackend::Impl {
             return false;
         }
         return true;
+    }
+
+    // Views, samplers, sizes and swizzles for a shader's texture bindings.
+    void bindTextures(const xenos::ShaderInfo& info, SharedConstants& shared, std::vector<ID3D11ShaderResourceView*>& views,
+                      std::vector<ID3D11SamplerState*>& states) {
+        views.assign(info.textures.size(), whiteView);
+        states.assign(info.textures.size(), defaultSampler());
+        for (size_t slot = 0; slot < info.textures.size() && slot < 16; ++slot) {
+            TextureFetch fetch;
+            for (int i = 0; i < 6; ++i)
+                fetch.words[i] = reg(reg::SHADER_CONSTANT_FETCH_00_0 + info.textures[slot].fetchConstant * 6 + i);
+            shared.textureSwizzle[slot] = fetch.swizzle();
+            shared.textureSize[slot][0] = float(fetch.width());
+            shared.textureSize[slot][1] = float(fetch.height());
+            states[slot] = textures.sampler(fetch);
+            auto it = resolved.find(fetch.baseAddress() & 0x1FFFFFFF);
+            if (it != resolved.end() && it->second.view) {
+                views[slot] = it->second.view;
+                continue;
+            }
+            if (auto* view = textures.view(fetch)) views[slot] = view;
+        }
     }
 
     // ---- Draw ----------------------------------------------------------------------
@@ -625,7 +651,15 @@ struct XenosBackend::Impl {
         const uint32_t colorControl = reg(reg::RB_COLORCONTROL);
         shared.alphaTest[0] = (colorControl >> 3) & 1 ? float(colorControl & 7) : 7.0f;
         shared.alphaTest[1] = asFloat(reg(reg::RB_ALPHA_REF));
-        for (int i = 0; i < 16; ++i) shared.textureSize[i][0] = shared.textureSize[i][1] = shared.textureSize[i][2] = 1.0f;
+        for (int i = 0; i < 16; ++i) {
+            shared.textureSize[i][0] = shared.textureSize[i][1] = shared.textureSize[i][2] = 1.0f;
+            shared.textureSwizzle[i] = 0 | 1 << 3 | 2 << 6 | 3 << 9;
+        }
+        std::vector<ID3D11ShaderResourceView*> pixelViews, vertexViews;
+        std::vector<ID3D11SamplerState*> pixelSamplers, vertexSamplers;
+        // Vertex and pixel shaders share SharedConstants; pixel bindings win on overlap.
+        bindTextures(vs->info, shared, vertexViews, vertexSamplers);
+        if (ps) bindTextures(ps->info, shared, pixelViews, pixelSamplers);
         writeBuffer(sharedConstants, &shared, sizeof(shared));
 
         float constants[256 * 4];
@@ -659,18 +693,19 @@ struct XenosBackend::Impl {
         ID3D11Buffer* vsBuffers[2] = {vertexConstants, sharedConstants};
         context->VSSetConstantBuffers(0, 2, vsBuffers);
         context->VSSetShaderResources(0, 1, &ringView);
+        if (!vertexViews.empty()) {
+            context->VSSetShaderResources(8, UINT(vertexViews.size()), vertexViews.data());
+            context->VSSetSamplers(0, UINT(vertexSamplers.size()), vertexSamplers.data());
+        }
         context->GSSetShader(rectangles ? rectangleShader : nullptr, nullptr, 0);
         if (ps) {
             static const bool flat = traceEnabled("flat");
             context->PSSetShader(flat ? flatShader : ps->pixel, nullptr, 0);
             ID3D11Buffer* psBuffers[2] = {pixelConstants, sharedConstants};
             context->PSSetConstantBuffers(0, 2, psBuffers);
-            // Textures are not implemented yet: bind white.
-            std::vector<ID3D11ShaderResourceView*> views(ps->info.textures.size(), whiteView);
-            std::vector<ID3D11SamplerState*> states(ps->info.textures.size(), defaultSampler());
-            if (!views.empty()) {
-                context->PSSetShaderResources(0, UINT(views.size()), views.data());
-                context->PSSetSamplers(0, UINT(states.size()), states.data());
+            if (!pixelViews.empty()) {
+                context->PSSetShaderResources(0, UINT(pixelViews.size()), pixelViews.data());
+                context->PSSetSamplers(0, UINT(pixelSamplers.size()), pixelSamplers.data());
             }
         } else {
             context->PSSetShader(nullptr, nullptr, 0);
@@ -741,6 +776,7 @@ struct XenosBackend::Impl {
             rect.bottom = (std::min)(LONG(source->height), rect.bottom);
             const UINT width = UINT(rect.right - rect.left), height = UINT(rect.bottom - rect.top);
             const uint32_t destination = reg(reg::RB_COPY_DEST_BASE) & 0x1FFFFFFF;
+            textures.invalidate(destination);
             if (auto* target = resolvedTexture(destination, width, height, source->format)) {
                 const D3D11_BOX box{UINT(rect.left), UINT(rect.top), 0, UINT(rect.right), UINT(rect.bottom), 1};
                 if (source->samples > 1) {

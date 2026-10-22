@@ -15,6 +15,7 @@ cbuffer SharedConstants : register(b1) {
     uint4 g_vertexEndian[4];   // endian mode per vertex buffer binding
     uint4 g_vertexBase[4];     // byte offset of each vertex buffer binding in guestData
     float4 g_textureSize[16];  // per texture binding: width, height, depth
+    uint4 g_textureSwizzle[4]; // per texture binding: 3 bits per component (0-3 channel, 4 zero, 5 one)
     float4 g_positionScale;    // guest clip space -> host clip space: xyz scale
     float4 g_positionOffset;   // xyz offset, multiplied by w
     float4 g_alphaTest;        // x: function (0 never .. 7 always), y: reference
@@ -26,6 +27,14 @@ uint SwapEndian(uint v, uint mode) {
     if (mode == 2) return (v << 24) | ((v & 0xFF00u) << 8) | ((v >> 8) & 0xFF00u) | (v >> 24);
     if (mode == 3) return (v << 16) | (v >> 16);
     return v;
+}
+float4 ApplySwizzle(float4 v, uint swizzle) {
+    float4 result;
+    [unroll] for (uint i = 0; i < 4; ++i) {
+        uint select = (swizzle >> (i * 3)) & 7;
+        result[i] = select < 4 ? v[select] : (select == 5 ? 1.0 : 0.0);
+    }
+    return result;
 }
 bool BoolConstant(uint index) { return (g_bools[index >> 7][(index >> 5) & 3] >> (index & 31)) & 1; }
 uint LoopConstant(uint index) { return g_loops[index >> 2][index & 3]; }
@@ -516,6 +525,8 @@ struct Emitter {
             line("float4 texel = " + texture + ".Sample(" + sampler + ", " + coordinate + ");");
         else
             line("float4 texel = " + texture + ".SampleLevel(" + sampler + ", " + coordinate + ", 0.0);");
+        line("texel = ApplySwizzle(texel, g_textureSwizzle[" + std::to_string(slot / 4) + "][" +
+             std::to_string(slot % 4) + "]);");
         line(fetchDestination(fetch, "texel"));
         --indent;
         line("}");
