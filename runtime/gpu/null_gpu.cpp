@@ -58,6 +58,7 @@ uint32_t gpuSwap(uint32_t value, uint32_t endian) {
 // Command-processor memory accesses use physical addresses with the endian
 // mode in the low two bits.
 void writePhysical(uint32_t address, uint32_t value) {
+    TZ_TRACE("cp", "[cp] write %08X = %08X", address, value);
     *memory->host<uint32_t>(Memory::fromPhysical(address & ~3u)) = gpuSwap(value, address & 3);
 }
 uint32_t readPhysical(uint32_t address) {
@@ -137,6 +138,8 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         const uint32_t info = reader.read(), poll = reader.read(), reference = reader.read();
         const uint32_t mask = reader.read();
         reader.skip(count - 4);
+        TZ_TRACE("cp", "[cp] wait %s %08X == fn%u ref %08X mask %08X", info & 0x10 ? "mem" : "reg", poll, info & 7,
+                 reference, mask);
         const auto start = std::chrono::steady_clock::now();
         bool warned = false;
         for (;;) {
@@ -184,6 +187,7 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
     }
     case 0x54: {  // INTERRUPT
         reader.skip(count);
+        TZ_TRACE("cp", "[cp] interrupt");
         dispatchInterrupt(1);
         break;
     }
@@ -207,6 +211,7 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         reader.skip(count);
         break;
     default:
+        TZ_TRACE("cp", "[cp] type3 opcode %02X count %u", opcode, count);
         reader.skip(count);
         break;
     }
@@ -349,6 +354,7 @@ PPC_FUNC(__imp__VdInitializeRingBuffer) {
 
 PPC_FUNC(__imp__VdEnableRingBufferRPtrWriteBack) {
     // (physical address, log2 block size)
+    logf("[gpu] read pointer writeback %08X", ctx.r3.u32);
     std::lock_guard lock(gpu.mutex);
     gpu.rptrWriteback = ctx.r3.u32;
 }
@@ -365,7 +371,9 @@ PPC_FUNC(__imp__VdGetSystemCommandBuffer) {
     store32(ctx.r4.u32, 0xBEEF0001);
 }
 
-PPC_FUNC(__imp__VdSetSystemCommandBufferGpuIdentifierAddress) {}
+PPC_FUNC(__imp__VdSetSystemCommandBufferGpuIdentifierAddress) {
+    logf("[gpu] GPU identifier address %08X", ctx.r3.u32);
+}
 
 PPC_FUNC(__imp__VdInitializeScalerCommandBuffer) {
     // Nine arguments; the destination is the ninth. Fill it with filler packets.
@@ -378,6 +386,13 @@ PPC_FUNC(__imp__VdInitializeScalerCommandBuffer) {
 
 PPC_FUNC(__imp__VdSwap) {
     // (commandBuffer*, fetchConstant*, ..., frontBuffer, colorFormat, colorSpace, ...)
+    if (traceEnabled("swap")) {
+        logf("[gpu] VdSwap r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X s9=%08X s10=%08X",
+             ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32,
+             load32(ctx.r1.u32 + 0x54), load32(ctx.r1.u32 + 0x5C));
+        for (uint32_t r : {ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32})
+            if (r >= 0x10000) logf("[gpu]   *%08X = %08X", r, load32(r));
+    }
     // The 64-dword slot reserved in the command buffer becomes filler.
     for (uint32_t i = 0; i < 64; ++i) store32(ctx.r3.u32 + i * 4, 0x80000000);
     const uint64_t frame = ++gpu.frames;

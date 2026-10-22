@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <vector>
 
 namespace tz {
 
@@ -38,6 +39,17 @@ public:
 
     // Bump/first-fit allocators. All return 0 on failure.
     uint32_t allocateVirtual(uint32_t size, uint32_t alignment = 0x10000);
+
+    // NtAllocateVirtualMemory semantics with per-page commit state.
+    // reserveVirtual places the reservation at `requested` when nonzero.
+    uint32_t reserveVirtual(uint32_t size, uint32_t requested = 0);
+    // Commits pages inside a reservation; newly committed pages read as zero.
+    bool commitVirtual(uint32_t address, uint32_t size);
+    bool decommitVirtual(uint32_t address, uint32_t size);
+    struct RegionInfo {
+        uint32_t base, allocationBase, size, state;  // state: 0x1000 commit, 0x2000 reserve, 0x10000 free
+    };
+    RegionInfo queryVirtual(uint32_t address) const;
     uint32_t allocateStack(uint32_t size);
     uint32_t allocatePhysical(uint32_t size, uint32_t alignment, uint32_t alias,
                               uint32_t minPhysical = 0, uint32_t maxPhysical = kPhysicalSize - 1);
@@ -70,6 +82,7 @@ private:
     void* backing_ = nullptr;
     mutable std::mutex mutex_;
     std::map<uint32_t, uint32_t> virtual_;   // guest address -> size
+    std::vector<bool> committed_;            // per 4 KiB page of the virtual range
     std::map<uint32_t, uint32_t> stacks_;
     std::map<uint32_t, uint32_t> physical_;  // physical offset -> size
     std::map<uint32_t, uint32_t> physicalAliases_;  // guest address -> physical offset

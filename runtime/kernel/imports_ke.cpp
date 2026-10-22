@@ -296,42 +296,67 @@ PPC_FUNC(__imp__KeTlsSetValue) {
 // ---- Memory -------------------------------------------------------------------------
 
 PPC_FUNC(__imp__NtAllocateVirtualMemory) {
-    // (base*, size*, allocationType, protect, zeroBits)
-    const uint32_t basePtr = ctx.r3.u32, sizePtr = ctx.r4.u32;
+    // (base*, size*, allocationType, protect, zeroBits). MEM_RESERVE 0x2000,
+    // MEM_COMMIT 0x1000; the high bits select page sizes and are ignored.
+    const uint32_t basePtr = ctx.r3.u32, sizePtr = ctx.r4.u32, type = ctx.r5.u32;
     const uint32_t requested = load32(basePtr), size = load32(sizePtr);
-    uint32_t regionBase, regionSize;
-    if (requested && memory->query(requested, regionBase, regionSize)) {
-        // Commit inside an existing reservation: everything is committed already.
-        ctx.r3.u64 = kStatusSuccess;
-        return;
+    TZ_TRACE("mem", "[mem] NtAllocateVirtualMemory base=%08X size=%X type=%X protect=%X", requested, size, type,
+             ctx.r6.u32);
+    if (!size || !(type & 0x3000)) { ctx.r3.u64 = kStatusInvalidParameter; return; }
+    uint32_t address = requested;
+    const auto existing = requested ? memory->queryVirtual(requested) : Memory::RegionInfo{};
+    if (!requested || (type & 0x2000) || existing.state == 0x10000) {
+        address = memory->reserveVirtual(size, requested);
+        if (!address) { ctx.r3.u64 = kStatusNoMemory; return; }
     }
-    const uint32_t address = memory->allocateVirtual(size, 0x10000);
-    if (!address) { ctx.r3.u64 = kStatusNoMemory; return; }
+    uint32_t span = size;
+    if (type & 0x1000) {
+        // Commit whole pages covering [address, address + size). MEM_LARGE_PAGES
+        // (0x20000000) means 64 KiB pages; callers rely on the rounded size.
+        const uint32_t pageMask = type & 0x20000000 ? 0xFFFFu : 0xFFFu;
+        const uint32_t first = address & ~pageMask;
+        span = uint32_t(((uint64_t(address) + size + pageMask) & ~uint64_t(pageMask)) - first);
+        address = first;
+        if (!memory->commitVirtual(address, span)) { ctx.r3.u64 = kStatusNoMemory; return; }
+    } else {
+        span = (size + 0xFFFF) & ~0xFFFFu;
+    }
     store32(basePtr, address);
-    store32(sizePtr, (size + 0xFFFF) & ~0xFFFFu);
-    TZ_TRACE("mem", "[mem] NtAllocateVirtualMemory %X -> %08X", size, address);
+    store32(sizePtr, span);
+    TZ_TRACE("mem", "[mem]   -> %08X size %X", address, span);
     ctx.r3.u64 = kStatusSuccess;
 }
 
 PPC_FUNC(__imp__NtFreeVirtualMemory) {
-    // (base*, size*, freeType, ...). MEM_DECOMMIT leaves the region in place.
+    // (base*, size*, freeType). MEM_DECOMMIT 0x4000, MEM_RELEASE 0x8000.
     const uint32_t address = load32(ctx.r3.u32);
-    if (ctx.r5.u32 & 0x8000) memory->free(address);
-    ctx.r3.u64 = kStatusSuccess;
+    const uint32_t size = ctx.r4.u32 ? load32(ctx.r4.u32) : 0;
+    TZ_TRACE("mem", "[mem] NtFreeVirtualMemory base=%08X size=%X type=%X", address, size, ctx.r5.u32);
+    if (ctx.r5.u32 & 0x8000) {
+        ctx.r3.u64 = memory->free(address) ? kStatusSuccess : kStatusInvalidParameter;
+        return;
+    }
+    if (ctx.r5.u32 & 0x4000) {
+        auto region = memory->queryVirtual(address);
+        const uint32_t span = size ? size : region.allocationBase + memory->allocationSize(region.allocationBase) - address;
+        ctx.r3.u64 = memory->decommitVirtual(address, span) ? kStatusSuccess : kStatusInvalidParameter;
+        return;
+    }
+    ctx.r3.u64 = kStatusInvalidParameter;
 }
 
 PPC_FUNC(__imp__NtQueryVirtualMemory) {
     // (address, MEMORY_BASIC_INFORMATION*)
-    const uint32_t address = ctx.r3.u32, info = ctx.r4.u32;
-    uint32_t regionBase, regionSize;
-    const bool found = memory->query(address, regionBase, regionSize);
-    store32(info + 0, found ? regionBase : address & ~0xFFFu);
-    store32(info + 4, found ? regionBase : 0);
-    store32(info + 8, found ? 4 : 0);              // allocation protect
-    store32(info + 12, found ? regionSize : 0x1000);
-    store32(info + 16, found ? 0x1000 : 0x10000);  // MEM_COMMIT / MEM_FREE
-    store32(info + 20, found ? 4 : 1);             // PAGE_READWRITE / PAGE_NOACCESS
-    store32(info + 24, found ? 0x20000 : 0);       // MEM_PRIVATE
+    const uint32_t info = ctx.r4.u32;
+    const auto region = memory->queryVirtual(ctx.r3.u32);
+    const bool committed = region.state == 0x1000;
+    store32(info + 0, region.base);
+    store32(info + 4, region.allocationBase);
+    store32(info + 8, region.allocationBase ? 4 : 0);   // allocation protect
+    store32(info + 12, region.size);
+    store32(info + 16, region.state);
+    store32(info + 20, committed ? 4 : 0);               // PAGE_READWRITE
+    store32(info + 24, region.allocationBase ? 0x20000 : 0);  // MEM_PRIVATE
     ctx.r3.u64 = kStatusSuccess;
 }
 
@@ -350,7 +375,10 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx) {
 }
 
 PPC_FUNC(__imp__MmFreePhysicalMemory) { memory->free(ctx.r4.u32); }
-PPC_FUNC(__imp__MmGetPhysicalAddress) { ctx.r3.u64 = Memory::physicalAddress(ctx.r3.u32); }
+PPC_FUNC(__imp__MmGetPhysicalAddress) {
+    const uint32_t address = ctx.r3.u32;
+    ctx.r3.u64 = address >= 0xA0000000 ? Memory::physicalAddress(address) : address;
+}
 PPC_FUNC(__imp__MmQueryAddressProtect) { ctx.r3.u64 = 4; }  // PAGE_READWRITE
 
 PPC_FUNC(__imp__MmQueryStatistics) {

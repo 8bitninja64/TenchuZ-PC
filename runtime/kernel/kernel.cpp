@@ -604,6 +604,34 @@ void runTitle() {
     tz::fatal("guest=0x%08X: %s", address, reason);
 }
 
+void PPCTraceInvalidGuestLoad(uint32_t address, unsigned width) {
+    static std::atomic<uint32_t> count{};
+    if (count.fetch_add(1, std::memory_order_relaxed) >= 64) return;
+    auto* thread = tz::currentThread();
+    tz::logf("[mem] null load width=%u address=0x%08X in %08X lr %08X (%s)", width, address,
+             thread ? thread->context.lastFunction : 0, thread ? uint32_t(thread->context.lr) : 0,
+             thread ? thread->name.c_str() : "host");
+    if (thread && tz::traceEnabled("null")) {
+        const auto& c = thread->context;
+        tz::logf("      r3=%08X r4=%08X r5=%08X r9=%08X r10=%08X r11=%08X r28=%08X r29=%08X r30=%08X r31=%08X",
+                 c.r3.u32, c.r4.u32, c.r5.u32, c.r9.u32, c.r10.u32, c.r11.u32, c.r28.u32, c.r29.u32, c.r30.u32,
+                 c.r31.u32);
+        static std::atomic<bool> dumped{false};
+        const uint32_t heap = c.r30.u32;
+        if (heap >= 0x40000000 && heap < 0x70000000 && !dumped.exchange(true)) {
+            for (uint32_t row = 0; row < 0x600; row += 32) {
+                std::string line;
+                char cell[12];
+                for (uint32_t i = 0; i < 32; i += 4) {
+                    snprintf(cell, sizeof(cell), " %08X", tz::load32(heap + row + i));
+                    line += cell;
+                }
+                tz::logf("      %08X:%s", heap + row, line.c_str());
+            }
+        }
+    }
+}
+
 uint64_t PPCQueryTimebase() {
     // The Xenon timebase runs at 49.875 MHz.
     static const uint64_t frequency = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return uint64_t(f.QuadPart); }();

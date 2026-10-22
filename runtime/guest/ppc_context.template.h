@@ -94,11 +94,8 @@ void PPCMmioWrite32(uint32_t address, uint32_t value);
 inline bool PPCIsInvalidGuestAddress(uint32_t address) {
     return address < 0x10000u;
 }
-inline void PPCTraceInvalidGuestLoad(uint32_t address, unsigned width) {
-    static std::atomic<uint32_t> count{};
-    if (count.fetch_add(1, std::memory_order_relaxed) < 32)
-        fprintf(stderr, "[MEM] low guest load width=%u address=0x%08X\n", width, address);
-}
+// Reports loads from the unmapped first 64 KiB (null pointer reads).
+void PPCTraceInvalidGuestLoad(uint32_t address, unsigned width);
 inline uint8_t PPCLoadU8(uint8_t* base, uint32_t address) {
     if (PPCIsInvalidGuestAddress(address)) { PPCTraceInvalidGuestLoad(address, 1); return 0; }
     return PPCIsDynamicMmio(address) ? uint8_t(0) : *(volatile uint8_t*)(base + address);
@@ -143,55 +140,51 @@ inline void PPCStoreU64(uint8_t* base, uint32_t address, uint64_t value) {
 #ifndef PPC_STORE_U64
 #define PPC_STORE_U64(x, y) PPCStoreU64(base, uint32_t(x), uint64_t(y))
 #endif
-// Xenon MMIO is not guest RAM. 32-bit accesses reach the runtime's register
-// emulation; other widths read zero and discard writes.
+// Stores followed by eieio and their loads are emitted as PPC_MM_* accesses.
+// Most target ordinary memory (command buffers); the helpers send real MMIO
+// ranges to the runtime and access memory otherwise.
+inline void PPCStoreU8(uint8_t* base, uint32_t address, uint8_t value) {
+    if (!PPCIsDynamicMmio(address) && !PPCIsInvalidGuestAddress(address)) *(volatile uint8_t*)(base + address) = value;
+}
+inline void PPCStoreU16(uint8_t* base, uint32_t address, uint16_t value) {
+    if (!PPCIsDynamicMmio(address) && !PPCIsInvalidGuestAddress(address))
+        *(volatile uint16_t*)(base + address) = __builtin_bswap16(value);
+}
 #ifndef PPC_MM_LOAD_U8
-#define PPC_MM_LOAD_U8(x)  (uint8_t(0))
+#define PPC_MM_LOAD_U8(x)  PPCLoadU8(base, uint32_t(x))
 #endif
-
 #ifndef PPC_MM_LOAD_U16
-#define PPC_MM_LOAD_U16(x) (uint16_t(0))
+#define PPC_MM_LOAD_U16(x) PPCLoadU16(base, uint32_t(x))
 #endif
-
 #ifndef PPC_MM_LOAD_U32
-#define PPC_MM_LOAD_U32(x) PPCMmioRead32(uint32_t(x))
+#define PPC_MM_LOAD_U32(x) PPCLoadU32(base, uint32_t(x))
 #endif
-
 #ifndef PPC_MM_LOAD_U64
-#define PPC_MM_LOAD_U64(x) (uint64_t(0))
+#define PPC_MM_LOAD_U64(x) PPCLoadU64(base, uint32_t(x))
 #endif
-
 #ifndef PPC_STORE_U8
-#define PPC_STORE_U8(x, y) do { if (!PPCIsDynamicMmio(uint32_t(x))) *(volatile uint8_t*)(base + (x)) = (y); } while (0)
+#define PPC_STORE_U8(x, y) PPCStoreU8(base, uint32_t(x), uint8_t(y))
 #endif
-
 #ifndef PPC_STORE_U16
-#define PPC_STORE_U16(x, y) do { if (!PPCIsDynamicMmio(uint32_t(x))) *(volatile uint16_t*)(base + (x)) = __builtin_bswap16(y); } while (0)
+#define PPC_STORE_U16(x, y) PPCStoreU16(base, uint32_t(x), uint16_t(y))
 #endif
-
 #ifndef PPC_STORE_U32
 #define PPC_STORE_U32(x, y) PPCStoreU32(base, uint32_t(x), uint32_t(y))
 #endif
-
 #ifndef PPC_STORE_U64
 #define PPC_STORE_U64(x, y) PPCStoreU64(base, uint32_t(x), uint64_t(y))
 #endif
-
-// 32-bit MMIO goes to the runtime; narrower and wider accesses are ignored.
 #ifndef PPC_MM_STORE_U8
-#define PPC_MM_STORE_U8(x, y)   do { (void)(x); (void)(y); } while (0)
+#define PPC_MM_STORE_U8(x, y)  PPCStoreU8(base, uint32_t(x), uint8_t(y))
 #endif
-
 #ifndef PPC_MM_STORE_U16
-#define PPC_MM_STORE_U16(x, y)  do { (void)(x); (void)(y); } while (0)
+#define PPC_MM_STORE_U16(x, y) PPCStoreU16(base, uint32_t(x), uint16_t(y))
 #endif
-
 #ifndef PPC_MM_STORE_U32
-#define PPC_MM_STORE_U32(x, y)  PPCMmioWrite32(uint32_t(x), uint32_t(y))
+#define PPC_MM_STORE_U32(x, y) PPCStoreU32(base, uint32_t(x), uint32_t(y))
 #endif
-
 #ifndef PPC_MM_STORE_U64
-#define PPC_MM_STORE_U64(x, y)  do { (void)(x); (void)(y); } while (0)
+#define PPC_MM_STORE_U64(x, y) PPCStoreU64(base, uint32_t(x), uint64_t(y))
 #endif
 
 #ifndef PPC_CALL_FUNC

@@ -39,6 +39,7 @@ add_library(TenchuRuntime STATIC
     runtime/kernel/imports_io.cpp
     runtime/kernel/imports_xam.cpp
     runtime/kernel/imports_net.cpp
+    runtime/kernel/diagnostics.cpp
     runtime/gpu/null_gpu.cpp
     runtime/audio/null_audio.cpp)
 target_include_directories(TenchuRuntime PUBLIC "${CMAKE_SOURCE_DIR}/runtime")

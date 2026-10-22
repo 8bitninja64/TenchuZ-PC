@@ -87,14 +87,80 @@ bool Memory::firstFit(std::map<uint32_t, uint32_t>& used, uint64_t begin, uint64
 }
 
 uint32_t Memory::allocateVirtual(uint32_t size, uint32_t alignment) {
+    const uint32_t address = reserveVirtual(size, 0);
+    if (address) commitVirtual(address, size);
+    (void)alignment;
+    return address;
+}
+
+uint32_t Memory::reserveVirtual(uint32_t size, uint32_t requested) {
     std::lock_guard lock(mutex_);
-    size = uint32_t(alignUp(size, kPage));
-    alignment = (std::max)(alignment, kPage);
+    if (committed_.empty()) committed_.assign((kVirtualEnd - kVirtualBegin) / kPage, false);
+    size = uint32_t(alignUp(size, 0x10000));
     uint32_t address;
-    if (!firstFit(virtual_, kVirtualBegin, kVirtualEnd, size, alignment, address)) return 0;
+    if (requested) {
+        // An exact placement must not overlap an existing reservation.
+        address = requested & ~0xFFFFu;
+        if (address < kVirtualBegin || uint64_t(address) + size > kVirtualEnd) return 0;
+        auto next = virtual_.lower_bound(address);
+        if (next != virtual_.end() && next->first < address + size) return 0;
+        if (next != virtual_.begin() && std::prev(next)->first + std::prev(next)->second > address) return 0;
+        virtual_.emplace(address, size);
+    } else if (!firstFit(virtual_, kVirtualBegin, kVirtualEnd, size, 0x10000, address)) {
+        return 0;
+    }
+    // The host keeps the whole reservation accessible; guest commit state is tracked separately.
     if (!commit(address, size)) { virtual_.erase(address); return 0; }
     std::memset(base_ + address, 0, size);
     return address;
+}
+
+bool Memory::commitVirtual(uint32_t address, uint32_t size) {
+    std::lock_guard lock(mutex_);
+    const uint32_t first = address & ~(kPage - 1);
+    const uint64_t last = alignUp(uint64_t(address) + size, kPage);
+    if (first < kVirtualBegin || last > kVirtualEnd || committed_.empty()) return false;
+    for (uint64_t page = first; page < last; page += kPage) {
+        const size_t index = size_t((page - kVirtualBegin) / kPage);
+        if (committed_[index]) continue;
+        std::memset(base_ + page, 0, kPage);
+        committed_[index] = true;
+    }
+    return true;
+}
+
+bool Memory::decommitVirtual(uint32_t address, uint32_t size) {
+    std::lock_guard lock(mutex_);
+    const uint32_t first = address & ~(kPage - 1);
+    const uint64_t last = alignUp(uint64_t(address) + size, kPage);
+    if (first < kVirtualBegin || last > kVirtualEnd || committed_.empty()) return false;
+    for (uint64_t page = first; page < last; page += kPage) {
+        committed_[size_t((page - kVirtualBegin) / kPage)] = false;
+        std::memset(base_ + page, 0, kPage);
+    }
+    return true;
+}
+
+Memory::RegionInfo Memory::queryVirtual(uint32_t address) const {
+    std::lock_guard lock(mutex_);
+    RegionInfo info{address & ~(kPage - 1), 0, kPage, 0x10000};
+    auto it = virtual_.upper_bound(address);
+    if (it == virtual_.begin() || committed_.empty()) return info;
+    --it;
+    if (address >= uint64_t(it->first) + it->second) {
+        // Free: extend to the next reservation.
+        info.size = (it = virtual_.upper_bound(address)) == virtual_.end() ? kVirtualEnd - info.base : it->first - info.base;
+        return info;
+    }
+    info.allocationBase = it->first;
+    const uint64_t end = uint64_t(it->first) + it->second;
+    auto pageCommitted = [&](uint64_t page) { return bool(committed_[size_t((page - kVirtualBegin) / kPage)]); };
+    const bool state = pageCommitted(info.base);
+    uint64_t page = info.base;
+    while (page < end && pageCommitted(page) == state) page += kPage;
+    info.size = uint32_t(page - info.base);
+    info.state = state ? 0x1000 : 0x2000;
+    return info;
 }
 
 uint32_t Memory::allocateStack(uint32_t size) {
@@ -141,6 +207,8 @@ bool Memory::free(uint32_t address) {
         return true;
     }
     if (auto it = virtual_.find(address); it != virtual_.end()) {
+        for (uint64_t page = it->first; page < uint64_t(it->first) + it->second; page += kPage)
+            committed_[size_t((page - kVirtualBegin) / kPage)] = false;
         decommit(it->first, it->second);
         virtual_.erase(it);
         return true;
