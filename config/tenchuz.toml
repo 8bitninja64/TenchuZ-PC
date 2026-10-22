@@ -1,0 +1,23 @@
+# Tenchu Z (USA, Europe) default.xex, XDK 2.0.4552.
+# Correctness profile, matching the Darkness port: preserve the full guest
+# register state across calls; guest ABI shortcuts are disabled.
+[main]
+file_path = "../game/default.xex"
+switch_table_file_path = "tenchuz_switch_tables.toml"
+skip_lr = false
+skip_msr = false
+ctr_as_local = false
+xer_as_local = false
+reserved_as_local = false
+cr_as_local = false
+non_argument_as_local = false
+non_volatile_as_local = false
+# Compiler register save/restore helpers (tools/find_abi_helpers.py).
+savegprlr_14_address = 0x82653F10
+restgprlr_14_address = 0x82653F60
+savefpr_14_address = 0x82654720
+restfpr_14_address = 0x8265476C
+savevmx_14_address = 0x826547C0
+restvmx_14_address = 0x82654A58
+savevmx_64_address = 0x82654854
+restvmx_64_address = 0x82654AEC

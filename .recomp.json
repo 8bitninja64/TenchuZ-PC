@@ -1,0 +1,9 @@
+{
+  "game": "Tenchu Z",
+  "system": "Xbox 360",
+  "type": "recomp",
+  "project": "Tenchu Z Recomp",
+  "status": "in-progress",
+  "targets": ["Windows"],
+  "toolchain": "XenonRecomp"
+}

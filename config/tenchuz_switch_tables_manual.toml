@@ -1,0 +1,15 @@
+# Jump tables that XenonAnalyse and the generator's inline-table scan cannot
+# bound on their own. Merged after tenchuz_switch_tables.toml by recompile.py.
+
+# Inline table directly after bctr; some cases branch back before the table,
+# so the generator cannot find its end. Bounds: cmplwi cr6,r19,20 at 825EFA14.
+[[switch]]
+base = 0x825EFD30
+r = 19
+default = 0x825EF980
+labels = [
+    0x825EFD88, 0x825EFD88, 0x825EF980, 0x825EFD88, 0x825EFD88, 0x825EFE70,
+    0x825EFD88, 0x825EFDFC, 0x825EFD88, 0x825EFD88, 0x825EF980, 0x825EF980,
+    0x825EFD88, 0x825EFD88, 0x825EF980, 0x825EF980, 0x825EF980, 0x825EF980,
+    0x825EFD88, 0x825EFD88, 0x825EFD88,
+]

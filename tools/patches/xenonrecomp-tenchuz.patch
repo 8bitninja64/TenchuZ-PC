@@ -1,0 +1,51 @@
+diff --git a/XenonRecomp/recompiler.cpp b/XenonRecomp/recompiler.cpp
+index 3f0b780..5077f14 100644
+--- a/XenonRecomp/recompiler.cpp
++++ b/XenonRecomp/recompiler.cpp
+@@ -1947,7 +1947,20 @@ bool Recompiler::Recompile(
+ 
+     case PPC_INST_VCMPBFP:
+     case PPC_INST_VCMPBFP128:
+-        println("\t__builtin_debugtrap();");
++        // Bounds compare: bit 31 set when !(a <= b), bit 30 set when !(a >= -b).
++        // NaN operands fail both comparisons and set both bits.
++        printSetFlushMode(true);
++        println("\tsimde_mm_store_si128((simde__m128i*){}.u32, simde_mm_or_si128("
++            "simde_mm_andnot_si128(simde_mm_castps_si128(simde_mm_cmple_ps(simde_mm_load_ps({}.f32), simde_mm_load_ps({}.f32))), simde_mm_set1_epi32(int32_t(0x80000000))), "
++            "simde_mm_andnot_si128(simde_mm_castps_si128(simde_mm_cmpge_ps(simde_mm_load_ps({}.f32), simde_mm_xor_ps(simde_mm_load_ps({}.f32), simde_mm_set1_ps(-0.0f)))), simde_mm_set1_epi32(0x40000000))));",
++            v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]), v(insn.operands[1]), v(insn.operands[2]));
++        if (strchr(insn.opcode->name, '.'))
++        {
++            // CR6: only bit 2 is defined, set when every element is in bounds.
++            println("\t{}.setFromMask(simde_mm_castsi128_ps(simde_mm_cmpeq_epi32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_setzero_si128())), 0xF);", cr(6), v(insn.operands[0]));
++            println("\t{}.eq = {}.lt;", cr(6), cr(6));
++            println("\t{}.lt = 0;", cr(6));
++        }
+         break;
+ 
+     case PPC_INST_VCMPEQFP:
+@@ -2228,6 +2241,24 @@ bool Recompiler::Recompile(
+         println("\t{} = {};", v(insn.operands[0]), vTemp());
+         break;
+ 
++    case PPC_INST_VPKUWUS:
++    case PPC_INST_VPKUWUS128:
++        // Unsigned saturation: clamp to 0xFFFF first so the signed pack is exact.
++        println("\tsimde_mm_store_si128((simde__m128i*){}.u16, simde_mm_packus_epi32("
++            "simde_mm_min_epu32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_set1_epi32(0xFFFF)), "
++            "simde_mm_min_epu32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_set1_epi32(0xFFFF))));",
++            v(insn.operands[0]), v(insn.operands[2]), v(insn.operands[1]));
++        break;
++
++    case PPC_INST_VSLO:
++    case PPC_INST_VSLO128:
++        // Shift left by octet; the count is bits 121:124 of vB (guest byte 15).
++        println("\t{}.u32 = ({}.u8[0] >> 3) & 0xF;", temp(), v(insn.operands[2]));
++        println("\tfor (uint32_t i = 0; i < 16; i++) {}.u8[i] = i >= {}.u32 ? {}.u8[i - {}.u32] : 0;",
++            vTemp(), temp(), v(insn.operands[1]), temp());
++        println("\t{} = {};", v(insn.operands[0]), vTemp());
++        break;
++
+     case PPC_INST_VPKUHUS:
+     case PPC_INST_VPKUHUS128:
+         for (size_t i = 0; i < 8; i++)

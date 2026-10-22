@@ -1,0 +1,11 @@
+# Game data is never committed.
+/game/
+*.iso
+*.xex
+basefile.exe
+
+# Build output, including all generated game code.
+/build/
+/build_*/
+__pycache__/
+*.pyc
