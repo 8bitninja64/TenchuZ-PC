@@ -3,6 +3,8 @@
 // without drawing anything.
 #include "kernel/kernel.h"
 #include "gpu/d3d11/renderer.h"
+#include "gpu/d3d11/xenos_backend.h"
+#include <unordered_map>
 #include "ppc_recomp_shared.h"
 #include <array>
 #include <filesystem>
@@ -56,18 +58,6 @@ struct Gpu {
 };
 Gpu gs;  // command processor and device state
 
-// Host renderer, owned by the command processor thread.
-gpu::D3D11Renderer renderer;
-bool rendererFailed = false;
-
-void presentFrame(uint32_t frontBuffer) {
-    if (!renderer.ready() && !rendererFailed) {
-        if (HWND window = gpu::outputWindow()) rendererFailed = !renderer.initialize(window);
-    }
-    if (renderer.ready()) renderer.present(nullptr);
-    (void)frontBuffer;
-}
-
 // VdSwap writes this private packet into the slot D3D reserves for the
 // kernel, so the frame is presented when the GPU reaches it.
 constexpr uint32_t kSwapOpcode = 0x64;
@@ -80,6 +70,7 @@ struct ShaderCapture {
     std::set<uint64_t> seen;
     std::filesystem::path dumpDirectory;
     uint64_t current[2] = {};  // vertex, pixel
+    std::unordered_map<uint64_t, std::vector<uint32_t>> programs;
 };
 ShaderCapture shaders;
 
@@ -93,7 +84,9 @@ void captureShader(uint32_t type, std::vector<uint32_t> words) {
     const uint64_t hash = hashWords(words);
     std::lock_guard lock(shaders.mutex);
     shaders.current[type & 1] = hash;
-    if (!shaders.seen.insert(hash).second || shaders.dumpDirectory.empty()) return;
+    if (!shaders.seen.insert(hash).second) return;
+    shaders.programs.emplace(hash, words);
+    if (shaders.dumpDirectory.empty()) return;
     char name[64];
     snprintf(name, sizeof(name), "%s_%016llX.bin", type & 1 ? "ps" : "vs", (unsigned long long)hash);
     FILE* file = _wfopen((shaders.dumpDirectory / name).c_str(), L"wb");
@@ -103,6 +96,33 @@ void captureShader(uint32_t type, std::vector<uint32_t> words) {
     fwrite(words.data(), 4, words.size(), file);
     fclose(file);
 }
+
+// Host renderer, owned by the command processor thread.
+gpu::D3D11Renderer renderer;
+bool rendererFailed = false;
+
+std::unique_ptr<gpu::XenosBackend> backend;
+
+// Creates the renderer once the window exists. Headless runs never draw.
+gpu::XenosBackend* activeBackend() {
+    if (!backend && !rendererFailed) {
+        if (HWND window = gpu::outputWindow()) {
+            rendererFailed = !renderer.initialize(window);
+            if (!rendererFailed)
+                backend = std::make_unique<gpu::XenosBackend>(renderer, gs.registers.data(), [](uint64_t hash) {
+                    std::lock_guard lock(shaders.mutex);
+                    auto it = shaders.programs.find(hash);
+                    return it == shaders.programs.end() ? nullptr : &it->second;
+                });
+        }
+    }
+    return backend.get();
+}
+
+void presentFrame(uint32_t frontBuffer) {
+    if (auto* active = activeBackend()) active->swap(frontBuffer);
+}
+
 // Guest address of the packet being executed, and indirect buffer depth.
 thread_local uint32_t packetAddress = 0;
 thread_local int packetDepth = 0;
@@ -388,7 +408,24 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
                     logf("[regdump]   fetch %u (%04X) = %08X %08X", (index - 0x4800) / 2, index,
                          gs.registers[index].load(), gs.registers[index + 1].load());
         }
-        reader.skip(count);
+        gpu::DrawRequest request;
+        if (opcode == 0x22) {
+            // viz query, initiator, then index base and size/endian for DMA indices
+            reader.read();
+            request.initiator = reader.read();
+            if (((request.initiator >> 6) & 3) == 0 && count >= 4) {
+                request.indexBase = reader.read();
+                request.indexEndian = reader.read() >> 30;
+                reader.skip(count - 4);
+            } else {
+                reader.skip(count - 2);
+            }
+        } else {
+            // initiator, then immediate indices; keep their guest byte order
+            request.initiator = reader.read();
+            for (uint32_t i = 1; i < count; ++i) request.inlineIndices.push_back(_byteswap_ulong(reader.read()));
+        }
+        if (auto* active = activeBackend()) active->draw(request, shaders.current[0], shaders.current[1]);
         break;
     }
     default:

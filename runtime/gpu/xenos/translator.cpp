@@ -13,10 +13,12 @@ cbuffer SharedConstants : register(b1) {
     uint4 g_bools[2];          // 256 boolean constants, one bit each
     uint4 g_loops[8];          // 32 loop constants: count, start, step bytes
     uint4 g_vertexEndian[4];   // endian mode per vertex buffer binding
+    uint4 g_vertexBase[4];     // byte offset of each vertex buffer binding in guestData
     float4 g_textureSize[16];  // per texture binding: width, height, depth
-    float4 g_positionScale;    // guest clip space -> host clip space (xy scale, zw offset)
+    float4 g_positionScale;    // guest clip space -> host clip space: xyz scale
+    float4 g_positionOffset;   // xyz offset, multiplied by w
     float4 g_alphaTest;        // x: function (0 never .. 7 always), y: reference
-    float4 g_pointSize;
+    uint4 g_draw;              // x: index list byte offset (0xFFFFFFFF: auto), y: index offset
 };
 static const float kFltMax = 3.402823466e+38;
 uint SwapEndian(uint v, uint mode) {
@@ -377,14 +379,13 @@ struct Emitter {
         auto [it, inserted] = vertexBindings.emplace(constant, uint32_t(vertexBindings.size()));
         if (inserted) result.info.vertexFetchConstants.push_back(constant);
         const uint32_t slot = it->second;
-        const std::string buffer = "vb" + std::to_string(slot);
-        const std::string endian = "g_vertexEndian[" + std::to_string(slot / 4) + "][" + std::to_string(slot % 4) + "]";
+        const std::string element = "[" + std::to_string(slot / 4) + "][" + std::to_string(slot % 4) + "]";
         line("{");
         ++indent;
-        line("uint address = uint(vfIndex * " + std::to_string(fetch.vertexStride()) + " + " +
-             std::to_string(fetch.vertexOffset()) + ") * 4;");
+        line("uint address = g_vertexBase" + element + " + uint(vfIndex * " + std::to_string(fetch.vertexStride()) +
+             " + " + std::to_string(fetch.vertexOffset()) + ") * 4;");
         auto word = [&](int n) {
-            return "SwapEndian(" + buffer + ".Load(address + " + std::to_string(n * 4) + "), " + endian + ")";
+            return "SwapEndian(guestData.Load(address + " + std::to_string(n * 4) + "), g_vertexEndian" + element + ")";
         };
         const bool isSigned = fetch.vertexSigned();
         const bool normalized = !fetch.vertexInteger();
@@ -672,9 +673,10 @@ struct Emitter {
         std::string hlsl = kPrelude;
         // Resources are known after the body has been generated.
         if (!pixel) {
+            // Vertex data of every binding and the host index list share one buffer.
+            hlsl += "ByteAddressBuffer guestData : register(t0);\n";
             for (const auto& [constant, slot] : vertexBindings)
-                hlsl += "ByteAddressBuffer vb" + std::to_string(slot) + " : register(t" + std::to_string(slot) +
-                        ");  // vertex fetch constant " + std::to_string(constant) + "\n";
+                hlsl += "// vertex binding " + std::to_string(slot) + ": fetch constant " + std::to_string(constant) + "\n";
         }
         const uint32_t textureBase = pixel ? 0 : 8;
         for (const auto& [constant, slot] : textureBindings) {
@@ -689,7 +691,8 @@ struct Emitter {
         if (!pixel) {
             hlsl += "Interpolators main(uint vertexId : SV_VertexID) {\n";
             hlsl += "    float4 r[64];\n    [unroll] for (int i = 0; i < 64; ++i) r[i] = 0.0;\n";
-            hlsl += "    r[0].x = float(vertexId);\n";
+            hlsl += "    uint vertexIndex = g_draw.x == 0xFFFFFFFFu ? vertexId : guestData.Load(g_draw.x + vertexId * 4);\n";
+            hlsl += "    r[0].x = float(vertexIndex + g_draw.y);\n";
             hlsl += "    float4 oPos = float4(0, 0, 0, 1), oPoint = 0.0, oDiscard = 0.0;\n";
             hlsl += "    float4 o[16];\n    [unroll] for (int j = 0; j < 16; ++j) o[j] = 0.0;\n";
             hlsl += "    int vfIndex = 0;\n";
@@ -706,7 +709,7 @@ struct Emitter {
         hlsl += body;
         if (!pixel) {
             hlsl += "    Interpolators output;\n";
-            hlsl += "    output.position = float4(oPos.xy * g_positionScale.xy + g_positionScale.zw * oPos.w, oPos.zw);\n";
+            hlsl += "    output.position = float4(oPos.xyz * g_positionScale.xyz + g_positionOffset.xyz * oPos.w, oPos.w);\n";
             hlsl += "    output.t = o;\n    return output;\n}\n";
         } else {
             hlsl += "    // Fixed-function alpha test: 0 never, 1 <, 2 ==, 3 <=, 4 >, 5 !=, 6 >=, 7 always.\n";

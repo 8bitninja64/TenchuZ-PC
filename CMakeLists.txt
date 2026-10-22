@@ -42,6 +42,7 @@ add_library(TenchuRuntime STATIC
     runtime/kernel/diagnostics.cpp
     runtime/gpu/null_gpu.cpp
     runtime/gpu/d3d11/renderer.cpp
+    runtime/gpu/d3d11/xenos_backend.cpp
     runtime/audio/null_audio.cpp
     runtime/movie/movie_player.cpp)
 target_include_directories(TenchuRuntime PUBLIC "${CMAKE_SOURCE_DIR}/runtime")
