@@ -1,6 +1,8 @@
 // Tenchu Z Recomp entry point.
 #include "kernel/kernel.h"
 #include "kernel/filesystem.h"
+#include "gpu/d3d11/renderer.h"
+#include <thread>
 #include <cstdio>
 #include <exception>
 
@@ -16,6 +18,43 @@ std::filesystem::path findGameDirectory(int argc, wchar_t** argv) {
         if (directory == directory.parent_path()) break;
     }
     return L"game";
+}
+
+LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_CLOSE:
+        ExitProcess(0);
+    case WM_KEYDOWN:
+        if (wParam == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000)) return 0;
+        break;
+    default:
+        break;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+// The game window lives on its own thread so the guest never blocks input.
+void startWindowThread() {
+    std::thread([] {
+        WNDCLASSEXW windowClass{sizeof(windowClass)};
+        windowClass.lpfnWndProc = windowProc;
+        windowClass.hInstance = GetModuleHandleW(nullptr);
+        windowClass.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+        windowClass.lpszClassName = L"TenchuZRecomp";
+        RegisterClassExW(&windowClass);
+        RECT rect{0, 0, 1280, 720};
+        AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+        HWND window = CreateWindowExW(0, windowClass.lpszClassName, L"Tenchu Z", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+                                      CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr,
+                                      windowClass.hInstance, nullptr);
+        ShowWindow(window, SW_SHOW);
+        tz::gpu::setOutputWindow(window);
+        MSG message;
+        while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }).detach();
 }
 
 LONG WINAPI crashFilter(EXCEPTION_POINTERS* exception) {
@@ -47,6 +86,7 @@ int wmain(int argc, wchar_t** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     try {
         const auto gameDirectory = findGameDirectory(argc, argv);
+        if (!GetEnvironmentVariableW(L"TENCHU_HEADLESS", nullptr, 0)) startWindowThread();
         tz::initializeKernel(gameDirectory);
         tz::mountDevice("game", tz::gameDirectory());
         tz::mountDevice("d", tz::gameDirectory());
