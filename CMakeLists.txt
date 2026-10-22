@@ -51,3 +51,9 @@ add_executable(TenchuZ app/main.cpp)
 target_link_libraries(TenchuZ PRIVATE TenchuRuntime)
 # Translated code recurses deeply on the host stack.
 target_link_options(TenchuZ PRIVATE /STACK:16777216 /DEBUG)
+
+# Shader microcode tools.
+add_library(TenchuXenos STATIC runtime/gpu/xenos/ucode.cpp runtime/gpu/xenos/translator.cpp)
+target_include_directories(TenchuXenos PUBLIC "${CMAKE_SOURCE_DIR}/runtime")
+add_executable(XenosDisasm tools/xenos_disasm/main.cpp)
+target_link_libraries(XenosDisasm PRIVATE TenchuXenos d3dcompiler)

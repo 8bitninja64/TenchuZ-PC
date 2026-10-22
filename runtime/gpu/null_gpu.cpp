@@ -4,6 +4,8 @@
 #include "kernel/kernel.h"
 #include "ppc_recomp_shared.h"
 #include <array>
+#include <filesystem>
+#include <set>
 #include <intrin.h>
 #include <chrono>
 #include <thread>
@@ -52,6 +54,37 @@ struct Gpu {
     bool started = false;
 };
 Gpu gpu;
+
+// ---- Shader capture -------------------------------------------------------------
+// Microcode arrives through IM_LOAD (pointer) or IM_LOAD_IMMEDIATE (inline).
+struct ShaderCapture {
+    std::mutex mutex;
+    std::set<uint64_t> seen;
+    std::filesystem::path dumpDirectory;
+    uint64_t current[2] = {};  // vertex, pixel
+};
+ShaderCapture shaders;
+
+uint64_t hashWords(const std::vector<uint32_t>& words) {
+    uint64_t hash = 1469598103934665603ull;
+    for (uint32_t word : words) hash = (hash ^ word) * 1099511628211ull;
+    return hash;
+}
+
+void captureShader(uint32_t type, std::vector<uint32_t> words) {
+    const uint64_t hash = hashWords(words);
+    std::lock_guard lock(shaders.mutex);
+    shaders.current[type & 1] = hash;
+    if (!shaders.seen.insert(hash).second || shaders.dumpDirectory.empty()) return;
+    char name[64];
+    snprintf(name, sizeof(name), "%s_%016llX.bin", type & 1 ? "ps" : "vs", (unsigned long long)hash);
+    FILE* file = _wfopen((shaders.dumpDirectory / name).c_str(), L"wb");
+    if (!file) return;
+    // Stored big-endian, as in guest memory.
+    for (uint32_t& word : words) word = _byteswap_ulong(word);
+    fwrite(words.data(), 4, words.size(), file);
+    fclose(file);
+}
 // Guest address of the packet being executed, and indirect buffer depth.
 thread_local uint32_t packetAddress = 0;
 thread_local int packetDepth = 0;
@@ -286,6 +319,24 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         for (uint32_t i = 1; i < count; ++i) writeRegister(index + i - 1, reader.read());
         break;
     }
+    case 0x27: {  // IM_LOAD: microcode at a physical address
+        const uint32_t addressType = reader.read(), startSize = reader.read();
+        reader.skip(count - 2);
+        std::vector<uint32_t> words(startSize & 0xFFFF);
+        const uint32_t source = Memory::fromPhysical(addressType & ~3u);
+        for (size_t i = 0; i < words.size(); ++i) words[i] = load32(source + uint32_t(i) * 4);
+        captureShader(addressType & 3, std::move(words));
+        break;
+    }
+    case 0x2B: {  // IM_LOAD_IMMEDIATE: microcode follows
+        const uint32_t type = reader.read(), startSize = reader.read();
+        const uint32_t size = (std::min)(startSize & 0xFFFF, count - 2);
+        std::vector<uint32_t> words(size);
+        for (uint32_t& word : words) word = reader.read();
+        reader.skip(count - 2 - size);
+        captureShader(type & 3, std::move(words));
+        break;
+    }
     case 0x22:  // DRAW_INDX
     case 0x36:  // DRAW_INDX_2
         ++gpu.draws;
@@ -371,6 +422,11 @@ void startGpu() {
     std::lock_guard lock(gpu.mutex);
     if (gpu.started) return;
     gpu.started = true;
+    wchar_t dump[MAX_PATH]{};
+    if (GetEnvironmentVariableW(L"TENCHU_DUMP_SHADERS", dump, MAX_PATH)) {
+        shaders.dumpDirectory = dump;
+        std::filesystem::create_directories(shaders.dumpDirectory);
+    }
     char value[32]{};
     if (GetEnvironmentVariableA("TENCHU_EXIT_AFTER_FRAMES", value, sizeof(value)))
         gpu.exitAfterFrames = strtoull(value, nullptr, 10);
