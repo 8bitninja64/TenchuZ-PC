@@ -343,7 +343,8 @@ PPC_FUNC(__imp__XamContentGetDeviceState) {
     ctx.r3.u64 = complete(ctx.r4.u32, result);
 }
 
-PPC_FUNC(__imp__XamContentSetThumbnail) { ctx.r3.u64 = complete(ctx.r6.u32, kErrorSuccess); }
+// (userIndex, XCONTENT_DATA*, image, imageSize, overlapped); the thumbnail is not kept.
+PPC_FUNC(__imp__XamContentSetThumbnail) { ctx.r3.u64 = complete(ctx.r7.u32, kErrorSuccess); }
 
 // ---- System UI: answered immediately --------------------------------------------------
 
