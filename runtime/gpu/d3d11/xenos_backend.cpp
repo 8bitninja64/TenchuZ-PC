@@ -294,7 +294,10 @@ struct XenosBackend::Impl {
             snprintf(prefix, sizeof(prefix), "%016llX=", (unsigned long long)hash);
             const size_t at = translated.hlsl.find("    // Fixed-function alpha test");
             if (override.rfind(prefix, 0) == 0 && at != std::string::npos)
-                translated.hlsl.insert(at, "    oC[0] = float4((" + override.substr(17) + ").xyz, 1.0);\n");
+                // A leading '!' assigns all four components (alpha included).
+                translated.hlsl.insert(at, override[17] == '!'
+                                               ? "    oC[0] = " + override.substr(18) + ";\n"
+                                               : "    oC[0] = float4((" + override.substr(17) + ").xyz, 1.0);\n");
         }
         if (!translated.error.empty())
             logf("[d3d11] shader %016llX: %s (translated anyway)", (unsigned long long)hash, translated.error.c_str());

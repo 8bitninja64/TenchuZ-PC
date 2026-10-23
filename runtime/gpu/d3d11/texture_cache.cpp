@@ -1,5 +1,8 @@
 #include "texture_cache.h"
+#include "host/settings.h"
 #include "kernel/kernel.h"
+#include <d3dcompiler.h>
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -98,11 +101,104 @@ D3D11_TEXTURE_ADDRESS_MODE addressMode(uint32_t clamp) {
     }
 }
 
+// Copies a texture's top level into a render target (for formats without
+// automatic mip generation, such as BC).
+const char* kExpandShader = R"(
+Texture2D<float4> source : register(t0);
+float4 vs(uint id : SV_VertexID) : SV_Position {
+    float2 uv = float2((id << 1) & 2, id & 2);
+    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+float4 ps(float4 position : SV_Position) : SV_Target { return source.Load(int3(position.xy, 0)); }
+)";
+
+// Host format holding the mip chain: GenerateMips needs a renderable format.
+DXGI_FORMAT mipFormat(DXGI_FORMAT format) {
+    switch (format) {
+    case DXGI_FORMAT_BC1_UNORM: case DXGI_FORMAT_BC2_UNORM: case DXGI_FORMAT_BC3_UNORM:
+    case DXGI_FORMAT_BC4_UNORM: case DXGI_FORMAT_BC5_UNORM: case DXGI_FORMAT_R8_UNORM:
+    case DXGI_FORMAT_R8G8_UNORM:
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    default:
+        return format;
+    }
+}
+
 }  // namespace
 
 void TextureCache::initialize(ID3D11Device* device, ID3D11DeviceContext* context) {
     device_ = device;
     context_ = context;
+    ID3DBlob* code = nullptr;
+    if (SUCCEEDED(D3DCompile(kExpandShader, strlen(kExpandShader), "expand", nullptr, nullptr, "vs", "vs_5_0", 0, 0,
+                             &code, nullptr))) {
+        device_->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &expandVertex_);
+        release(code);
+    }
+    if (SUCCEEDED(D3DCompile(kExpandShader, strlen(kExpandShader), "expand", nullptr, nullptr, "ps", "ps_5_0", 0, 0,
+                             &code, nullptr))) {
+        device_->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &expandPixel_);
+        release(code);
+    }
+}
+
+// Builds a full mip chain from the top level. The guest's own mip levels are
+// not read (their packed layout is not implemented); box-filtered host mips
+// are a close stand-in and remove the shimmer of unfiltered minification.
+ID3D11ShaderResourceView* TextureCache::withMips(ID3D11Texture2D* base, ID3D11ShaderResourceView* baseView,
+                                                 uint32_t levels) {
+    D3D11_TEXTURE2D_DESC baseDesc{};
+    base->GetDesc(&baseDesc);
+    const DXGI_FORMAT format = mipFormat(baseDesc.Format);
+    UINT support = 0;
+    if (FAILED(device_->CheckFormatSupport(format, &support)) || !(support & D3D11_FORMAT_SUPPORT_MIP_AUTOGEN))
+        return nullptr;
+    D3D11_TEXTURE2D_DESC desc = baseDesc;
+    desc.Format = format;
+    desc.MipLevels = levels;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+    ID3D11Texture2D* texture = nullptr;
+    if (FAILED(device_->CreateTexture2D(&desc, nullptr, &texture))) return nullptr;
+    if (baseDesc.Format == format) {
+        context_->CopySubresourceRegion(texture, 0, 0, 0, 0, base, 0, nullptr);
+    } else {
+        ID3D11RenderTargetView* target = nullptr;
+        D3D11_RENDER_TARGET_VIEW_DESC rtv{};
+        rtv.Format = format;
+        rtv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        device_->CreateRenderTargetView(texture, &rtv, &target);
+        if (!target || !expandVertex_ || !expandPixel_) {
+            release(target);
+            release(texture);
+            return nullptr;
+        }
+        // Draw state is rebuilt for every guest draw, so it can be overwritten here.
+        const D3D11_VIEWPORT viewport{0, 0, float(desc.Width), float(desc.Height), 0, 1};
+        context_->OMSetRenderTargets(1, &target, nullptr);
+        context_->RSSetViewports(1, &viewport);
+        context_->RSSetState(nullptr);
+        context_->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+        context_->OMSetDepthStencilState(nullptr, 0);
+        context_->IASetInputLayout(nullptr);
+        context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context_->VSSetShader(expandVertex_, nullptr, 0);
+        context_->GSSetShader(nullptr, nullptr, 0);
+        context_->PSSetShader(expandPixel_, nullptr, 0);
+        context_->PSSetShaderResources(0, 1, &baseView);
+        context_->Draw(3, 0);
+        ID3D11ShaderResourceView* none = nullptr;
+        context_->PSSetShaderResources(0, 1, &none);
+        ID3D11RenderTargetView* noTarget = nullptr;
+        context_->OMSetRenderTargets(1, &noTarget, nullptr);
+        release(target);
+    }
+    ID3D11ShaderResourceView* view = nullptr;
+    device_->CreateShaderResourceView(texture, nullptr, &view);
+    if (view) context_->GenerateMips(view);
+    release(texture);  // the view keeps it alive
+    return view;
 }
 
 void TextureCache::invalidate(uint32_t physicalAddress) {
@@ -208,9 +304,22 @@ ID3D11ShaderResourceView* TextureCache::view(const TextureFetch& fetch) {
         return nullptr;
     }
     device_->CreateShaderResourceView(entry.texture, nullptr, &entry.view);
+    // Mipmapped textures (max level in fetch word 4, bits 6-9) get a host mip chain.
+    const uint32_t maxLevel = (fetch.words[4] >> 6) & 15;
+    if (maxLevel && fetch.mipFilter() != 2 && !traceEnabled("nomips")) {
+        uint32_t levels = 1;
+        while (levels <= maxLevel && ((std::max)(desc.Width, desc.Height) >> levels)) ++levels;
+        if (levels > 1)
+            if (auto* mipped = withMips(entry.texture, entry.view, levels)) {
+                release(entry.view);
+                entry.view = mipped;
+            }
+    }
     entry.hash = hash;
-    TZ_TRACE("texture", "[texture] %08X %ux%u format %u %s endian %u", address, width, height, fetch.format(),
-             fetch.tiled() ? "tiled" : "linear", fetch.endian());
+    TZ_TRACE("texture", "[texture] %08X %ux%u format %u %s endian %u mips %u-%u filter %u/%u/%u mipaddr %08X", address,
+             width, height, fetch.format(), fetch.tiled() ? "tiled" : "linear", fetch.endian(),
+             (fetch.words[4] >> 2) & 15, (fetch.words[4] >> 6) & 15, fetch.magFilter(), fetch.minFilter(),
+             fetch.mipFilter(), fetch.words[5] & 0xFFFFF000);
     return entry.view;
 }
 
@@ -227,6 +336,12 @@ ID3D11SamplerState* TextureCache::sampler(const TextureFetch& fetch) {
                                             linearMag ? D3D11_FILTER_TYPE_LINEAR : D3D11_FILTER_TYPE_POINT,
                                             linearMip ? D3D11_FILTER_TYPE_LINEAR : D3D11_FILTER_TYPE_POINT,
                                             D3D11_FILTER_REDUCTION_TYPE_STANDARD);
+    // Anisotropic filtering (TenchuZ.ini) for trilinear-filtered textures.
+    const int anisotropy = host::settings().anisotropy;
+    if (anisotropy > 1 && linearMag && linearMin && linearMip) {
+        desc.Filter = D3D11_FILTER_ANISOTROPIC;
+        desc.MaxAnisotropy = UINT(std::clamp(anisotropy, 2, 16));
+    }
     desc.AddressU = addressMode(fetch.clampX());
     desc.AddressV = addressMode(fetch.clampY());
     desc.AddressW = addressMode(fetch.clampZ());

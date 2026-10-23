@@ -21,6 +21,8 @@ vsync = true
 ; Internal rendering resolution as a multiple of the original 1280x720
 ; (1 = 720p, 2 = 1440p, 3 = 4K). Higher values need much more video memory.
 resolution_scale = 1
+; Anisotropic texture filtering: 1 (off), 2, 4, 8 or 16.
+anisotropic_filtering = 16
 
 [input]
 mouse_sensitivity = 1.0
@@ -76,6 +78,7 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "window_height") settings.windowHeight = (std::max)(180, std::stoi(value));
             else if (key == "vsync") settings.vsync = parseBool(value);
             else if (key == "resolution_scale") settings.resolutionScale = std::clamp(std::stoi(value), 1, 4);
+            else if (key == "anisotropic_filtering") settings.anisotropy = std::clamp(std::stoi(value), 1, 16);
         } else if (section == "input") {
             if (key == "mouse_sensitivity") settings.mouseSensitivity = std::stof(value);
             else if (key == "invert_mouse_y") settings.invertMouseY = parseBool(value);

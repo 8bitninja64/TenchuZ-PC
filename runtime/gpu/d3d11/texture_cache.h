@@ -40,6 +40,9 @@ public:
     void beginFrame() { ++frame_; }
 
 private:
+    ID3D11ShaderResourceView* withMips(ID3D11Texture2D* base, ID3D11ShaderResourceView* baseView, uint32_t levels);
+    ID3D11VertexShader* expandVertex_ = nullptr;
+    ID3D11PixelShader* expandPixel_ = nullptr;
     struct Entry {
         ID3D11Texture2D* texture = nullptr;
         ID3D11ShaderResourceView* view = nullptr;

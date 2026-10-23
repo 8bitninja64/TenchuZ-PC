@@ -22,6 +22,12 @@ cbuffer SharedConstants : register(b1) {
     uint4 g_draw;              // x: index list byte offset (0xFFFFFFFF: auto), y: index offset
 };
 static const float kFltMax = 3.402823466e+38;
+// Xenos multiplies follow the D3D9 rule 0 * x = 0, even for infinities and NaN
+// (normalizing a zero vector multiplies 0 by rsq(0) = inf).
+float4 XMul(float4 a, float4 b) { return (a == 0.0 || b == 0.0) ? 0.0 : a * b; }
+float XMul(float a, float b) { return (a == 0.0 || b == 0.0) ? 0.0 : a * b; }
+float XDot4(float4 a, float4 b) { float4 m = XMul(a, b); return m.x + m.y + m.z + m.w; }
+float XDot3(float4 a, float4 b) { float4 m = XMul(a, b); return m.x + m.y + m.z; }
 uint SwapEndian(uint v, uint mode) {
     if (mode == 1) return ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
     if (mode == 2) return (v << 24) | ((v & 0xFF00u) << 8) | ((v >> 8) & 0xFF00u) | (v >> 24);
@@ -145,7 +151,7 @@ struct Emitter {
         valid = true;
         switch (op) {
         case VectorOpcode::Add: return s[1] + " + " + s[2];
-        case VectorOpcode::Mul: return s[1] + " * " + s[2];
+        case VectorOpcode::Mul: return "XMul(" + s[1] + ", " + s[2] + ")";
         case VectorOpcode::Max: return "max(" + s[1] + ", " + s[2] + ")";
         case VectorOpcode::Min: return "min(" + s[1] + ", " + s[2] + ")";
         case VectorOpcode::SetEq: return "float4(" + s[1] + " == " + s[2] + ")";
@@ -155,14 +161,15 @@ struct Emitter {
         case VectorOpcode::Frac: return "frac(" + s[1] + ")";
         case VectorOpcode::Trunc: return "trunc(" + s[1] + ")";
         case VectorOpcode::Floor: return "floor(" + s[1] + ")";
-        case VectorOpcode::MulAdd: return s[1] + " * " + s[2] + " + " + s[3];
+        case VectorOpcode::MulAdd: return "XMul(" + s[1] + ", " + s[2] + ") + " + s[3];
         case VectorOpcode::CndEq: return "(" + s[1] + " == 0.0) ? " + s[2] + " : " + s[3];
         case VectorOpcode::CndGe: return "(" + s[1] + " >= 0.0) ? " + s[2] + " : " + s[3];
         case VectorOpcode::CndGt: return "(" + s[1] + " > 0.0) ? " + s[2] + " : " + s[3];
-        case VectorOpcode::Dot4: return "dot(" + s[1] + ", " + s[2] + ").xxxx";
-        case VectorOpcode::Dot3: return "dot((" + s[1] + ").xyz, (" + s[2] + ").xyz).xxxx";
+        case VectorOpcode::Dot4: return "XDot4(" + s[1] + ", " + s[2] + ").xxxx";
+        case VectorOpcode::Dot3: return "XDot3(" + s[1] + ", " + s[2] + ").xxxx";
         case VectorOpcode::Dot2Add:
-            return "(dot((" + s[1] + ").xy, (" + s[2] + ").xy) + (" + s[3] + ").x).xxxx";
+            return "(XMul((" + s[1] + ").x, (" + s[2] + ").x) + XMul((" + s[1] + ").y, (" + s[2] + ").y) + (" + s[3] +
+                   ").x).xxxx";
         case VectorOpcode::Cube: return "CubeVector(" + s[1] + ")";
         case VectorOpcode::Max4: {
             const std::string v = "(" + s[1] + ")";
@@ -216,8 +223,8 @@ struct Emitter {
         switch (op) {
         case ScalarOpcode::Add: return a + " + " + b;
         case ScalarOpcode::AddPrev: return a + " + ps";
-        case ScalarOpcode::Mul: return a + " * " + b;
-        case ScalarOpcode::MulPrev: return a + " * ps";
+        case ScalarOpcode::Mul: return "XMul(" + a + ", " + b + ")";
+        case ScalarOpcode::MulPrev: return "XMul(" + a + ", ps)";
         case ScalarOpcode::MulPrev2:
             return "(ps == -kFltMax || !isfinite(ps) || !isfinite(" + b + ") || " + b + " <= 0.0) ? -kFltMax : " + a +
                    " * ps";
@@ -270,7 +277,7 @@ struct Emitter {
             return "float(" + test + ")";
         }
         case ScalarOpcode::SqrtIeee: return "sqrt(" + a + ")";
-        case ScalarOpcode::MulConst0: case ScalarOpcode::MulConst1: return a + " * " + b;
+        case ScalarOpcode::MulConst0: case ScalarOpcode::MulConst1: return "XMul(" + a + ", " + b + ")";
         case ScalarOpcode::AddConst0: case ScalarOpcode::AddConst1: return a + " + " + b;
         case ScalarOpcode::SubConst0: case ScalarOpcode::SubConst1: return a + " - " + b;
         case ScalarOpcode::Sin: return "sin(" + a + ")";
@@ -716,7 +723,9 @@ struct Emitter {
         } else {
             hlsl += "    // Fixed-function alpha test: 0 never, 1 <, 2 ==, 3 <=, 4 >, 5 !=, 6 >=, 7 always.\n";
             hlsl += "    uint alphaFunction = uint(g_alphaTest.x);\n";
-            hlsl += "    float alpha = oC[0].w, reference = g_alphaTest.y;\n";
+            // Interpolation error must not decide the test: a constant 1.0 attribute
+            // can arrive as 0.99999994 on some GPUs and fail "alpha >= 1".
+            hlsl += "    float alpha = round(oC[0].w * 4096.0) / 4096.0, reference = g_alphaTest.y;\n";
             hlsl += "    bool alphaPass = alphaFunction == 7 || (alphaFunction == 1 && alpha < reference) ||\n"
                     "        (alphaFunction == 2 && alpha == reference) || (alphaFunction == 3 && alpha <= reference) ||\n"
                     "        (alphaFunction == 4 && alpha > reference) || (alphaFunction == 5 && alpha != reference) ||\n"

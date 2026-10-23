@@ -59,7 +59,8 @@ bool D3D11Renderer::initialize(HWND target) {
     // Prefer the discrete GPU on hybrid laptops.
     IDXGIAdapter1* preferred = nullptr;
     IDXGIFactory6* factory6 = nullptr;
-    if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory6), reinterpret_cast<void**>(&factory6)))) {
+    if (!traceEnabled("defaultadapter") &&
+        SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory6), reinterpret_cast<void**>(&factory6)))) {
         factory6->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, __uuidof(IDXGIAdapter1),
                                              reinterpret_cast<void**>(&preferred));
         release(factory6);
