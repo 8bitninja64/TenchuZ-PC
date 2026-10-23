@@ -203,6 +203,12 @@ PPC_FUNC(__imp__XamUserReadProfileSettings) {
             store32(entry + 0x20, bytes);
             store32(entry + 0x24, data);
         } else if (type == 4 || type == 6) {
+            // Never written: XAM reports the setting as default with no data, and titles
+            // then apply their own defaults. Tenchu Z checks for source 1 before setting up
+            // its default button layout and volumes; source 0 made it copy zeros (every
+            // button "Item", volume 0).
+            store32(entry + 0x00, 1);        // source: default
+            store32(entry + 0x20, 0);
             store32(entry + 0x24, data);
         } else if (defaultSetting(id, value)) {
             store32(entry + 0x00, 1);        // source: default
