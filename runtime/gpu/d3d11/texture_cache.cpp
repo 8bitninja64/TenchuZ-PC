@@ -91,6 +91,18 @@ uint64_t hashBytes(const uint8_t* data, size_t size) {
     return hash;
 }
 
+uint64_t sampledHash(const uint8_t* data, size_t size) {
+    uint64_t hash = 1469598103934665603ull;
+    const size_t words = size / 8;
+    const size_t step = (std::max<size_t>)(1, words / 256);
+    for (size_t i = 0; i < words; i += step) {
+        uint64_t word;
+        std::memcpy(&word, data + i * 8, 8);
+        hash = (hash ^ word) * 1099511628211ull;
+    }
+    return hash;
+}
+
 D3D11_TEXTURE_ADDRESS_MODE addressMode(uint32_t clamp) {
     switch (clamp) {
     case 0: return D3D11_TEXTURE_ADDRESS_WRAP;
@@ -235,8 +247,14 @@ ID3D11ShaderResourceView* TextureCache::view(const TextureFetch& fetch) {
     auto& entry = entries_[key];
     if (entry.view && entry.lastCheckFrame == frame_) return entry.view;
     const uint8_t* guest = memory->host(Memory::fromPhysical(address));
-    const uint64_t hash = hashBytes(guest, guestSize);
+    // A sampled checksum every frame catches whole-texture updates (movie frames);
+    // a full hash every 64th frame (staggered per texture) catches small edits.
+    const uint64_t sample = sampledHash(guest, guestSize);
     entry.lastCheckFrame = frame_;
+    const bool fullCheck = ((frame_ + address / 4096) & 63) == 0;
+    if (entry.view && entry.sample == sample && !fullCheck) return entry.view;
+    const uint64_t hash = hashBytes(guest, guestSize);
+    entry.sample = sample;
     if (entry.view && entry.hash == hash) return entry.view;
 
     std::vector<uint8_t> raw(guest, guest + guestSize);

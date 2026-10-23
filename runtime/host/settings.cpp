@@ -23,6 +23,9 @@ vsync = true
 resolution_scale = 1
 ; Anisotropic texture filtering: 1 (off), 2, 4, 8 or 16.
 anisotropic_filtering = 16
+; Frame rate limit. 30 is the original console pacing; higher values (60, 120,
+; 144, 240, ...) or 0 for unlimited unlock it. Game speed does not change.
+frame_rate_limit = 60
 
 [input]
 mouse_sensitivity = 1.0
@@ -79,6 +82,7 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "vsync") settings.vsync = parseBool(value);
             else if (key == "resolution_scale") settings.resolutionScale = std::clamp(std::stoi(value), 1, 4);
             else if (key == "anisotropic_filtering") settings.anisotropy = std::clamp(std::stoi(value), 1, 16);
+            else if (key == "frame_rate_limit") settings.frameRateLimit = (std::max)(0, std::stoi(value));
         } else if (section == "input") {
             if (key == "mouse_sensitivity") settings.mouseSensitivity = std::stof(value);
             else if (key == "invert_mouse_y") settings.invertMouseY = parseBool(value);
@@ -125,6 +129,8 @@ const Settings& settings() {
         char value[16]{};
         if (GetEnvironmentVariableA("TENCHU_RESOLUTION_SCALE", value, sizeof(value)))
             apply(result, "display", "resolution_scale", value);
+        if (GetEnvironmentVariableA("TENCHU_FRAME_RATE", value, sizeof(value)))
+            apply(result, "display", "frame_rate_limit", value);
         return result;
     }();
     return instance;

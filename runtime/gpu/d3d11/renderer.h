@@ -18,9 +18,14 @@ public:
     // Shows a frame. `source` is the front buffer contents when available;
     // `swapRedBlue` is set when it was resolved with red and blue exchanged.
     void present(ID3D11ShaderResourceView* source, bool swapRedBlue = false);
+    // True when Present's vsync interval holds frames at the frame rate limit.
+    bool pacedByVsync() const;
 
 private:
     void resizeIfNeeded();
+    uint32_t refreshRate() const;
+    uint32_t syncInterval();
+    uint32_t refresh_ = 0;
     // TENCHU_SCREENSHOTS=<dir>,<every N frames> saves presented frames as BMP.
     void captureIfRequested();
     ID3D11Device* device_ = nullptr;

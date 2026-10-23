@@ -99,7 +99,7 @@ void execute(Controller& c, Clock::time_point now) {
             c.resumeAt = now + std::chrono::milliseconds(ms);
         } else if (command == "shot") {
             stream >> c.screenshot;
-        } else if (command == "traceframe" || command == "dumpframe") {
+        } else if (command == "traceframe" || command == "dumpframe" || command == "profile") {
             c.flags.insert(command);
         } else if (command == "quit") {
             logf("[control] quitting");

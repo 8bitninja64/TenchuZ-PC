@@ -48,6 +48,7 @@ private:
         ID3D11ShaderResourceView* view = nullptr;
         uint64_t hash = 0;
         uint64_t lastCheckFrame = 0;
+        uint64_t sample = 0;  // sampled checksum at the last check
     };
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;

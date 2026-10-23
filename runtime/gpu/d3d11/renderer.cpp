@@ -123,6 +123,36 @@ bool D3D11Renderer::initialize(HWND target) {
     return true;
 }
 
+// Refresh rate of the monitor showing the window (0 if unknown).
+uint32_t D3D11Renderer::refreshRate() const {
+    MONITORINFOEXW monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (!GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor)) return 0;
+    DEVMODEW mode{};
+    mode.dmSize = sizeof(mode);
+    if (!EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode)) return 0;
+    return mode.dmDisplayFrequency > 1 ? mode.dmDisplayFrequency : 0;
+}
+
+// Vsync interval for Present. When the refresh rate is a multiple of the frame
+// rate limit (60 on 60/120/180/240 Hz), vsync alone paces frames, which locks
+// them to the display; otherwise the command processor's timer paces them.
+uint32_t D3D11Renderer::syncInterval() {
+    if (!host::settings().vsync) return 0;
+    const int limit = host::settings().frameRateLimit;
+    const int fps = limit == 30 ? 30 : limit;
+    if (fps <= 0) return 1;
+    if (frame_ % 120 == 1) refresh_ = refreshRate();  // follows monitor changes
+    if (refresh_ && refresh_ % uint32_t(fps) == 0 && refresh_ / uint32_t(fps) <= 4) return refresh_ / uint32_t(fps);
+    return 1;
+}
+
+bool D3D11Renderer::pacedByVsync() const {
+    const int limit = host::settings().frameRateLimit;
+    return host::settings().vsync && limit > 0 && limit != 30 && refresh_ && refresh_ % uint32_t(limit) == 0 &&
+           refresh_ / uint32_t(limit) <= 4;
+}
+
 void D3D11Renderer::resizeIfNeeded() {
     RECT client{};
     GetClientRect(window_, &client);
@@ -170,7 +200,7 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue) 
         context_->ClearRenderTargetView(backBufferView_, color);
     }
     captureIfRequested();
-    swapChain_->Present(host::settings().vsync ? 1 : 0, 0);
+    swapChain_->Present(syncInterval(), 0);
     if (traceEnabled("present")) {
         static auto last = std::chrono::steady_clock::now();
         const auto now = std::chrono::steady_clock::now();

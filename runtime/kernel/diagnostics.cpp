@@ -1,5 +1,6 @@
 // Temporary investigation hooks (enabled with TENCHU_TRACE=heap).
 #include "kernel.h"
+#include "host/settings.h"
 #include "ppc_recomp_shared.h"
 #include <set>
 
@@ -64,19 +65,15 @@ TZ_TRACE_WRAP(8242AC58)
 TZ_TRACE_WRAP(8242ED10)
 
 // Present (device): the presentation interval at device+13248 sets how many
-// vblanks a frame stays on screen. TENCHU_PRESENT_INTERVAL overrides it (experiment).
+// vblanks a frame stays on screen (the title uses 2: 30 fps). Unlocked frame
+// rates use 1; TENCHU_PRESENT_INTERVAL overrides it.
 extern "C" PPC_FUNC(__imp__sub_8241BDE0);
 PPC_FUNC(sub_8241BDE0) {
     static const int interval = [] {
         char value[16]{};
-        return GetEnvironmentVariableA("TENCHU_PRESENT_INTERVAL", value, sizeof(value)) ? atoi(value) : -1;
+        if (GetEnvironmentVariableA("TENCHU_PRESENT_INTERVAL", value, sizeof(value))) return atoi(value);
+        return host::settings().frameRateLimit == 30 ? -1 : 1;
     }();
-    static uint32_t logged = ~0u;
-    const uint32_t current = load32(ctx.r3.u32 + 13248);
-    if (current != logged) {
-        logf("[d3d] present interval %08X", current);
-        logged = current;
-    }
     if (interval >= 0) store32(ctx.r3.u32 + 13248, uint32_t(interval));
     __imp__sub_8241BDE0(ctx, base);
 }

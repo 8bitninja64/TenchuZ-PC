@@ -15,6 +15,7 @@ struct Settings {
     bool vsync = true;
     int resolutionScale = 1;      // internal resolution multiplier (1 = 720p, 2 = 1440p, 3 = 4K)
     int anisotropy = 16;          // texture filtering, 1 = off
+    int frameRateLimit = 60;      // 30 = original pacing, 0 = unlimited
     // Input
     float mouseSensitivity = 1.0f;
     bool invertMouseY = false;

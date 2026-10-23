@@ -81,6 +81,12 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
 - Modern features: TenchuZ.ini (runtime/host/settings.cpp), borderless fullscreen
   (Alt+Enter/F11), keyboard+mouse merged into controller 1, resolution_scale 1-4,
   anisotropic filtering, host-generated mips, discrete GPU preferred.
+- Frame rate: the title presents with interval 2 (device+13248) and times its logic with
+  QueryPerformanceCounter (sub_824104E8), so unlocking is safe. frame_rate_limit != 30
+  forces interval 1, runs the emulated vblank at 240 Hz, and paces with Present's sync
+  interval (when refresh % limit == 0) or a timer in the CP (limitFrameRate). Missions
+  are bound by the command processor thread: profile it with TENCHU_TRACE=hostprof and
+  the control file's `profile` command (the runtime has /Z7 symbols for this).
 - Hybrid laptop (Intel iGPU + RTX 3070, 240 Hz): verify rendering on NVIDIA. GPU
   differences found so far: interpolated alpha just below 1.0 (alpha test now
   quantized), 0*inf in normalizations (XMul helpers).

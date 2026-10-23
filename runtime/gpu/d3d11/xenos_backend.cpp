@@ -286,6 +286,10 @@ struct XenosBackend::Impl {
 
     // ---- Constant buffers ------------------------------------------------------------
     ID3D11Buffer* vertexConstants = nullptr;
+    // Last contents written to the constant buffers; filled with a NaN pattern at
+    // start-up so the first draw always uploads.
+    float lastVertexConstants[256 * 4], lastPixelConstants[256 * 4];
+    std::vector<uint32_t> indexScratch, drawIndices;
     ID3D11Buffer* pixelConstants = nullptr;
     ID3D11Buffer* sharedConstants = nullptr;
 
@@ -352,6 +356,8 @@ struct XenosBackend::Impl {
         ID3DBlob* code = nullptr;
         ID3DBlob* errors = nullptr;
         const bool pixel = type == xenos::ShaderType::Pixel;
+        TZ_TRACE("compile", "[d3d11] compiling %s shader %016llX (%zu cached)", type == xenos::ShaderType::Pixel ? "pixel" : "vertex",
+                 (unsigned long long)hash, shaderCache.size());
         if (FAILED(D3DCompile(translated.hlsl.data(), translated.hlsl.size(), nullptr, nullptr, nullptr, "main",
                               pixel ? "ps_5_0" : "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors))) {
             logf("[d3d11] shader %016llX failed to compile: %s", (unsigned long long)hash,
@@ -653,6 +659,8 @@ struct XenosBackend::Impl {
             release(errors);
         }
         copyConstants = createConstantBuffer(32);
+        std::memset(lastVertexConstants, 0xFF, sizeof(lastVertexConstants));
+        std::memset(lastPixelConstants, 0xFF, sizeof(lastPixelConstants));
 
         const uint32_t white = 0xFFFFFFFF;
         D3D11_TEXTURE2D_DESC texture{};
@@ -674,7 +682,8 @@ struct XenosBackend::Impl {
                       D3D11_PRIMITIVE_TOPOLOGY& topology, bool& rectangles) {
         const uint32_t source = (request.initiator >> 6) & 3;
         const bool wide = (request.initiator >> 11) & 1;
-        std::vector<uint32_t> indices(count);
+        std::vector<uint32_t>& indices = indexScratch;  // reused across draws
+        indices.resize(count);
         if (source == 2) {
             for (uint32_t i = 0; i < count; ++i) indices[i] = i;
         } else {
@@ -771,7 +780,7 @@ struct XenosBackend::Impl {
 
     // ---- Draw ----------------------------------------------------------------------
     // Host time per frame (trace 'hosttime'): texture uploads, draws, resolves, present.
-    std::chrono::steady_clock::duration hostTime[4]{};
+    std::chrono::steady_clock::duration hostTime[6]{};  // + constants, D3D11 draw call
     struct ScopedTime {
         std::chrono::steady_clock::duration& total;
         std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -793,7 +802,7 @@ struct XenosBackend::Impl {
         auto* ps = edramMode == 4 ? shader(psHash, xenos::ShaderType::Pixel) : nullptr;
         if (!vs || (edramMode == 4 && !ps)) { ++dropped[2]; return; }  // shader
 
-        std::vector<uint32_t> indices;
+        std::vector<uint32_t>& indices = drawIndices;  // reused across draws
         D3D11_PRIMITIVE_TOPOLOGY topology;
         bool rectangles;
         if (!buildIndices(request, primitive, count, indices, topology, rectangles)) {
@@ -889,13 +898,22 @@ struct XenosBackend::Impl {
         if (ps) bindTextures(ps->info, shared, pixelViews, pixelSamplers);
         writeBuffer(sharedConstants, &shared, sizeof(shared));
 
+        const auto constantsStart = std::chrono::steady_clock::now();
+        // Constant buffers are rewritten only when the registers changed.
         float constants[256 * 4];
         for (int i = 0; i < 256 * 4; ++i) constants[i] = asFloat(reg(reg::SHADER_CONSTANT_000_X + i));
-        writeBuffer(vertexConstants, constants, sizeof(constants));
+        if (std::memcmp(constants, lastVertexConstants, sizeof(constants)) != 0) {
+            writeBuffer(vertexConstants, constants, sizeof(constants));
+            std::memcpy(lastVertexConstants, constants, sizeof(constants));
+        }
         if (ps) {
             for (int i = 0; i < 256 * 4; ++i) constants[i] = asFloat(reg(reg::SHADER_CONSTANT_000_X + 1024 + i));
-            writeBuffer(pixelConstants, constants, sizeof(constants));
+            if (std::memcmp(constants, lastPixelConstants, sizeof(constants)) != 0) {
+                writeBuffer(pixelConstants, constants, sizeof(constants));
+                std::memcpy(lastPixelConstants, constants, sizeof(constants));
+            }
         }
+        hostTime[4] += std::chrono::steady_clock::now() - constantsStart;
 
         // Pipeline.
         context->OMSetRenderTargets(4, colorViews, depthView);
@@ -971,7 +989,9 @@ struct XenosBackend::Impl {
             device->CreateQuery(&query, &statistics);
             context->Begin(statistics);
         }
+        const auto drawStart = std::chrono::steady_clock::now();
         context->Draw(UINT(indices.size()), 0);
+        hostTime[5] += std::chrono::steady_clock::now() - drawStart;
         if (statistics) {
             context->End(statistics);
             D3D11_QUERY_DATA_PIPELINE_STATISTICS data{};
@@ -1218,8 +1238,9 @@ struct XenosBackend::Impl {
         hostTime[3] += std::chrono::steady_clock::now() - presentStart;
         if (traceEnabled("hosttime")) {
             auto ms = [](std::chrono::steady_clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
-            logf("[hosttime] textures %.1f ms (in draws), draws %.1f, resolves %.1f, present %.1f, uploads %.1f MB",
-                 ms(hostTime[0]), ms(hostTime[1]), ms(hostTime[2]), ms(hostTime[3]), uploadedBytes / 1048576.0);
+            logf("[hosttime] draws %.1f ms (textures %.1f, constants %.1f, Draw %.1f), resolves %.1f, present %.1f, "
+                 "uploads %.1f MB", ms(hostTime[1]), ms(hostTime[0]), ms(hostTime[4]), ms(hostTime[5]), ms(hostTime[2]),
+                 ms(hostTime[3]), uploadedBytes / 1048576.0);
         }
         if (traceEnabled("vbstats") && !vertexStats.empty()) {
             uint64_t unique = 0;

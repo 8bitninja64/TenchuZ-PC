@@ -3,6 +3,7 @@
 // without drawing anything.
 #include "kernel/kernel.h"
 #include "audio/xma.h"
+#include "host/settings.h"
 #include "gpu/d3d11/renderer.h"
 #include "gpu/d3d11/xenos_backend.h"
 #include <unordered_map>
@@ -121,7 +122,32 @@ gpu::XenosBackend* activeBackend() {
     return backend.get();
 }
 
+// Unlocked frame rates: the host caps presents at frame_rate_limit. The title
+// measures real time, so the cap paces rendering without changing game speed.
+void limitFrameRate() {
+    const int limit = host::settings().frameRateLimit;
+    if (limit == 30 || limit <= 0 || renderer.pacedByVsync()) return;
+    using Clock = std::chrono::steady_clock;
+    static Clock::time_point next = Clock::now();
+    static HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    const auto period = std::chrono::nanoseconds(1000000000LL / limit);
+    const auto now = Clock::now();
+    if (next < now - period) next = now;  // late: start a new cadence
+    if (next > now) {
+        const auto early = next - std::chrono::microseconds(300);
+        if (timer && early > now) {
+            LARGE_INTEGER due;
+            due.QuadPart = -std::chrono::duration_cast<std::chrono::nanoseconds>(early - now).count() / 100;
+            SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+            WaitForSingleObject(timer, INFINITE);
+        }
+        while (Clock::now() < next) _mm_pause();
+    }
+    next += period;
+}
+
 void presentFrame(uint32_t frontBuffer) {
+    limitFrameRate();
     if (auto* active = activeBackend()) active->swap(frontBuffer);
 }
 
@@ -208,8 +234,8 @@ struct Reader {
         return ring ? (end + dwords - index) % dwords : end - index;
     }
     uint32_t read() {
-        const uint32_t value = load32(base + index * 4);
-        index = ring ? (index + 1) % dwords : index + 1;
+        const uint32_t value = _byteswap_ulong(*reinterpret_cast<const uint32_t*>(memory->host(base + index * 4)));
+        if (++index == dwords && ring) index = 0;
         return value;
     }
     void skip(uint32_t count) {
@@ -296,7 +322,9 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
                      info & 0x10 ? "mem" : "reg", poll, value, reference, mask, info & 7);
                 warned = true;
             }
-            if (elapsed < std::chrono::milliseconds(4)) SwitchToThread();
+            // The guest usually answers within a frame: yield rather than sleep, since
+            // a 1 ms sleep delays the whole frame when the signal arrives right after.
+            if (elapsed < std::chrono::milliseconds(20)) SwitchToThread();
             else std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         const int64_t waited = nanosSince(start);
@@ -378,9 +406,22 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
     case 0x27: {  // IM_LOAD: microcode at a physical address
         const uint32_t addressType = reader.read(), startSize = reader.read();
         reader.skip(count - 2);
-        std::vector<uint32_t> words(startSize & 0xFFFF);
+        const uint32_t size = startSize & 0xFFFF;
         const uint32_t source = Memory::fromPhysical(addressType & ~3u);
+        // Shaders are reloaded from the same addresses every draw: reuse the hash of
+        // identical microcode (compared directly, it is small) instead of rehashing.
+        static std::unordered_map<uint64_t, std::pair<std::vector<uint32_t>, uint64_t>> loaded;
+        auto& known = loaded[(uint64_t(source) << 16) | size];
+        const uint8_t* bytes = memory->host(source);
+        if (known.first.size() == size && std::memcmp(known.first.data(), bytes, size_t(size) * 4) == 0) {
+            std::lock_guard lock(shaders.mutex);
+            shaders.current[addressType & 1] = known.second;
+            break;
+        }
+        std::vector<uint32_t> words(size);
         for (size_t i = 0; i < words.size(); ++i) words[i] = load32(source + uint32_t(i) * 4);
+        known.first.assign(reinterpret_cast<const uint32_t*>(bytes), reinterpret_cast<const uint32_t*>(bytes) + size);
+        known.second = hashWords(words);
         captureShader(addressType & 3, std::move(words));
         break;
     }
@@ -488,6 +529,7 @@ void execute(Reader& reader, int depth) {
 
 void commandProcessorMain() {
     createSystemThread("gpu-command-processor");
+    startHostProfiler("gpu-command-processor");
     for (;;) {
         uint32_t writeIndex;
         {
@@ -513,7 +555,12 @@ void vblankMain() {
     createSystemThread("gpu-vblank");
     // TENCHU_VBLANK_US overrides the 60 Hz interval (diagnostics only).
     char value[32]{};
-    const int64_t interval = GetEnvironmentVariableA("TENCHU_VBLANK_US", value, sizeof(value)) ? atoll(value) : 16667;
+    // Unlocked frame rates use a fine 240 Hz vblank so frames are not held to
+    // 60 Hz steps (the title's vblank logic only paces presents).
+    const int limit = host::settings().frameRateLimit;
+    const int64_t defaultInterval = limit == 30 ? 16667 : limit > 240 ? 1000000 / limit : 4167;
+    const int64_t interval =
+        GetEnvironmentVariableA("TENCHU_VBLANK_US", value, sizeof(value)) ? atoll(value) : defaultInterval;
     gs.vblankIntervalUs = interval;
     // sleep_until alone wakes up to a millisecond late; a high-resolution
     // waitable timer plus a short spin keeps the 60 Hz ticks even, which keeps

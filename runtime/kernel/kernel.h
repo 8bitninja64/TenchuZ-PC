@@ -172,6 +172,8 @@ uint32_t createThread(uint32_t stackSize, uint32_t entry, uint32_t argument, uin
 // Runs a guest function on a new host thread that is not visible to the
 // guest as an XThread (interrupt and audio callbacks).
 std::shared_ptr<GuestThread> createSystemThread(const char* name);
+// Samples the calling thread's host instruction pointer (TENCHU_TRACE=hostprof).
+void startHostProfiler(const char* name);
 std::shared_ptr<GuestThread> threadByKthread(uint32_t kthread);
 
 // Kernel bring-up: loads the executable, data imports and the function table.

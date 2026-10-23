@@ -33,6 +33,7 @@ add_library(TenchuRuntime STATIC
     runtime/kernel/xex.cpp
     runtime/kernel/kernel.cpp
     runtime/kernel/control.cpp
+    runtime/kernel/host_profiler.cpp
     runtime/host/settings.cpp
     runtime/host/input.cpp
     runtime/kernel/kernel_data.cpp
@@ -51,8 +52,8 @@ add_library(TenchuRuntime STATIC
     runtime/audio/xma.cpp
     runtime/movie/movie_player.cpp)
 target_include_directories(TenchuRuntime PUBLIC "${CMAKE_SOURCE_DIR}/runtime")
-target_compile_options(TenchuRuntime PRIVATE /clang:-msse4.1 -Wno-unused-parameter)
-target_link_libraries(TenchuRuntime PUBLIC TenchuPPC TenchuXenos bcrypt xinput winmm shell32 ole32 d3d11 dxgi d3dcompiler xaudio2)
+target_compile_options(TenchuRuntime PRIVATE /clang:-msse4.1 -Wno-unused-parameter /Z7)
+target_link_libraries(TenchuRuntime PUBLIC TenchuPPC TenchuXenos bcrypt xinput winmm shell32 ole32 d3d11 dxgi d3dcompiler xaudio2 dbghelp)
 
 # FFmpeg (XMA and WMV decoding), built by tools/build_xma_codec.py.
 set(TENCHU_FFMPEG "${CMAKE_SOURCE_DIR}/build/deps/ffmpeg")
@@ -70,7 +71,7 @@ target_link_libraries(TenchuZ PRIVATE TenchuRuntime)
 add_custom_command(TARGET TenchuZ POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TENCHU_FFMPEG_DLLS} "$<TARGET_FILE_DIR:TenchuZ>")
 # Translated code recurses deeply on the host stack.
-target_link_options(TenchuZ PRIVATE /STACK:16777216 /DEBUG)
+target_link_options(TenchuZ PRIVATE /STACK:16777216 /DEBUG /OPT:REF /OPT:NOICF)
 
 # Shader microcode tools.
 add_library(TenchuXenos STATIC runtime/gpu/xenos/ucode.cpp runtime/gpu/xenos/translator.cpp)

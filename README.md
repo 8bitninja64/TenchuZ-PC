@@ -23,10 +23,9 @@ hideout and missions with D3D11 rendering at the original 30 fps.
 | Audio | XAudio2 output; XMA decoder hardware emulated with FFmpeg |
 | Movies | the game's own WMV player, real time |
 | Input | XInput controllers, keyboard and mouse (rebindable) |
-| Modern features | resolution scaling up to 4x (4K = scale 3), borderless fullscreen |
+| Modern features | 60 fps and higher, resolution scaling up to 4x (4K = scale 3), borderless fullscreen |
 
-Not done yet: widescreen beyond 16:9, frame rates above 30, hardware XMA looping
-(no title use seen so far), achievements.
+Not done yet: widescreen beyond 16:9, achievements.
 
 ## Supported game
 
@@ -89,7 +88,15 @@ enough) with the C++ and Clang (ClangCL) components.
 
 Settings live in `TenchuZ.ini` next to the executable, written with comments
 on first run: fullscreen, window size, vsync, `resolution_scale` (1 = 720p,
-2 = 1440p, 3 = 4K), mouse sensitivity and every keyboard binding.
+2 = 1440p, 3 = 4K), `frame_rate_limit`, mouse sensitivity and every keyboard
+binding.
+
+`frame_rate_limit` defaults to 60; 30 restores the console's pacing, and higher
+values (120, 144, 240) or 0 (unlimited) go further. Game speed does not change
+with the frame rate: the game measures real time. With vsync on and a refresh
+rate that is a multiple of the limit (60 on a 60/120/240 Hz display), frames are
+locked to the display. Missions currently reach about 75-80 fps unlimited on an
+RTX 3070 laptop; menus and the hideout run far higher.
 
 - **Alt+Enter** or **F11**: toggle borderless fullscreen.
 - Controller: works as on the console. Keyboard and mouse act as controller 1:
