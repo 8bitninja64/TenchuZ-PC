@@ -276,16 +276,16 @@ struct XenosBackend::Impl {
         if (!mirror || !size || uint64_t(physical) + size > Memory::kPhysicalSize) return false;
         const uint32_t first = physical >> 12, last = (physical + size - 1) >> 12;
         if (rangeHot(first, last)) return false;
-        if (memory->rangeWatched(first, last)) return true;  // nothing written since the upload
+        if (memory->rangeWatched(Memory::kWatchMirror, first, last)) return true;  // nothing written since the upload
         uint32_t run = 0;
         for (uint32_t page = first; page <= last + 1; ++page) {
-            if (page <= last && !memory->pageWatched(page)) {
+            if (page <= last && !memory->pageWatched(Memory::kWatchMirror, page)) {
                 ++run;
                 continue;
             }
             if (!run) continue;
             const uint32_t runFirst = page - run;
-            memory->watchPages(runFirst, run);  // before copying: later writes fault
+            memory->watchPages(Memory::kWatchMirror, runFirst, run);  // before copying: later writes fault
             const D3D11_BOX box{runFirst * 0x1000u, 0, 0, page * 0x1000u, 1, 1};
             context->UpdateSubresource(mirror, 0, &box, memory->host(Memory::fromPhysical(runFirst * 0x1000u)), 0, 0);
             mirroredBytes += uint64_t(run) * 0x1000;

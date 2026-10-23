@@ -86,13 +86,29 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
 - Frame rate: the title presents with interval 2 (device+13248) and times its logic with
   QueryPerformanceCounter (sub_824104E8), so unlocking is safe. frame_rate_limit != 30
   forces interval 1, runs the emulated vblank at 240 Hz, and paces with Present's sync
-  interval (when refresh % limit == 0) or a timer in the CP (limitFrameRate). Missions
-  are bound by the command processor thread: profile it with TENCHU_TRACE=hostprof and
-  the control file's `profile` command (the runtime has /Z7 symbols for this).
-- Vertex data must be read fresh for every draw: the title rewrites dynamic buffers
-  (same base/size) between draws, and reusing a copy within a frame caused one-frame
-  black tiles and stretched polygons. Direct-indexed streams copy only the draw's index
-  range (ShaderInfo::vertexStreams), which keeps the 5 MB level buffer cheap.
+  interval (when refresh % limit == 0) or a timer in the CP (limitFrameRate).
+- Performance: two threads bound the frame rate, the command processor and the title's
+  frame thread (the one calling VdSwap). TENCHU_TRACE=hostprof + the control file's
+  `profile` command samples both (the runtime has /Z7 symbols); gputime's "cp idle" and
+  "mem waits" show which one waits on the other. Sweep scripts: build/live/sweep.sh
+  (TENCHU_FRAME_RATE=240 measures headroom).
+- Guest memory mirror: physical memory has a 512 MB GPU copy (xenos_backend mirrorRange),
+  uploaded per 4 KiB page. Memory::watchPages write-protects uploaded pages in all three
+  views; the first guest write faults, a vectored handler unprotects the page and clears
+  it for every watch client (mirror, textures). OS writes into guest memory do not fault:
+  call Memory::prepareHostWrite first (NtReadFile does). Vertex streams and list-primitive
+  indices are read from the mirror in place (direct draws); pages rewritten every frame
+  turn hot and use the per-draw ring copy. Textures are revalidated only after a write.
+- Vertex data must never be reused from an earlier copy without that check: the title
+  rewrites dynamic buffers (same base/size) between draws (one-frame black tiles and
+  stretched polygons). Ring copies take only the draw's index range (vertexStreams).
+- Generator: CR/CTR/XER/reservation are function locals (config/tenchuz.toml); register
+  and non-volatile locals stay off (split functions pass registers through jumps).
+  /fp:precise for the generated code measured no gain over /fp:strict: keep strict.
+- Native replacements of hot guest functions live in runtime/kernel/native_overrides.cpp
+  (TENCHU_TRACE=verifynative runs the original too and logs differences).
+- Never block the title's threads on host devices: gamepad.cpp publishes snapshots; SDL
+  calls (enumeration, rumble) ran under the title's lock and caused 30-250 ms hitches.
 - The upload ring must not wrap inside a draw: wrapping maps with DISCARD (renames the
   buffer), so streams copied before the wrap are gone for that draw. Draws reserve their
   total upload first (reserveUploads). This was the remaining one-tile glitch source.

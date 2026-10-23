@@ -200,7 +200,10 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue) 
         context_->ClearRenderTargetView(backBufferView_, color);
     }
     captureIfRequested();
-    swapChain_->Present(syncInterval(), 0);
+    const HRESULT presented = swapChain_->Present(syncInterval(), 0);
+    if (frame_ % 300 == 0)
+        TZ_TRACE("window", "[window] foreground %d iconic %d present %08X", GetForegroundWindow() == window_,
+                 IsIconic(window_) != 0, unsigned(presented));
     if (traceEnabled("present")) {
         static auto last = std::chrono::steady_clock::now();
         const auto now = std::chrono::steady_clock::now();

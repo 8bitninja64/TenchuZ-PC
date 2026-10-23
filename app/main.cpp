@@ -84,6 +84,14 @@ void startWindowThread() {
                                       windowClass.hInstance, nullptr);
         tz::host::initializeInput(window);
         ShowWindow(window, SW_SHOW);
+        // Automated runs (TENCHU_CONTROL) start from a background shell, which may not
+        // take the foreground, and drivers throttle background windows (NVIDIA: 20 fps
+        // by default). A synthetic Alt press lets SetForegroundWindow through.
+        if (GetEnvironmentVariableW(L"TENCHU_CONTROL", nullptr, 0)) {
+            keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY, 0);
+            SetForegroundWindow(window);
+            keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);
+        }
         if (settings.fullscreen) PostMessageW(window, WM_APP, 0, 0);
         tz::gpu::setOutputWindow(window);
         MSG message;

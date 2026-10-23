@@ -86,16 +86,17 @@ void Memory::protectPhysical(uint32_t firstPage, uint32_t count, bool readOnly) 
     }
 }
 
-void Memory::watchPages(uint32_t firstPage, uint32_t count) {
+void Memory::watchPages(WatchClient client, uint32_t firstPage, uint32_t count) {
     static const PVOID handler = AddVectoredExceptionHandler(1, watchedPageFault);
     (void)handler;
     std::lock_guard lock(watchMutex_);
     uint32_t run = 0;
     for (uint32_t page = firstPage; page <= firstPage + count; ++page) {
-        const bool protect = page < firstPage + count && page < kPhysicalPages && !pageWatched(page);
-        if (protect) {
+        const bool inRange = page < firstPage + count && page < kPhysicalPages;
+        if (inRange) valid_[client][page >> 6].fetch_or(1ull << (page & 63), std::memory_order_acq_rel);
+        if (inRange && !pageProtected(page)) {
             // Protect before the caller copies: a write after this point faults.
-            watched_[page >> 6].fetch_or(1ull << (page & 63), std::memory_order_acq_rel);
+            protected_[page >> 6].fetch_or(1ull << (page & 63), std::memory_order_acq_rel);
             ++run;
         } else if (run) {
             protectPhysical(page - run, run, true);
@@ -107,8 +108,10 @@ void Memory::watchPages(uint32_t firstPage, uint32_t count) {
 bool Memory::unwatchForWrite(uint32_t physicalPage) {
     if (physicalPage >= kPhysicalPages) return false;
     std::lock_guard lock(watchMutex_);
-    if (pageWatched(physicalPage)) {
-        watched_[physicalPage >> 6].fetch_and(~(1ull << (physicalPage & 63)), std::memory_order_acq_rel);
+    if (pageProtected(physicalPage)) {
+        const uint64_t clear = ~(1ull << (physicalPage & 63));
+        for (auto& valid : valid_) valid[physicalPage >> 6].fetch_and(clear, std::memory_order_acq_rel);
+        protected_[physicalPage >> 6].fetch_and(clear, std::memory_order_acq_rel);
         protectPhysical(physicalPage, 1, false);
         return true;
     }
@@ -118,13 +121,13 @@ bool Memory::unwatchForWrite(uint32_t physicalPage) {
     return info.Protect == PAGE_READWRITE;
 }
 
-bool Memory::rangeWatched(uint32_t firstPage, uint32_t lastPage) const {
+bool Memory::rangeWatched(WatchClient client, uint32_t firstPage, uint32_t lastPage) const {
     if (lastPage >= kPhysicalPages || firstPage > lastPage) return false;
     for (uint32_t word = firstPage >> 6; word <= lastPage >> 6; ++word) {
         uint64_t need = ~0ull;
         if (word == firstPage >> 6) need &= ~0ull << (firstPage & 63);
         if (word == lastPage >> 6) need &= ~0ull >> (63 - (lastPage & 63));
-        if ((watched_[word].load(std::memory_order_acquire) & need) != need) return false;
+        if ((valid_[client][word].load(std::memory_order_acquire) & need) != need) return false;
     }
     return true;
 }
@@ -134,7 +137,7 @@ void Memory::prepareHostWrite(uint32_t address, uint32_t size) {
     const uint32_t first = physicalAddress(address) >> 12;
     const uint32_t last = (physicalAddress(address) + size - 1) >> 12;
     for (uint32_t page = first; page <= last && page < kPhysicalPages; ++page)
-        if (pageWatched(page)) unwatchForWrite(page);
+        if (pageProtected(page)) unwatchForWrite(page);
 }
 
 Memory::~Memory() {

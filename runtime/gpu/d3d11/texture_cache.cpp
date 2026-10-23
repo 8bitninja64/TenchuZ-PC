@@ -214,14 +214,12 @@ ID3D11ShaderResourceView* TextureCache::withMips(ID3D11Texture2D* base, ID3D11Sh
 }
 
 void TextureCache::invalidate(uint32_t physicalAddress) {
-    for (auto it = entries_.begin(); it != entries_.end();) {
-        if (std::get<0>(it->first) == physicalAddress) {
-            release(it->second.view);
-            release(it->second.texture);
-            it = entries_.erase(it);
-        } else {
-            ++it;
-        }
+    // Keys start with the address: its entries are adjacent.
+    auto it = entries_.lower_bound(std::make_tuple(physicalAddress, 0u, 0u, 0u, 0u));
+    while (it != entries_.end() && std::get<0>(it->first) == physicalAddress) {
+        release(it->second.view);
+        release(it->second.texture);
+        it = entries_.erase(it);
     }
 }
 
@@ -245,16 +243,29 @@ ID3D11ShaderResourceView* TextureCache::view(const TextureFetch& fetch) {
 
     const auto key = std::make_tuple(address, fetch.format(), width, height, fetch.words[0] & 0xFFC00000u);
     auto& entry = entries_[key];
+    const uint32_t firstPage = address >> 12, lastPage = uint32_t((address + guestSize - 1) >> 12);
+    static const bool watch = !traceEnabled("nowatchtex");
+    if (entry.view && watch && !entry.volatileData) {
+        // Unwritten since the upload: nothing to check.
+        if (memory->rangeWatched(Memory::kWatchTextures, firstPage, lastPage)) return entry.view;
+        entry.writes = frame_ - entry.lastWriteFrame <= 2 ? entry.writes + 1 : 0;
+        entry.lastWriteFrame = frame_;
+        if (entry.writes >= 8) entry.volatileData = true;
+    }
     if (entry.view && entry.lastCheckFrame == frame_) return entry.view;
-    const uint8_t* guest = memory->host(Memory::fromPhysical(address));
-    // A sampled checksum every frame catches whole-texture updates (movie frames);
-    // a full hash every 64th frame (staggered per texture) catches small edits.
-    const uint64_t sample = sampledHash(guest, guestSize);
     entry.lastCheckFrame = frame_;
-    const bool fullCheck = ((frame_ + address / 4096) & 63) == 0;
-    if (entry.view && entry.sample == sample && !fullCheck) return entry.view;
+    // Protect before reading, so a write during the upload is caught next time.
+    if (watch && !entry.volatileData) memory->watchPages(Memory::kWatchTextures, firstPage, lastPage - firstPage + 1);
+    const uint8_t* guest = memory->host(Memory::fromPhysical(address));
+    if (!watch || entry.volatileData) {
+        // A sampled checksum every frame catches whole-texture updates (movie frames);
+        // a full hash every 64th frame (staggered per texture) catches small edits.
+        const uint64_t sample = sampledHash(guest, guestSize);
+        const bool fullCheck = ((frame_ + address / 4096) & 63) == 0;
+        if (entry.view && entry.sample == sample && !fullCheck) return entry.view;
+        entry.sample = sample;
+    }
     const uint64_t hash = hashBytes(guest, guestSize);
-    entry.sample = sample;
     if (entry.view && entry.hash == hash) return entry.view;
 
     std::vector<uint8_t> raw(guest, guest + guestSize);

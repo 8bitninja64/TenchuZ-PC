@@ -50,6 +50,11 @@ private:
         uint64_t hash = 0;
         uint64_t lastCheckFrame = 0;
         uint64_t sample = 0;  // sampled checksum at the last check
+        // Validation by write watching; data rewritten in most frames (movies) goes
+        // back to per-frame checksums.
+        uint64_t lastWriteFrame = 0;
+        uint32_t writes = 0;
+        bool volatileData = false;
     };
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;
