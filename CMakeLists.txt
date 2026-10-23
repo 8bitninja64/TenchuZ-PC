@@ -32,6 +32,7 @@ add_library(TenchuRuntime STATIC
     runtime/kernel/memory.cpp
     runtime/kernel/xex.cpp
     runtime/kernel/kernel.cpp
+    runtime/kernel/control.cpp
     runtime/kernel/kernel_data.cpp
     runtime/kernel/format.cpp
     runtime/kernel/imports_ke.cpp

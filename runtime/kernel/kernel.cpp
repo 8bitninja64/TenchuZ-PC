@@ -676,10 +676,14 @@ namespace {
 // seconds after a delay, then prints the hottest functions (TENCHU_TRACE=prof).
 void startProfiler() {
     if (!traceEnabled("prof")) return;
-    std::thread([] {
-        std::this_thread::sleep_for(std::chrono::seconds(8));
+    // TENCHU_PROF=<start s>,<duration s> moves the window (default 8,10).
+    int startSeconds = 8, durationSeconds = 10;
+    char window[32]{};
+    if (GetEnvironmentVariableA("TENCHU_PROF", window, sizeof(window))) sscanf_s(window, "%d,%d", &startSeconds, &durationSeconds);
+    std::thread([startSeconds, durationSeconds] {
+        std::this_thread::sleep_for(std::chrono::seconds(startSeconds));
         std::map<std::string, std::map<uint32_t, uint32_t>> samples;
-        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(durationSeconds);
         while (std::chrono::steady_clock::now() < end) {
             {
                 std::lock_guard lock(threadMutex);

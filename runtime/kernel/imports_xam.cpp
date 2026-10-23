@@ -1,6 +1,7 @@
 // XAM imports: user profile, content (saves), system UI, notifications, input.
 // One local profile is signed in on controller 0; online features are absent.
 #include "kernel.h"
+#include "control.h"
 #include "filesystem.h"
 #include "ppc_recomp_shared.h"
 #include <chrono>
@@ -485,7 +486,16 @@ PPC_FUNC(__imp__XamInputGetState) {
     XINPUT_STATE state{};
     const bool scripted = ctx.r3.u32 == 0 && scriptedInput().active;
     TZ_TRACE("input", "[input] XamInputGetState user %u flags %X lr %08X", ctx.r3.u32, ctx.r4.u32, uint32_t(ctx.lr));
-    if (scripted) {
+    if (ctx.r3.u32 == 0 && control::active()) {
+        static std::atomic<uint32_t> packet{0};
+        const auto pad = control::pad();
+        state.Gamepad.wButtons = pad.buttons;
+        state.Gamepad.sThumbLX = pad.thumbs[0];
+        state.Gamepad.sThumbLY = pad.thumbs[1];
+        state.Gamepad.sThumbRX = pad.thumbs[2];
+        state.Gamepad.sThumbRY = pad.thumbs[3];
+        state.dwPacketNumber = ++packet;
+    } else if (scripted) {
         static std::atomic<uint32_t> packet{0};
         state.Gamepad.wButtons = scriptedButtons();
         state.dwPacketNumber = ++packet;

@@ -2,6 +2,7 @@
 #include "gpu/registers.h"
 #include "gpu/d3d11/texture_cache.h"
 #include "kernel/kernel.h"
+#include "kernel/control.h"
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 #include <algorithm>
@@ -631,23 +632,24 @@ struct XenosBackend::Impl {
             resolve();
             return;
         }
-        if (edramMode != 4 && edramMode != 5) return;
+        if (edramMode != 4 && edramMode != 5) { ++dropped[0]; return; }  // mode
         const uint32_t primitive = request.initiator & 0x3F;
         const uint32_t count = request.initiator >> 16;
-        if (!count) return;
+        if (!count) { ++dropped[1]; return; }  // count
 
         auto* vs = shader(vsHash, xenos::ShaderType::Vertex);
         auto* ps = edramMode == 4 ? shader(psHash, xenos::ShaderType::Pixel) : nullptr;
-        if (!vs || (edramMode == 4 && !ps)) return;
+        if (!vs || (edramMode == 4 && !ps)) { ++dropped[2]; return; }  // shader
 
         std::vector<uint32_t> indices;
         D3D11_PRIMITIVE_TOPOLOGY topology;
         bool rectangles;
         if (!buildIndices(request, primitive, count, indices, topology, rectangles)) {
             TZ_TRACE("draw", "[d3d11] unsupported primitive type %u", primitive);
+            ++dropped[6];
             return;
         }
-        if (indices.empty()) return;
+        if (indices.empty()) { ++dropped[3]; return; }  // indices
 
         // Render targets.
         const uint32_t surfaceInfo = reg(reg::RB_SURFACE_INFO);
@@ -677,7 +679,7 @@ struct XenosBackend::Impl {
                 if (!firstTarget) firstTarget = target;
             }
         }
-        if (!firstTarget) return;
+        if (!firstTarget) { ++dropped[4]; return; }  // target
 
         // Uploads: vertex data per binding, then the index list.
         SharedConstants shared{};
@@ -694,7 +696,7 @@ struct XenosBackend::Impl {
         shared.draw[0] = upload(indices.data(), uint32_t(indices.size() * 4));
         shared.draw[1] = reg(reg::VGT_INDX_OFFSET);
         endUploads();
-        if (shared.draw[0] == ~0u) return;
+        if (shared.draw[0] == ~0u) { ++dropped[5]; return; }  // upload
 
         // Guest screen space -> host clip space.
         const uint32_t vte = reg(reg::PA_CL_VTE_CNTL);
@@ -828,14 +830,21 @@ struct XenosBackend::Impl {
     }
     uint64_t draws = 0;
     uint64_t frames = 0;
+    // Draws skipped since the last swap: mode, count, shader, indices, target, upload, primitive.
+    uint64_t dropped[7] = {};
     // TENCHU_TRACE_FRAME=<n> logs every draw of frame n.
     bool traceFrame() const {
         static const uint64_t frame = [] {
             char value[32]{};
             return GetEnvironmentVariableA("TENCHU_TRACE_FRAME", value, sizeof(value)) ? strtoull(value, nullptr, 10) : 0ull;
         }();
-        return frame && frames == frame;
+        return (frame && frames == frame) || frames == liveTraceFrame;
     }
+    uint64_t liveTraceFrame = ~0ull;  // set by the control file's traceframe command
+    // Resolved textures are saved to build/resolved on traced frames with the dumpresolved
+    // category, or on the frame after a dumpframe control command (without tracing).
+    bool dumpFrame() const { return (traceFrame() && traceEnabled("dumpresolved")) || frames == liveDumpFrame; }
+    uint64_t liveDumpFrame = ~0ull;
 
     // ---- Resolve -------------------------------------------------------------------
     void resolve() {
@@ -872,6 +881,9 @@ struct XenosBackend::Impl {
             const uint32_t info = reg(infoRegisters[sourceSelect]);
             source = renderTarget(info & 0xFFF, pitch, (info >> 16) & 0xF, samples, false);
         }
+        TZ_TRACE("resolve", "[d3d11] resolve src %u verts %.1f,%.1f-%.1f,%.1f wo %08X mode %08X surf %08X dinfo %08X",
+                 sourceSelect, minX, minY, maxX, maxY, windowOffset, reg(reg::PA_SU_SC_MODE_CNTL), surfaceInfo,
+                 reg(reg::RB_DEPTH_INFO));
         TZ_TRACE("resolve", "[d3d11] resolve src %u rect %ld,%ld-%ld,%ld -> %08X pitch %08X info %08X cmd %u clear %d%d",
                  sourceSelect, rect.left, rect.top, rect.right, rect.bottom, reg(reg::RB_COPY_DEST_BASE),
                  reg(reg::RB_COPY_DEST_PITCH), reg(reg::RB_COPY_DEST_INFO), command, clearColor, clearDepth);
@@ -934,7 +946,7 @@ struct XenosBackend::Impl {
                 ID3D11ShaderResourceView* none = nullptr;
                 context->PSSetShaderResources(0, 1, &none);
                 target->swapped = swap;
-                if (traceFrame() && traceEnabled("dumpresolved") && single) {
+                if (dumpFrame() && single) {
                     CreateDirectoryA("build/resolved", nullptr);
                     char path[96];
                     snprintf(path, sizeof(path), "build/resolved/source_%08X.bmp", destination);
@@ -1014,7 +1026,7 @@ struct XenosBackend::Impl {
     void swap(uint32_t frontBuffer) {
         auto it = resolved.find(frontBuffer & 0x1FFFFFFF);
         if (it == resolved.end()) it = resolved.find(Memory::physicalAddress(frontBuffer));
-        if (traceFrame() && traceEnabled("dumpresolved")) {
+        if (dumpFrame()) {
             CreateDirectoryA("build/resolved", nullptr);
             for (const auto& [address, entry] : resolved) {
                 char path[96];
@@ -1024,10 +1036,16 @@ struct XenosBackend::Impl {
         }
         renderer.present(it != resolved.end() ? it->second.view : nullptr,
                          it != resolved.end() && it->second.swapped);
-        TZ_TRACE("swap", "[d3d11] swap %08X (%s), %llu draws", frontBuffer,
-                 it != resolved.end() ? "resolved" : "missing", (unsigned long long)draws);
+        TZ_TRACE("swap", "[d3d11] swap %08X (%s), %llu draws, dropped %llu/%llu/%llu/%llu/%llu/%llu/%llu", frontBuffer,
+                 it != resolved.end() ? "resolved" : "missing", (unsigned long long)draws,
+                 (unsigned long long)dropped[0], (unsigned long long)dropped[1], (unsigned long long)dropped[2],
+                 (unsigned long long)dropped[3], (unsigned long long)dropped[4], (unsigned long long)dropped[5],
+                 (unsigned long long)dropped[6]);
         draws = 0;
+        std::fill(std::begin(dropped), std::end(dropped), 0);
         ++frames;
+        if (control::takeFlag("traceframe")) liveTraceFrame = frames;
+        if (control::takeFlag("dumpframe")) liveDumpFrame = frames;
         textures.beginFrame();
     }
 };

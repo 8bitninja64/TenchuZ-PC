@@ -332,6 +332,18 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         writePhysical(address, initiator >> 31 ? gs.vblanks.load() : value);
         break;
     }
+    case 0x5A: {  // EVENT_WRITE_EXT: screen extents of the preceding draws
+        const uint32_t initiator = reader.read(), address = reader.read();
+        reader.skip(count - 2);
+        // D3D's predicated tiling uses these to decide which tiles a draw touches;
+        // without rasterizer feedback report the whole surface (min/max x and y in
+        // 8-pixel units, then z) so nothing is skipped.
+        TZ_TRACE("cp", "[cp] EVENT_WRITE_EXT %08X to %08X", initiator, address);
+        const uint16_t extents[6] = {0, 8192 >> 3, 0, 8192 >> 3, 0, 1};
+        const uint32_t target = Memory::fromPhysical(address & ~3u);
+        for (int i = 0; i < 6; ++i) store16(target + i * 2, extents[i]);
+        break;
+    }
     case 0x3D: {  // MEM_WRITE
         const uint32_t address = reader.read() ;
         for (uint32_t i = 1; i < count; ++i) writePhysical(address + (i - 1) * 4, reader.read());

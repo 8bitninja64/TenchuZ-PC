@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "kernel/kernel.h"
+#include "kernel/control.h"
 #include <d3dcompiler.h>
 #include <atomic>
 #include <cmath>
@@ -161,7 +162,16 @@ void D3D11Renderer::captureIfRequested() {
         std::filesystem::create_directories(result.first);
         return result;
     }();
-    if (settings.first.empty() || !settings.second || frame_ % settings.second) return;
+    std::filesystem::path target;
+    if (std::string requested = control::takeScreenshotRequest(); !requested.empty()) {
+        target = requested;
+    } else if (!settings.first.empty() && settings.second && frame_ % settings.second == 0) {
+        char name[64];
+        snprintf(name, sizeof(name), "frame_%06llu.bmp", (unsigned long long)frame_);
+        target = settings.first / name;
+    } else {
+        return;
+    }
     ID3D11Texture2D* backBuffer = nullptr;
     swapChain_->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBuffer));
     D3D11_TEXTURE2D_DESC desc{};
@@ -187,9 +197,7 @@ void D3D11Renderer::captureIfRequested() {
         file.bfType = 0x4D42;
         file.bfOffBits = sizeof(file) + sizeof(info);
         file.bfSize = file.bfOffBits + imageSize;
-        char name[64];
-        snprintf(name, sizeof(name), "frame_%06llu.bmp", (unsigned long long)frame_);
-        if (FILE* out = _wfopen((settings.first / name).c_str(), L"wb")) {
+        if (FILE* out = _wfopen(target.c_str(), L"wb")) {
             fwrite(&file, sizeof(file), 1, out);
             fwrite(&info, sizeof(info), 1, out);
             for (UINT y = desc.Height; y-- > 0;)
