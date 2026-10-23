@@ -76,7 +76,16 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   scalar ops with write mask 0 still update ps; threads keep their ExCreateThread
   affinity (flags bits 24-29) as PCR processor number (audio workers barrier on it).
 - Audio: XAudio2 render driver works; 99% of waves are XMA (runtime/audio/xma.cpp
-  emulates the decoder contexts with FFmpeg's xma2 in raw-frame mode).
+  emulates the decoder contexts with FFmpeg's xma2 in raw-frame mode, loops at packet
+  granularity).
+- Modern features: TenchuZ.ini (runtime/host/settings.cpp), borderless fullscreen
+  (Alt+Enter/F11), keyboard+mouse merged into controller 1, resolution_scale 1-4,
+  anisotropic filtering, host-generated mips, discrete GPU preferred.
+- Hybrid laptop (Intel iGPU + RTX 3070, 240 Hz): verify rendering on NVIDIA. GPU
+  differences found so far: interpolated alpha just below 1.0 (alpha test now
+  quantized), 0*inf in normalizations (XMul helpers).
+- Saved profile settings once had all volumes at 0 from button-mashing tests: if the
+  game is silent, check Options > Sound Settings before debugging audio.
 
 ## D3D facts (device at *VdGlobalDevice = 0x40001600)
 - Present = sub_8241BDE0 (park GPU on SCRATCH1 + vsync callback 8241BD50) then
