@@ -51,6 +51,7 @@ struct Gpu {
     uint64_t exitAfterFrames = 0;
     std::atomic<int64_t> lastVblankNs{0};
     std::atomic<uint32_t> vblanks{0};
+    std::atomic<int64_t> vblankIntervalUs{16667};
     // Tiling predication: packets with header bit 0 run only when
     // (binSelect & binMask) != 0.
     uint64_t binMask = ~0ull;
@@ -506,11 +507,14 @@ void commandProcessorMain() {
     }
 }
 
+thread_local bool inVblankInterrupt = false;
+
 void vblankMain() {
     createSystemThread("gpu-vblank");
     // TENCHU_VBLANK_US overrides the 60 Hz interval (diagnostics only).
     char value[32]{};
     const int64_t interval = GetEnvironmentVariableA("TENCHU_VBLANK_US", value, sizeof(value)) ? atoll(value) : 16667;
+    gs.vblankIntervalUs = interval;
     // sleep_until alone wakes up to a millisecond late; a high-resolution
     // waitable timer plus a short spin keeps the 60 Hz ticks even, which keeps
     // the title's 30 fps frame pacing even.
@@ -532,7 +536,9 @@ void vblankMain() {
         while (std::chrono::steady_clock::now() < next) _mm_pause();
         gs.lastVblankNs = std::chrono::steady_clock::now().time_since_epoch().count();
         ++gs.vblanks;
+        inVblankInterrupt = true;
         dispatchInterrupt(0, 2);
+        inVblankInterrupt = false;
     }
 }
 
@@ -580,10 +586,13 @@ uint32_t PPCMmioRead32(uint32_t address) {
         case kRegEdramTiming: return 0x08100748;
         case kRegBcControl: return 0x0000200E;
         case kRegD1ModeVCounter: {
-            // 750 lines per 60 Hz frame; lines 720-749 are vertical blank.
+            // The vblank interrupt handler checks that it runs inside vertical blank;
+            // dispatch latency must not push it out (the window is only 4% of a refresh).
+            if (inVblankInterrupt) return 725;
+            // 750 lines per refresh; lines 720-749 are vertical blank.
             const int64_t now = std::chrono::steady_clock::now().time_since_epoch().count();
             const int64_t sinceVblank = now - gs.lastVblankNs.load();
-            const int64_t line = (sinceVblank / 1000) * 750 / 16667;
+            const int64_t line = (sinceVblank / 1000) * 750 / gs.vblankIntervalUs.load();
             return uint32_t((line + 720) % 750);
         }
         case kRegInterruptStatus: return 1;

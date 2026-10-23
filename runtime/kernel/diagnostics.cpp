@@ -56,13 +56,30 @@ PPC_FUNC(sub_82413CB0) {
                  ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));               \
         __imp__sub_##address(ctx, base);                                                         \
     }
-TZ_TRACE_WRAP(8241BDE0)
 TZ_TRACE_WRAP(8241BF50)
 TZ_TRACE_WRAP(8241D770)
 TZ_TRACE_WRAP(8241E768)
 TZ_TRACE_WRAP(82426498)
 TZ_TRACE_WRAP(8242AC58)
 TZ_TRACE_WRAP(8242ED10)
+
+// Present (device): the presentation interval at device+13248 sets how many
+// vblanks a frame stays on screen. TENCHU_PRESENT_INTERVAL overrides it (experiment).
+extern "C" PPC_FUNC(__imp__sub_8241BDE0);
+PPC_FUNC(sub_8241BDE0) {
+    static const int interval = [] {
+        char value[16]{};
+        return GetEnvironmentVariableA("TENCHU_PRESENT_INTERVAL", value, sizeof(value)) ? atoi(value) : -1;
+    }();
+    static uint32_t logged = ~0u;
+    const uint32_t current = load32(ctx.r3.u32 + 13248);
+    if (current != logged) {
+        logf("[d3d] present interval %08X", current);
+        logged = current;
+    }
+    if (interval >= 0) store32(ctx.r3.u32 + 13248, uint32_t(interval));
+    __imp__sub_8241BDE0(ctx, base);
+}
 
 // D3D segment kicks (TENCHU_TRACE=kickseg): (device, segments*, count).
 extern "C" PPC_FUNC(__imp__sub_824262B8);
@@ -82,8 +99,11 @@ uint32_t scratchOne() { return load32(0xE000B004); }
 extern "C" PPC_FUNC(__imp__sub_8241BD50);
 PPC_FUNC(sub_8241BD50) {
     const uint32_t before = scratchOne(), param = ctx.r3.u32;
+    const uint32_t device = load32(load32(0x82000800));  // *VdGlobalDevice
+    const uint32_t vcounter = PPCMmioRead32(0x7FC80000 + 0x194C * 4);
     __imp__sub_8241BD50(ctx, base);
-    TZ_TRACE("release", "[release] vsync callback param %08X scratch1 %X -> %X", param, before, scratchOne());
+    TZ_TRACE("release", "[release] vsync callback param %08X vcounter %u dev %u/%u -> %u scratch1 %X -> %X", param,
+             vcounter, load32(device + 15124), load32(device + 15128), load32(device + 15132), before, scratchOne());
 }
 extern "C" PPC_FUNC(__imp__sub_82425D88);
 PPC_FUNC(sub_82425D88) {

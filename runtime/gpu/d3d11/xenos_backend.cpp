@@ -7,6 +7,7 @@
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <set>
@@ -208,6 +209,8 @@ struct XenosBackend::Impl {
     ID3D11Buffer* ring = nullptr;
     ID3D11ShaderResourceView* ringView = nullptr;
     uint32_t ringOffset = 0;
+    uint64_t uploadedBytes = 0;  // per frame (trace 'hosttime')
+    std::map<std::pair<uint32_t, uint32_t>, uint32_t> vertexStats;  // trace 'vbstats
     uint8_t* ringMapped = nullptr;
 
     void beginUploads() {
@@ -228,11 +231,56 @@ struct XenosBackend::Impl {
         if (ringOffset + size > kRingSize) {
             endUploads();
             ringOffset = 0;
+            ++ringGeneration;
         }
         beginUploads();
         const uint32_t offset = ringOffset;
+        uploadedBytes += size;
         std::memcpy(ringMapped + offset, data, size);
         ringOffset += size;
+        return offset;
+    }
+
+    // Vertex ranges are uploaded once per frame: one level-geometry buffer can be
+    // bound by hundreds of draws. A sampled checksum catches ranges the title
+    // rewrites between draws of the same frame.
+    struct VertexUpload {
+        uint32_t offset;
+        uint64_t checksum;
+    };
+    std::map<std::pair<uint32_t, uint32_t>, VertexUpload> vertexUploads;
+    uint64_t ringGeneration = 0;  // bumped when the ring wraps (earlier offsets are reused)
+    uint64_t vertexUploadsGeneration = 0;
+
+    static uint64_t sampleChecksum(const uint8_t* data, uint32_t size) {
+        uint64_t hash = 1469598103934665603ull;
+        const uint32_t words = size / 4;
+        const uint32_t step = (std::max)(1u, words / 64);
+        for (uint32_t i = 0; i < words; i += step) {
+            uint32_t word;
+            std::memcpy(&word, data + size_t(i) * 4, 4);
+            hash = (hash ^ word) * 1099511628211ull;
+        }
+        return hash;
+    }
+
+    uint32_t uploadVertices(uint32_t address, uint32_t size) {
+        const uint8_t* data = memory->host(Memory::fromPhysical(address));
+        if (vertexUploadsGeneration != ringGeneration) {
+            vertexUploads.clear();
+            vertexUploadsGeneration = ringGeneration;
+        }
+        const uint64_t checksum = sampleChecksum(data, size);
+        const auto key = std::make_pair(address, size);
+        if (auto it = vertexUploads.find(key); it != vertexUploads.end() && it->second.checksum == checksum)
+            return it->second.offset;
+        const uint32_t offset = upload(data, size);
+        // The upload may have wrapped the ring and invalidated the other entries.
+        if (vertexUploadsGeneration != ringGeneration) {
+            vertexUploads.clear();
+            vertexUploadsGeneration = ringGeneration;
+        }
+        if (offset != ~0u) vertexUploads[key] = {offset, checksum};
         return offset;
     }
 
@@ -715,12 +763,22 @@ struct XenosBackend::Impl {
             if (traceFrame())
                 logf("[draw]   texture %u at %08X format %u %ux%u", uint32_t(slot), fetch.baseAddress(), fetch.format(),
                      fetch.width(), fetch.height());
+            const auto textureStart = std::chrono::steady_clock::now();
             if (auto* view = textures.view(fetch)) views[slot] = view;
+            hostTime[0] += std::chrono::steady_clock::now() - textureStart;
         }
     }
 
     // ---- Draw ----------------------------------------------------------------------
+    // Host time per frame (trace 'hosttime'): texture uploads, draws, resolves, present.
+    std::chrono::steady_clock::duration hostTime[4]{};
+    struct ScopedTime {
+        std::chrono::steady_clock::duration& total;
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~ScopedTime() { total += std::chrono::steady_clock::now() - start; }
+    };
     void draw(const DrawRequest& request, uint64_t vsHash, uint64_t psHash) {
+        ScopedTime timed{hostTime[1]};
         const uint32_t edramMode = reg(reg::RB_MODECONTROL) & 7;
         if (edramMode == 6) {
             resolve();
@@ -785,7 +843,8 @@ struct XenosBackend::Impl {
             const uint32_t word0 = reg(base), word1 = reg(base + 1);
             const uint32_t address = word0 & ~3u, size = ((word1 >> 2) & 0xFFFFFF) * 4;
             shared.vertexEndian[slot] = word1 & 3;
-            shared.vertexBase[slot] = upload(memory->host(Memory::fromPhysical(address)), (std::max)(size, 16u));
+            if (traceEnabled("vbstats")) vertexStats[{address, size}]++;
+            shared.vertexBase[slot] = uploadVertices(address, (std::max)(size, 16u));
         }
         shared.draw[0] = upload(indices.data(), uint32_t(indices.size() * 4));
         shared.draw[1] = reg(reg::VGT_INDX_OFFSET);
@@ -943,6 +1002,7 @@ struct XenosBackend::Impl {
 
     // ---- Resolve -------------------------------------------------------------------
     void resolve() {
+        ScopedTime timed{hostTime[2]};
         const uint32_t copyControl = reg(reg::RB_COPY_CONTROL);
         const uint32_t sourceSelect = copyControl & 7;
         const bool clearColor = (copyControl >> 8) & 1, clearDepth = (copyControl >> 9) & 1;
@@ -1147,6 +1207,7 @@ struct XenosBackend::Impl {
                 if (entry.texture) saveTexture(entry.texture, path);
             }
         }
+        const auto presentStart = std::chrono::steady_clock::now();
         renderer.present(it != resolved.end() ? it->second.view : nullptr,
                          it != resolved.end() && it->second.swapped);
         TZ_TRACE("swap", "[d3d11] swap %08X (%s), %llu draws, dropped %llu/%llu/%llu/%llu/%llu/%llu/%llu", frontBuffer,
@@ -1154,6 +1215,26 @@ struct XenosBackend::Impl {
                  (unsigned long long)dropped[0], (unsigned long long)dropped[1], (unsigned long long)dropped[2],
                  (unsigned long long)dropped[3], (unsigned long long)dropped[4], (unsigned long long)dropped[5],
                  (unsigned long long)dropped[6]);
+        hostTime[3] += std::chrono::steady_clock::now() - presentStart;
+        if (traceEnabled("hosttime")) {
+            auto ms = [](std::chrono::steady_clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
+            logf("[hosttime] textures %.1f ms (in draws), draws %.1f, resolves %.1f, present %.1f, uploads %.1f MB",
+                 ms(hostTime[0]), ms(hostTime[1]), ms(hostTime[2]), ms(hostTime[3]), uploadedBytes / 1048576.0);
+        }
+        if (traceEnabled("vbstats") && !vertexStats.empty()) {
+            uint64_t unique = 0;
+            for (const auto& [key, count] : vertexStats) unique += key.second;
+            logf("[vbstats] %zu distinct vertex ranges, %.1f MB distinct", vertexStats.size(), unique / 1048576.0);
+            std::vector<std::pair<uint32_t, std::pair<uint32_t, uint32_t>>> top;
+            for (const auto& [key, count] : vertexStats) top.push_back({count, key});
+            std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return uint64_t(a.first) * a.second.second > uint64_t(b.first) * b.second.second; });
+            for (size_t i = 0; i < top.size() && i < 6; ++i)
+                logf("[vbstats]   %08X size %u x%u", top[i].second.first, top[i].second.second, top[i].first);
+            vertexStats.clear();
+        }
+        vertexUploads.clear();  // the title may rewrite any buffer before the next frame
+        for (auto& time : hostTime) time = {};
+        uploadedBytes = 0;
         draws = 0;
         std::fill(std::begin(dropped), std::end(dropped), 0);
         ++frames;
