@@ -165,7 +165,7 @@ std::string disassemble(const Program& program) {
                     for (int s = 1; s <= vectorOperandCount(vop); ++s) text += ", " + sourceText(alu, s, false, &constants);
                     out += "      " + text + "\n";
                 }
-                if (alu.scalarWriteMask() || (uint32_t(sop) >= 27 && uint32_t(sop) <= 39)) {
+                if (sop != ScalarOpcode::RetainPrev) {  // a scalar op without a destination still sets ps
                     std::string operands;
                     if (alu.isScalarConstantOp()) {
                         // Constant component a, temporary component b.

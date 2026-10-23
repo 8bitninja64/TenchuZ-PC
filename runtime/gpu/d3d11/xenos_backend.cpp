@@ -236,8 +236,20 @@ struct XenosBackend::Impl {
             entry.failed = true;
             return nullptr;
         }
-        const auto translated = xenos::translate(xenos::decode(type, *words));
+        auto translated = xenos::translate(xenos::decode(type, *words));
         entry.info = translated.info;
+        // TENCHU_PS_OVERRIDE=<hash>=<hlsl> replaces that pixel shader's color output, e.g. r[6].
+        static const std::string override = [] {
+            char value[256]{};
+            return GetEnvironmentVariableA("TENCHU_PS_OVERRIDE", value, sizeof(value)) ? std::string(value) : std::string();
+        }();
+        if (type == xenos::ShaderType::Pixel && !override.empty()) {
+            char prefix[20];
+            snprintf(prefix, sizeof(prefix), "%016llX=", (unsigned long long)hash);
+            const size_t at = translated.hlsl.find("    // Fixed-function alpha test");
+            if (override.rfind(prefix, 0) == 0 && at != std::string::npos)
+                translated.hlsl.insert(at, "    oC[0] = float4((" + override.substr(17) + ").xyz, 1.0);\n");
+        }
         if (!translated.error.empty())
             logf("[d3d11] shader %016llX: %s (translated anyway)", (unsigned long long)hash, translated.error.c_str());
         ID3DBlob* code = nullptr;

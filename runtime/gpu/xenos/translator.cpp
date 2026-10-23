@@ -170,9 +170,9 @@ struct Emitter {
         }
         case VectorOpcode::Dst:
             return "float4(1.0, (" + s[1] + ").y * (" + s[2] + ").y, (" + s[1] + ").z, (" + s[2] + ").w)";
-        case VectorOpcode::MovA:
+        case VectorOpcode::MovA:  // maxa: also loads a0
             line("a0 = int(clamp(floor((" + s[1] + ").w + 0.5), -256.0, 255.0));");
-            return s[1];
+            return "max(" + s[1] + ", " + s[2] + ")";
         case VectorOpcode::KillEq: case VectorOpcode::KillGt: case VectorOpcode::KillGe: case VectorOpcode::KillNe: {
             static const char* compare[] = {"==", ">", ">=", "!="};
             const std::string test = "any(" + s[1] + " " +
@@ -194,11 +194,6 @@ struct Emitter {
             valid = false;
             return "float4(0, 0, 0, 0)";
         }
-    }
-
-    bool scalarHasEffect(ScalarOpcode op) {
-        return (op >= ScalarOpcode::PredSetEq && op <= ScalarOpcode::KillOne) || op == ScalarOpcode::MovA ||
-               op == ScalarOpcode::MovAFloor;
     }
 
     std::string scalarExpression(const AluInstruction& alu, int& constantOrdinal) {
@@ -317,8 +312,6 @@ struct Emitter {
         const auto vop = alu.vectorOpcode();
         const auto sop = alu.scalarOpcode();
         const bool vectorActive = alu.vectorWriteMask() || uint32_t(vop) >= uint32_t(VectorOpcode::PredSetEqPush);
-        const bool scalarActive = alu.scalarWriteMask() || scalarHasEffect(sop) || sop == ScalarOpcode::RetainPrev;
-        if (!vectorActive && !scalarActive) return;
         if (alu.predicated()) {
             line(std::string("if (") + (alu.predicateCondition() ? "p" : "!p") + ") {");
             ++indent;
@@ -336,23 +329,21 @@ struct Emitter {
         } else if (alu.isScalarConstantOp()) {
             constantOrdinal = 0;
         }
-        if (scalarActive) {
-            line("float s = " + scalarExpression(alu, constantOrdinal) + ";");
-            if (alu.scalarClamp()) line("s = saturate(s);");
-        }
+        // Every scalar operation updates ps, even without a destination: compilers park
+        // values there for a later *_prev instruction.
+        line("float s = " + scalarExpression(alu, constantOrdinal) + ";");
+        if (alu.scalarClamp()) line("s = saturate(s);");
         if (vectorActive && alu.vectorWriteMask()) {
             const std::string dest = destination(alu.vectorDest(), alu.exportData(), alu.vectorDestRelative());
             const std::string m = mask(alu.vectorWriteMask());
             line(dest + "." + m + " = v." + m + ";");
         }
-        if (scalarActive) {
-            if (alu.scalarWriteMask()) {
-                const std::string dest = destination(alu.scalarDest(), alu.exportData(), alu.scalarDestRelative());
-                const std::string m = mask(alu.scalarWriteMask());
-                line(dest + "." + m + " = s.xxxx." + m + ";");
-            }
-            line("ps = s;");
+        if (alu.scalarWriteMask()) {
+            const std::string dest = destination(alu.scalarDest(), alu.exportData(), alu.scalarDestRelative());
+            const std::string m = mask(alu.scalarWriteMask());
+            line(dest + "." + m + " = s.xxxx." + m + ";");
         }
+        line("ps = s;");
         --indent;
         line("}");
         if (alu.predicated()) {
