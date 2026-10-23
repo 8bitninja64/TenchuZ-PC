@@ -206,17 +206,4 @@ PPC_FUNC(__imp__XAudioGetVoiceCategoryVolume) {
     ctx.r3.u64 = 0;
 }
 
-// XMA decoder contexts are 64-byte hardware records in physical memory.
-PPC_FUNC(__imp__XMACreateContext) {
-    const uint32_t context = memory->allocatePhysical(0x1000, 0x1000, 0xA0000000);
-    if (context) std::memset(memory->host(context), 0, 64);
-    store32(ctx.r3.u32, context);
-    ctx.r3.u64 = context ? 0 : 0x8007000E;
-}
-
-PPC_FUNC(__imp__XMAReleaseContext) {
-    memory->free(ctx.r3.u32);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__Refresh) { ctx.r3.u64 = 0; }

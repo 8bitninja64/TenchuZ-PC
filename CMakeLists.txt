@@ -46,13 +46,27 @@ add_library(TenchuRuntime STATIC
     runtime/gpu/d3d11/xenos_backend.cpp
     runtime/gpu/d3d11/texture_cache.cpp
     runtime/audio/audio_driver.cpp
+    runtime/audio/xma.cpp
     runtime/movie/movie_player.cpp)
 target_include_directories(TenchuRuntime PUBLIC "${CMAKE_SOURCE_DIR}/runtime")
 target_compile_options(TenchuRuntime PRIVATE /clang:-msse4.1 -Wno-unused-parameter)
 target_link_libraries(TenchuRuntime PUBLIC TenchuPPC TenchuXenos bcrypt xinput winmm shell32 ole32 d3d11 dxgi d3dcompiler xaudio2)
 
+# FFmpeg (XMA and WMV decoding), built by tools/build_xma_codec.py.
+set(TENCHU_FFMPEG "${CMAKE_SOURCE_DIR}/build/deps/ffmpeg")
+if(NOT EXISTS "${TENCHU_FFMPEG}/include/libavcodec/avcodec.h")
+    message(FATAL_ERROR "FFmpeg is missing: run python tools/build_xma_codec.py")
+endif()
+target_include_directories(TenchuRuntime PUBLIC "${TENCHU_FFMPEG}/include")
+target_link_libraries(TenchuRuntime PUBLIC
+    "${TENCHU_FFMPEG}/lib/avcodec-tenchu.lib" "${TENCHU_FFMPEG}/lib/avutil-tenchu.lib"
+    "${TENCHU_FFMPEG}/lib/avformat-tenchu.lib")
+file(GLOB TENCHU_FFMPEG_DLLS "${TENCHU_FFMPEG}/bin/*.dll")
+
 add_executable(TenchuZ app/main.cpp)
 target_link_libraries(TenchuZ PRIVATE TenchuRuntime)
+add_custom_command(TARGET TenchuZ POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TENCHU_FFMPEG_DLLS} "$<TARGET_FILE_DIR:TenchuZ>")
 # Translated code recurses deeply on the host stack.
 target_link_options(TenchuZ PRIVATE /STACK:16777216 /DEBUG)
 

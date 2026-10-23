@@ -2,6 +2,7 @@
 // the XDK Direct3D library to run (ring buffer, fences, interrupts, vblank)
 // without drawing anything.
 #include "kernel/kernel.h"
+#include "audio/xma.h"
 #include "gpu/d3d11/renderer.h"
 #include "gpu/d3d11/xenos_backend.h"
 #include <unordered_map>
@@ -575,6 +576,7 @@ uint32_t PPCMmioRead32(uint32_t address) {
         default: return gs.registers[index];
         }
     }
+    if (xma::ownsAddress(address)) return xma::readRegister(address);
     TZ_TRACE("mmio", "[mmio] read %08X", address);
     return 0;
 }
@@ -596,6 +598,7 @@ void PPCMmioWrite32(uint32_t address, uint32_t value) {
         writeRegister(index, value);
         return;
     }
+    if (xma::ownsAddress(address)) return xma::writeRegister(address, value);
     TZ_TRACE("mmio", "[mmio] write %08X = %08X", address, value);
 }
 
