@@ -59,6 +59,10 @@ struct ContextData {
     void setOutputValid(bool valid) { set(1, 31, 1, valid); }
     uint32_t inputReadOffset() const { return get(2, 0, 26); }
     void setInputReadOffset(uint32_t bits) { set(2, 0, 26, bits); }
+    uint32_t loopCount() const { return get(0, 12, 8); }
+    void setLoopCount(uint32_t value) { set(0, 12, 8, value); }
+    uint32_t loopStart() const { return get(3, 0, 26); }
+    uint32_t loopEnd() const { return get(4, 0, 26); }
     uint32_t currentBuffer() const { return get(4, 31, 1); }
     void setCurrentBuffer(uint32_t buffer) { set(4, 31, 1, buffer); }
     uint32_t inputPointer(int buffer) const { return words[5 + buffer]; }
@@ -175,10 +179,9 @@ void work(uint32_t index, Context& context) {
              data.words[1], data.inputPointer(0), data.inputPointer(1), data.outputPointer(), data.outputReadOffset(),
              data.outputWriteOffset());
     if (!data.outputValid() || !data.outputBlocks()) return;
-    if (const uint32_t loops = data.get(0, 12, 8)) {
-        static std::atomic<bool> warned{false};
-        if (!warned.exchange(true)) logf("[xma] context %u uses hardware looping (%u loops), not implemented", index, loops);
-    }
+    if (data.loopCount())
+        TZ_TRACE("xmaloop", "[xma] context %u loops %u start %u end %u packets %u/%u", index, data.loopCount(),
+                 data.loopStart(), data.loopEnd(), data.inputPackets(0), data.inputPackets(1));
 
     if (context.codec && context.codecStereo != data.stereo()) context.resetDecoder();
     if (!context.codec && !openCodec(context, data.stereo())) return;
@@ -228,6 +231,18 @@ void work(uint32_t index, Context& context) {
             if (!openCodec(context, data.stereo())) break;
         }
         data.setInputReadOffset(++context.nextPacket * kPacketBytes * 8 + 32);
+        // Hardware looping (XMASetLoopData), at packet granularity: once the
+        // packet holding the loop end is decoded, continue from the packet holding
+        // the loop start. 255 loops is endless.
+        const uint32_t loops = data.loopCount();
+        const uint32_t loopEndPacket = data.loopEnd() / (kPacketBytes * 8);
+        if (loops && context.nextPacket > loopEndPacket) {
+            if (loops != 255) data.setLoopCount(loops - 1);
+            context.nextPacket = data.loopStart() / (kPacketBytes * 8);
+            avcodec_flush_buffers(context.codec);
+            data.setInputReadOffset(data.loopStart());
+            continue;
+        }
         if (context.nextPacket >= data.inputPackets(buffer)) {
             // Consumed: hand the buffer back and continue with the other one.
             data.setInputValid(buffer, false);
@@ -247,7 +262,7 @@ void work(uint32_t index, Context& context) {
             // Merge: keep bits the title owns from the current guest value.
             uint32_t current = load32(address + word * 4);
             uint32_t owned = 0;
-            if (word == 0) owned = (3u << 20) | (0x1Fu << 27);  // input valid bits, output write offset
+            if (word == 0) owned = (0xFFu << 12) | (3u << 20) | (0x1Fu << 27);  // loops, input valid, write offset
             if (word == 1) owned = 1u << 31;                      // output valid
             if (word == 2) owned = 0x3FFFFFF;                     // input read offset
             if (word == 4) owned = 1u << 31;                      // current buffer
