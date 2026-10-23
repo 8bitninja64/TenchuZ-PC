@@ -16,6 +16,7 @@ extern "C" {
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -174,6 +175,10 @@ void work(uint32_t index, Context& context) {
              data.words[1], data.inputPointer(0), data.inputPointer(1), data.outputPointer(), data.outputReadOffset(),
              data.outputWriteOffset());
     if (!data.outputValid() || !data.outputBlocks()) return;
+    if (const uint32_t loops = data.get(0, 12, 8)) {
+        static std::atomic<bool> warned{false};
+        if (!warned.exchange(true)) logf("[xma] context %u uses hardware looping (%u loops), not implemented", index, loops);
+    }
 
     if (context.codec && context.codecStereo != data.stereo()) context.resetDecoder();
     if (!context.codec && !openCodec(context, data.stereo())) return;
