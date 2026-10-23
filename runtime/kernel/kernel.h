@@ -188,7 +188,9 @@ void runTitle();
 // Diagnostics.
 bool traceEnabled(const char* category);
 void logf(const char* format, ...);
-#define TZ_TRACE(category, ...) do { if (::tz::traceEnabled(category)) ::tz::logf(__VA_ARGS__); } while (0)
+// Categories are literals: each site looks its category up once.
+#define TZ_TRACE(category, ...) \
+    do { static const bool tzTraceOn = ::tz::traceEnabled(category); if (tzTraceOn) ::tz::logf(__VA_ARGS__); } while (0)
 [[noreturn]] void fatal(const char* format, ...);
 // Return addresses of the current guest call chain, walking frame back chains
 // (each frame stores its caller's LR at back chain - 8).

@@ -6,10 +6,10 @@ file_path = "../game/default.xex"
 switch_table_file_path = "tenchuz_switch_tables.toml"
 skip_lr = false
 skip_msr = false
-ctr_as_local = false
-xer_as_local = false
-reserved_as_local = false
-cr_as_local = false
+ctr_as_local = true
+xer_as_local = true
+reserved_as_local = true
+cr_as_local = true
 non_argument_as_local = false
 non_volatile_as_local = false
 # Compiler register save/restore helpers (tools/find_abi_helpers.py).

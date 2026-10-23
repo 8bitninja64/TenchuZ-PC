@@ -45,6 +45,7 @@ add_library(TenchuRuntime STATIC
     runtime/kernel/imports_xam.cpp
     runtime/kernel/imports_net.cpp
     runtime/kernel/diagnostics.cpp
+    runtime/kernel/native_overrides.cpp
     runtime/gpu/null_gpu.cpp
     runtime/gpu/d3d11/renderer.cpp
     runtime/gpu/d3d11/xenos_backend.cpp

@@ -18,19 +18,30 @@ namespace {
 
 constexpr int kPads = 4;
 
+// Open devices: owned by the input thread, which also does all SDL calls (opening a
+// pad, reading it or sending rumble can block on the device for milliseconds).
 struct Pad {
     SDL_Gamepad* handle = nullptr;
     SDL_JoystickID id = 0;
+};
+
+// What the title's threads see: a snapshot per slot and pending rumble, behind a
+// mutex that is only ever held for a copy.
+struct Published {
+    bool connected = false;
     VirtualPad state;
-    uint16_t rumble[2] = {};
-    bool rumbleDirty = false;
+};
+struct Rumble {
+    uint16_t left = 0, right = 0;
+    bool dirty = false;
 };
 
 struct Gamepads {
+    std::array<Pad, kPads> pads;  // input thread only
     std::mutex mutex;
-    std::array<Pad, kPads> pads;
-    bool started = false;
-    bool available = false;
+    std::array<Published, kPads> published;
+    std::array<Rumble, kPads> rumble;
+    std::once_flag started;
 };
 
 Gamepads& gamepads() {
@@ -114,10 +125,6 @@ void inputMain() {
             logf("[input] %s: %d controller layouts", name, added);
         }
     }
-    {
-        std::lock_guard lock(g.mutex);
-        g.available = true;
-    }
     auto nextRefresh = std::chrono::steady_clock::now();
     for (;;) {
         SDL_PumpEvents();
@@ -125,20 +132,24 @@ void inputMain() {
         bool devicesChanged = false;
         while (SDL_PollEvent(&event))
             if (event.type == SDL_EVENT_GAMEPAD_ADDED || event.type == SDL_EVENT_GAMEPAD_REMOVED) devicesChanged = true;
-        std::lock_guard lock(g.mutex);
         const auto now = std::chrono::steady_clock::now();
         if (devicesChanged || now >= nextRefresh) {
             refresh(g);
             nextRefresh = now + std::chrono::seconds(1);
         }
-        for (auto& pad : g.pads) {
-            if (!pad.handle) continue;
-            pad.state = read(pad.handle);
-            if (pad.rumbleDirty) {
-                SDL_RumbleGamepad(pad.handle, pad.rumble[0], pad.rumble[1], 0xFFFFFFFFu);
-                pad.rumbleDirty = false;
-            }
+        std::array<Published, kPads> snapshot;
+        for (int i = 0; i < kPads; ++i)
+            if (g.pads[i].handle) snapshot[i] = {true, read(g.pads[i].handle)};
+        std::array<Rumble, kPads> pending;
+        {
+            std::lock_guard lock(g.mutex);
+            g.published = snapshot;
+            pending = g.rumble;
+            for (auto& rumble : g.rumble) rumble.dirty = false;
         }
+        for (int i = 0; i < kPads; ++i)
+            if (pending[i].dirty && g.pads[i].handle)
+                SDL_RumbleGamepad(g.pads[i].handle, pending[i].left, pending[i].right, 0xFFFFFFFFu);
         // Poll faster than the title's 60 Hz reads.
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -146,10 +157,7 @@ void inputMain() {
 
 void start() {
     auto& g = gamepads();
-    std::lock_guard lock(g.mutex);
-    if (g.started) return;
-    g.started = true;
-    std::thread(inputMain).detach();
+    std::call_once(g.started, [] { std::thread(inputMain).detach(); });
 }
 
 }  // namespace
@@ -158,8 +166,8 @@ bool gamepadState(uint32_t user, VirtualPad& out) {
     start();
     auto& g = gamepads();
     std::lock_guard lock(g.mutex);
-    if (user >= kPads || !g.pads[user].handle) return false;
-    out = g.pads[user].state;
+    if (user >= kPads || !g.published[user].connected) return false;
+    out = g.published[user].state;
     return true;
 }
 
@@ -167,12 +175,10 @@ bool gamepadRumble(uint32_t user, uint16_t left, uint16_t right) {
     start();
     auto& g = gamepads();
     std::lock_guard lock(g.mutex);
-    if (user >= kPads || !g.pads[user].handle) return false;
-    auto& pad = g.pads[user];
-    if (pad.rumble[0] != left || pad.rumble[1] != right) {
-        pad.rumble[0] = left;
-        pad.rumble[1] = right;
-        pad.rumbleDirty = true;
+    if (user >= kPads || !g.published[user].connected) return false;
+    auto& rumble = g.rumble[user];
+    if (rumble.left != left || rumble.right != right) {
+        rumble = {left, right, true};
     }
     return true;
 }

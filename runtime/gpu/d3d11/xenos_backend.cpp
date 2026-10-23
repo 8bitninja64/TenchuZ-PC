@@ -985,22 +985,33 @@ struct XenosBackend::Impl {
             if (traceFrame())
                 logf("[draw]   texture %u at %08X format %u %ux%u", uint32_t(slot), fetch.baseAddress(), fetch.format(),
                      fetch.width(), fetch.height());
-            const auto textureStart = std::chrono::steady_clock::now();
+            const auto textureStart = stamp();
             if (auto* view = textures.view(fetch)) views[slot] = view;
             else if (traceFrame())
                 logf("[draw]   texture %u UNSUPPORTED: type %u dimension %u format %u (shader dim %u)", uint32_t(slot),
                      fetch.type(), fetch.dimension(), fetch.format(), info.textures[slot].dimension);
-            hostTime[0] += std::chrono::steady_clock::now() - textureStart;
+            addTime(hostTime[0], textureStart);
         }
     }
 
     // ---- Draw ----------------------------------------------------------------------
     // Host time per frame (trace 'hosttime'): texture uploads, draws, resolves, present.
     std::chrono::steady_clock::duration hostTime[6]{};  // + constants, D3D11 draw call
+    // Clock reads cost on every draw: only taken with the trace on.
+    static bool hostTiming() {
+        static const bool on = traceEnabled("hosttime");
+        return on;
+    }
+    static std::chrono::steady_clock::time_point stamp() {
+        return hostTiming() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    }
+    static void addTime(std::chrono::steady_clock::duration& total, std::chrono::steady_clock::time_point start) {
+        if (hostTiming()) total += std::chrono::steady_clock::now() - start;
+    }
     struct ScopedTime {
         std::chrono::steady_clock::duration& total;
-        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-        ~ScopedTime() { total += std::chrono::steady_clock::now() - start; }
+        std::chrono::steady_clock::time_point start = stamp();
+        ~ScopedTime() { addTime(total, start); }
     };
     void draw(const DrawRequest& request, uint64_t vsHash, uint64_t psHash) {
         ScopedTime timed{hostTime[1]};
@@ -1129,10 +1140,11 @@ struct XenosBackend::Impl {
             const uint32_t word0 = reg(base), word1 = reg(base + 1);
             const uint32_t address = word0 & ~3u, size = (std::max)(((word1 >> 2) & 0xFFFFFF) * 4, 16u);
             shared.vertexEndian[slot] = word1 & 3;
-            if (traceEnabled("vbstats")) vertexStats[{address, size}]++;
+            static const bool vbStats = traceEnabled("vbstats"), wholeBuffers = traceEnabled("wholevb");
+            if (vbStats) vertexStats[{address, size}]++;
             uint64_t start = 0, end = size;
             if (rangeKnown && slot < vs->info.vertexStreams.size() && vs->info.vertexStreams[slot].direct &&
-                !traceEnabled("wholevb")) {
+                !wholeBuffers) {
                 const auto& stream = vs->info.vertexStreams[slot];
                 start = (uint64_t(firstVertex) * stream.minStride + stream.minOffset) * 4;
                 end = (std::min)((uint64_t(lastVertex) * stream.maxStride + stream.maxEnd) * 4, uint64_t(size));
@@ -1198,7 +1210,7 @@ struct XenosBackend::Impl {
         if (ps) bindTextures(ps->info, shared, pixelViews, pixelSamplers);
         writeBuffer(sharedConstants, &shared, sizeof(shared));
 
-        const auto constantsStart = std::chrono::steady_clock::now();
+        const auto constantsStart = stamp();
         // Constant buffers are rewritten only when the registers changed.
         float constants[256 * 4];
         for (int i = 0; i < 256 * 4; ++i) constants[i] = asFloat(reg(reg::SHADER_CONSTANT_000_X + i));
@@ -1214,7 +1226,7 @@ struct XenosBackend::Impl {
                 std::memcpy(lastPixelConstants, constants, sizeof(constants));
             }
         }
-        hostTime[4] += std::chrono::steady_clock::now() - constantsStart;
+        addTime(hostTime[4], constantsStart);
 
         // Pipeline.
         context->OMSetRenderTargets(4, colorViews, depthView);
@@ -1325,7 +1337,7 @@ struct XenosBackend::Impl {
             device->CreateQuery(&query, &statistics);
             context->Begin(statistics);
         }
-        const auto drawStart = std::chrono::steady_clock::now();
+        const auto drawStart = stamp();
         if (reg(reg::PA_SC_WINDOW_OFFSET)) ++tileDraws[1]; else ++tileDraws[0];
         if (flickerLog) {
             char line[512];
@@ -1380,7 +1392,7 @@ struct XenosBackend::Impl {
             release(target);
         }
         context->Draw(UINT(vertexCount), 0);
-        hostTime[5] += std::chrono::steady_clock::now() - drawStart;
+        addTime(hostTime[5], drawStart);
         if (statistics) {
             context->End(statistics);
             D3D11_QUERY_DATA_PIPELINE_STATISTICS data{};
@@ -1635,7 +1647,7 @@ struct XenosBackend::Impl {
                 if (entry.texture) saveTexture(entry.texture, path);
             }
         }
-        const auto presentStart = std::chrono::steady_clock::now();
+        const auto presentStart = stamp();
         renderer.present(it != resolved.end() ? it->second.view : nullptr,
                          it != resolved.end() && it->second.swapped);
         TZ_TRACE("swap", "[d3d11] swap %llu %08X (%s), tiles %u/%u, resolves %u, %llu draws, dropped %llu/%llu/%llu/%llu/%llu/%llu/%llu",
@@ -1644,7 +1656,7 @@ struct XenosBackend::Impl {
                  (unsigned long long)dropped[0], (unsigned long long)dropped[1], (unsigned long long)dropped[2],
                  (unsigned long long)dropped[3], (unsigned long long)dropped[4], (unsigned long long)dropped[5],
                  (unsigned long long)dropped[6]);
-        hostTime[3] += std::chrono::steady_clock::now() - presentStart;
+        addTime(hostTime[3], presentStart);
         if (traceEnabled("hosttime")) {
             auto ms = [](std::chrono::steady_clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
             logf("[hosttime] draws %.1f ms (textures %.1f, constants %.1f, Draw %.1f), resolves %.1f, present %.1f, "
