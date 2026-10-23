@@ -67,17 +67,61 @@ float4 ps(float4 position : SV_Position) : SV_Target {
 }
 )";
 
-// Expands Xenos rectangle lists: three corners in, the fourth extrapolated.
+// Depth resolve: the first sample's depth becomes an R32_FLOAT texel, as k_24_8
+// textures sample on the GPU. MULTISAMPLED selects the source type. Float depth
+// buffers (D24FS8) hold 20e4 floats in EDRAM; those bits are what a k_24_8 fetch
+// returns as unorm, so they are re-encoded (`swap` carries that flag here).
+const char* kDepthCopyShader = R"(
+#ifdef MULTISAMPLED
+Texture2DMS<float> source : register(t0);
+#else
+Texture2D<float> source : register(t0);
+#endif
+cbuffer Copy : register(b0) { int2 sourceOrigin; int2 destOrigin; uint swap; uint3 unused; };
+float Float20e4AsUnorm(float value) {
+    uint bits = asuint(saturate(value));
+    if (bits < 0x38800000u) {  // below the smallest normal 20e4 exponent
+        uint shift = 113u - (bits >> 23);
+        bits = shift < 24u ? (0x800000u | (bits & 0x7FFFFFu)) >> shift : 0u;
+    } else {
+        bits += 0xC8000000u;  // rebias the exponent from 127 to 15
+    }
+    uint encoded = ((bits + 3u + ((bits >> 3) & 1u)) >> 3) & 0xFFFFFFu;
+    return float(encoded) / 16777215.0;
+}
+float4 ps(float4 position : SV_Position) : SV_Target {
+    int2 coord = int2(position.xy) - destOrigin + sourceOrigin;
+#ifdef MULTISAMPLED
+    float depth = source.Load(coord, 0);
+#else
+    float depth = source.Load(int3(coord, 0));
+#endif
+    return (swap ? Float20e4AsUnorm(depth) : depth).xxxx;
+}
+)";
+
+// Expands Xenos rectangle lists: three corners in, the fourth extrapolated opposite
+// the right-angle corner.
 const char* kRectangleGeometryShader = R"(
 struct Interpolators { float4 position : SV_Position; float4 t[16] : TEXCOORD0; };
 [maxvertexcount(4)]
 void main(triangle Interpolators v[3], inout TriangleStream<Interpolators> stream) {
+    float2 p0 = v[0].position.xy / v[0].position.w;
+    float2 p1 = v[1].position.xy / v[1].position.w;
+    float2 p2 = v[2].position.xy / v[2].position.w;
+    // The corner whose edges are closest to perpendicular (normalized dot products).
+    float c0 = abs(dot(normalize(p1 - p0), normalize(p2 - p0)));
+    float c1 = abs(dot(normalize(p2 - p1), normalize(p0 - p1)));
+    float c2 = abs(dot(normalize(p0 - p2), normalize(p1 - p2)));
+    // Rotate (keeping the winding) so the right-angle corner comes first; ties keep v0.
+    uint corner = c0 <= c1 + 1e-4 && c0 <= c2 + 1e-4 ? 0 : (c1 <= c2 ? 1 : 2);
+    Interpolators a = v[corner], b = v[(corner + 1) % 3], c = v[(corner + 2) % 3];
     Interpolators fourth;
-    fourth.position = v[1].position + v[2].position - v[0].position;
-    [unroll] for (int i = 0; i < 16; ++i) fourth.t[i] = v[1].t[i] + v[2].t[i] - v[0].t[i];
-    stream.Append(v[0]);
-    stream.Append(v[1]);
-    stream.Append(v[2]);
+    fourth.position = b.position + c.position - a.position;
+    [unroll] for (int i = 0; i < 16; ++i) fourth.t[i] = b.t[i] + c.t[i] - a.t[i];
+    stream.Append(a);
+    stream.Append(b);
+    stream.Append(c);
     stream.Append(fourth);
 }
 )";
@@ -225,6 +269,7 @@ struct XenosBackend::Impl {
     ID3D11PixelShader* flatShader = nullptr;
     ID3D11VertexShader* copyVertexShader = nullptr;
     ID3D11PixelShader* copyPixelShader = nullptr;
+    ID3D11PixelShader* depthCopyShaders[2] = {};  // single-sample, multisampled source
     ID3D11Buffer* copyConstants = nullptr;
 
     CompiledShader* shader(uint64_t hash, xenos::ShaderType type) {
@@ -280,6 +325,7 @@ struct XenosBackend::Impl {
         ID3D11Texture2D* resolveScratch = nullptr;
         ID3D11ShaderResourceView* resolveScratchView = nullptr;
         ID3D11ShaderResourceView* view = nullptr;  // single-sample targets only
+        ID3D11ShaderResourceView* depthView = nullptr;  // depth targets (multisampled or not)
         UINT width = 0, height = 0, samples = 1;
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     };
@@ -301,8 +347,9 @@ struct XenosBackend::Impl {
         desc.SampleDesc.Count = samples;
         desc.Usage = D3D11_USAGE_DEFAULT;
         if (isDepth) {
-            desc.Format = format ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_D24_UNORM_S8_UINT;
-            desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+            // Typeless so depth resolves can read it.
+            desc.Format = format ? DXGI_FORMAT_R32G8X24_TYPELESS : DXGI_FORMAT_R24G8_TYPELESS;
+            desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
         } else {
             desc.Format = colorFormat(format);
             desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -312,7 +359,17 @@ struct XenosBackend::Impl {
             return nullptr;
         }
         if (isDepth) {
-            device->CreateDepthStencilView(target.texture, nullptr, &target.depth);
+            D3D11_DEPTH_STENCIL_VIEW_DESC dsv{};
+            dsv.Format = format ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_D24_UNORM_S8_UINT;
+            dsv.ViewDimension = samples > 1 ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
+            if (FAILED(device->CreateDepthStencilView(target.texture, &dsv, &target.depth)))
+                logf("[d3d11] cannot create depth view (format %u, %u samples)", format, samples);
+            D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.Format = format ? DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS : DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+            srv.ViewDimension = samples > 1 ? D3D11_SRV_DIMENSION_TEXTURE2DMS : D3D11_SRV_DIMENSION_TEXTURE2D;
+            srv.Texture2D.MipLevels = 1;
+            if (FAILED(device->CreateShaderResourceView(target.texture, &srv, &target.depthView)))
+                logf("[d3d11] cannot create depth shader view (format %u, %u samples)", format, samples);
         } else {
             device->CreateRenderTargetView(target.texture, nullptr, &target.color);
             if (samples > 1) {
@@ -522,6 +579,17 @@ struct XenosBackend::Impl {
             device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &copyPixelShader);
         release(code);
         release(errors);
+        for (int multisampled = 0; multisampled < 2; ++multisampled) {
+            const D3D_SHADER_MACRO defines[] = {{"MULTISAMPLED", "1"}, {nullptr, nullptr}};
+            if (SUCCEEDED(D3DCompile(kDepthCopyShader, strlen(kDepthCopyShader), "depthcopy",
+                                     multisampled ? defines : nullptr, nullptr, "ps", "ps_5_0", 0, 0, &code, &errors)))
+                device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr,
+                                          &depthCopyShaders[multisampled]);
+            else
+                logf("[d3d11] depth copy shader: %s", errors ? static_cast<const char*>(errors->GetBufferPointer()) : "");
+            release(code);
+            release(errors);
+        }
         copyConstants = createConstantBuffer(32);
 
         const uint32_t white = 0xFFFFFFFF;
@@ -894,7 +962,12 @@ struct XenosBackend::Impl {
                                                reg::RB_COLOR3_INFO};
             const uint32_t info = reg(infoRegisters[sourceSelect]);
             source = renderTarget(info & 0xFFF, pitch, (info >> 16) & 0xF, samples, false);
+        } else if (sourceSelect == 4) {
+            const uint32_t info = reg(reg::RB_DEPTH_INFO);
+            source = renderTarget(info & 0xFFF, pitch, (info >> 16) & 1, samples, true);
         }
+        const bool depthSource = sourceSelect == 4;
+        const DXGI_FORMAT destFormat = !source ? DXGI_FORMAT_UNKNOWN : depthSource ? DXGI_FORMAT_R32_FLOAT : source->format;
         TZ_TRACE("resolve", "[d3d11] resolve src %u verts %.1f,%.1f-%.1f,%.1f wo %08X mode %08X surf %08X dinfo %08X",
                  sourceSelect, minX, minY, maxX, maxY, windowOffset, reg(reg::PA_SU_SC_MODE_CNTL), surfaceInfo,
                  reg(reg::RB_DEPTH_INFO));
@@ -911,14 +984,14 @@ struct XenosBackend::Impl {
             uint32_t base = destination;
             UINT destX = 0, destY = 0;
             ResolvedTexture* target = containingResolved(destination, base, destX, destY);
-            if (target && (target->width != destWidth || target->height != destHeight || target->format != source->format)) {
+            if (target && (target->width != destWidth || target->height != destHeight || target->format != destFormat)) {
                 // A different texture now lives here.
                 if (base != destination) target = nullptr;
                 destX = destY = 0;
                 base = destination;
             }
             if (!target || base == destination) {
-                target = resolvedTexture(destination, destWidth, destHeight, source->format);
+                target = resolvedTexture(destination, destWidth, destHeight, destFormat);
                 destX = destY = 0;
             }
             textures.invalidate(base);
@@ -931,16 +1004,19 @@ struct XenosBackend::Impl {
                 // Multisampled targets are averaged first; the copy shader then
                 // places the rectangle and applies the red/blue swap.
                 ID3D11Texture2D* single = nullptr;
-                ID3D11ShaderResourceView* sourceView = source->view;
-                if (source->samples > 1) {
+                ID3D11ShaderResourceView* sourceView = depthSource ? source->depthView : source->view;
+                ID3D11PixelShader* copyShader = depthSource ? depthCopyShaders[source->samples > 1] : copyPixelShader;
+                if (source->samples > 1 && !depthSource) {
                     if (!source->resolveScratch) return;
                     context->ResolveSubresource(source->resolveScratch, 0, source->texture, 0, source->format);
                     single = source->resolveScratch;
                     sourceView = source->resolveScratchView;
                 }
-                const bool swap = (reg(reg::RB_COPY_DEST_INFO) >> 24) & 1;
+                if (!sourceView || !copyShader) return;
+                const bool swap = !depthSource && ((reg(reg::RB_COPY_DEST_INFO) >> 24) & 1);
+                const bool float24 = depthSource && ((reg(reg::RB_DEPTH_INFO) >> 16) & 1);
                 const int32_t constants[8] = {int32_t(rect.left), int32_t(rect.top), int32_t(destX), int32_t(destY),
-                                              swap ? 1 : 0, 0, 0, 0};
+                                              swap || float24 ? 1 : 0, 0, 0, 0};
                 writeBuffer(copyConstants, constants, sizeof(constants));
                 context->OMSetRenderTargets(1, &target->target, nullptr);
                 const D3D11_VIEWPORT viewport{float(destX), float(destY), float(rect.right - rect.left),
@@ -953,7 +1029,7 @@ struct XenosBackend::Impl {
                 context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 context->VSSetShader(copyVertexShader, nullptr, 0);
                 context->GSSetShader(nullptr, nullptr, 0);
-                context->PSSetShader(copyPixelShader, nullptr, 0);
+                context->PSSetShader(copyShader, nullptr, 0);
                 context->PSSetShaderResources(0, 1, &sourceView);
                 context->PSSetConstantBuffers(0, 1, &copyConstants);
                 context->Draw(3, 0);
@@ -968,17 +1044,22 @@ struct XenosBackend::Impl {
                 }
             }
         }
-        if (clearColor && source) {
+        RenderTarget* colorTarget = source;
+        if (depthSource) {
+            const uint32_t info = reg(reg::RB_COLOR_INFO);
+            colorTarget = renderTarget(info & 0xFFF, pitch, (info >> 16) & 0xF, samples, false);
+        }
+        if (clearColor && colorTarget) {
             // RB_COLOR_CLEAR holds a packed ARGB color for 32-bit targets.
             const uint32_t value = reg(reg::RB_COLOR_CLEAR);
             const float color[4] = {((value >> 16) & 0xFF) / 255.0f, ((value >> 8) & 0xFF) / 255.0f,
                                     (value & 0xFF) / 255.0f, (value >> 24) / 255.0f};
             ID3D11DeviceContext1* context1 = nullptr;
             if (SUCCEEDED(context->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void**>(&context1)))) {
-                context1->ClearView(source->color, color, &rect, 1);
+                context1->ClearView(colorTarget->color, color, &rect, 1);
                 release(context1);
             } else {
-                context->ClearRenderTargetView(source->color, color);
+                context->ClearRenderTargetView(colorTarget->color, color);
             }
         }
         if (clearDepth) {
