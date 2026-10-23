@@ -33,6 +33,8 @@ add_library(TenchuRuntime STATIC
     runtime/kernel/xex.cpp
     runtime/kernel/kernel.cpp
     runtime/kernel/control.cpp
+    runtime/host/settings.cpp
+    runtime/host/input.cpp
     runtime/kernel/kernel_data.cpp
     runtime/kernel/format.cpp
     runtime/kernel/imports_ke.cpp

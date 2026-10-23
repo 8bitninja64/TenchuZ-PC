@@ -2,6 +2,7 @@
 // One local profile is signed in on controller 0; online features are absent.
 #include "kernel.h"
 #include "control.h"
+#include "host/input.h"
 #include "filesystem.h"
 #include "ppc_recomp_shared.h"
 #include <chrono>
@@ -484,24 +485,47 @@ uint16_t scriptedButtons() {
 PPC_FUNC(__imp__XamInputGetState) {
     // (user, flags, state*)
     XINPUT_STATE state{};
-    const bool scripted = ctx.r3.u32 == 0 && scriptedInput().active;
     TZ_TRACE("input", "[input] XamInputGetState user %u flags %X lr %08X", ctx.r3.u32, ctx.r4.u32, uint32_t(ctx.lr));
+    // Controller 1 comes from the control file or input script when one is
+    // active, else the XInput pad; keyboard and mouse join it once used.
+    bool connected = false;
+    bool synthesized = false;
     if (ctx.r3.u32 == 0 && control::active()) {
-        static std::atomic<uint32_t> packet{0};
         const auto pad = control::pad();
         state.Gamepad.wButtons = pad.buttons;
         state.Gamepad.sThumbLX = pad.thumbs[0];
         state.Gamepad.sThumbLY = pad.thumbs[1];
         state.Gamepad.sThumbRX = pad.thumbs[2];
         state.Gamepad.sThumbRY = pad.thumbs[3];
-        state.dwPacketNumber = ++packet;
-    } else if (scripted) {
-        static std::atomic<uint32_t> packet{0};
+        connected = synthesized = true;
+    } else if (ctx.r3.u32 == 0 && scriptedInput().active) {
         state.Gamepad.wButtons = scriptedButtons();
-        state.dwPacketNumber = ++packet;
-    } else if (ctx.r3.u32 >= 4 || XInputGetState(ctx.r3.u32, &state) != ERROR_SUCCESS) {
+        connected = synthesized = true;
+    } else {
+        connected = ctx.r3.u32 < 4 && XInputGetState(ctx.r3.u32, &state) == ERROR_SUCCESS;
+    }
+    if (ctx.r3.u32 == 0 && host::keyboardMouseActive()) {
+        host::VirtualPad merged{state.Gamepad.wButtons, state.Gamepad.bLeftTrigger, state.Gamepad.bRightTrigger,
+                                {state.Gamepad.sThumbLX, state.Gamepad.sThumbLY, state.Gamepad.sThumbRX,
+                                 state.Gamepad.sThumbRY}};
+        host::mergePad(merged, host::keyboardMouseState());
+        state.Gamepad.wButtons = merged.buttons;
+        state.Gamepad.bLeftTrigger = merged.leftTrigger;
+        state.Gamepad.bRightTrigger = merged.rightTrigger;
+        state.Gamepad.sThumbLX = merged.thumbs[0];
+        state.Gamepad.sThumbLY = merged.thumbs[1];
+        state.Gamepad.sThumbRX = merged.thumbs[2];
+        state.Gamepad.sThumbRY = merged.thumbs[3];
+        connected = synthesized = true;
+    }
+    if (!connected) {
         ctx.r3.u64 = kErrorDeviceNotConnected;
         return;
+    }
+    if (synthesized) {
+        // A changing packet number tells the title the state may differ.
+        static std::atomic<uint32_t> packet{0};
+        state.dwPacketNumber = ++packet;
     }
     const uint32_t out = ctx.r5.u32;
     store32(out + 0, state.dwPacketNumber);

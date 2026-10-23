@@ -2,6 +2,8 @@
 #include "kernel/kernel.h"
 #include "kernel/filesystem.h"
 #include "gpu/d3d11/renderer.h"
+#include "host/input.h"
+#include "host/settings.h"
 #include <thread>
 #include <cstdio>
 #include <exception>
@@ -20,16 +22,48 @@ std::filesystem::path findGameDirectory(int argc, wchar_t** argv) {
     return L"game";
 }
 
+// Borderless fullscreen on the window's monitor, or back to the saved window.
+void setFullscreen(HWND window, bool fullscreen) {
+    static WINDOWPLACEMENT placement{sizeof(placement)};
+    const LONG style = GetWindowLongW(window, GWL_STYLE);
+    if (fullscreen) {
+        MONITORINFO monitor{sizeof(monitor)};
+        if (!GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor)) return;
+        GetWindowPlacement(window, &placement);
+        SetWindowLongW(window, GWL_STYLE, (style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
+        const RECT& area = monitor.rcMonitor;
+        SetWindowPos(window, HWND_TOP, area.left, area.top, area.right - area.left, area.bottom - area.top,
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    } else {
+        SetWindowLongW(window, GWL_STYLE, (style & ~WS_POPUP) | WS_OVERLAPPEDWINDOW);
+        if (placement.length) SetWindowPlacement(window, &placement);
+        SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+}
+
 LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    static bool fullscreen = false;
     switch (message) {
     case WM_CLOSE:
         ExitProcess(0);
+    case WM_SYSKEYDOWN:
     case WM_KEYDOWN:
-        if (wParam == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000)) return 0;
+        // Alt+Enter and F11 toggle fullscreen.
+        if ((wParam == VK_RETURN && (lParam & (1 << 29))) || wParam == VK_F11) {
+            if (!(lParam & (1 << 30))) setFullscreen(window, fullscreen = !fullscreen);
+            return 0;
+        }
         break;
+    case WM_SYSCHAR:
+        return 0;  // no menu beep for Alt combinations
+    case WM_APP:
+        setFullscreen(window, fullscreen = true);
+        return 0;
     default:
         break;
     }
+    if (tz::host::handleInputMessage(window, message, wParam, lParam)) return 0;
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
@@ -42,12 +76,15 @@ void startWindowThread() {
         windowClass.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
         windowClass.lpszClassName = L"TenchuZRecomp";
         RegisterClassExW(&windowClass);
-        RECT rect{0, 0, 1280, 720};
+        const auto& settings = tz::host::settings();
+        RECT rect{0, 0, settings.windowWidth, settings.windowHeight};
         AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
         HWND window = CreateWindowExW(0, windowClass.lpszClassName, L"Tenchu Z", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                                       CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr,
                                       windowClass.hInstance, nullptr);
+        tz::host::initializeInput(window);
         ShowWindow(window, SW_SHOW);
+        if (settings.fullscreen) PostMessageW(window, WM_APP, 0, 0);
         tz::gpu::setOutputWindow(window);
         MSG message;
         while (GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -83,6 +120,8 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS* exception) {
 
 int wmain(int argc, wchar_t** argv) {
     SetUnhandledExceptionFilter(crashFilter);
+    // Real pixels: fullscreen uses the monitor's native resolution.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     setvbuf(stdout, nullptr, _IONBF, 0);
     try {
         const auto gameDirectory = findGameDirectory(argc, argv);
