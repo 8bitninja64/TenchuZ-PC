@@ -380,7 +380,7 @@ DWORD WINAPI guestThreadMain(void* parameter) {
 }  // namespace
 
 uint32_t createThread(uint32_t stackSize, uint32_t entry, uint32_t argument, uint32_t startup, bool suspended,
-                      uint32_t& threadId, uint32_t* kthreadOut) {
+                      uint32_t& threadId, uint32_t* kthreadOut, int processor) {
     auto object = std::make_shared<ThreadObject>();
     object->thread = std::make_shared<GuestThread>();
     object->entry = entry;
@@ -388,8 +388,8 @@ uint32_t createThread(uint32_t stackSize, uint32_t entry, uint32_t argument, uin
     object->startup = startup;
     if (!stackSize) stackSize = defaultStackSize;
     stackSize = (std::max)(stackSize, 0x10000u);
-    static std::atomic<uint32_t> processor{0};
-    setupThreadState(*object->thread, stackSize, processor.fetch_add(1) % 6);
+    static std::atomic<uint32_t> nextProcessor{0};
+    setupThreadState(*object->thread, stackSize, processor >= 0 ? uint32_t(processor) : nextProcessor.fetch_add(1) % 6);
     object->thread->object = object;
     object->dispatcher = object->thread->kthread;
     char name[32];

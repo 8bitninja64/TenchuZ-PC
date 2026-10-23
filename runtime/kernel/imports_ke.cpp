@@ -1,5 +1,6 @@
 // Kernel executive imports: threads, synchronization, TLS, memory, time.
 #include "kernel.h"
+#include <intrin.h>
 #include "ppc_recomp_shared.h"
 #include <thread>
 
@@ -24,7 +25,15 @@ PPC_FUNC(__imp__ExCreateThread) {
     const uint32_t handleOut = ctx.r3.u32, stackSize = ctx.r4.u32, idOut = ctx.r5.u32;
     const uint32_t startup = ctx.r6.u32, entry = ctx.r7.u32, argument = ctx.r8.u32, flags = ctx.r9.u32;
     uint32_t id = 0;
-    const uint32_t handle = createThread(stackSize, entry, argument, startup, flags & 1, id);
+    TZ_TRACE("thread", "[thread] ExCreateThread entry %08X flags %08X", entry, flags);
+    // Bits 24-29 are an affinity mask; the thread starts on its lowest processor.
+    int processor = -1;
+    if (const uint32_t affinity = (flags >> 24) & 0x3F) {
+        unsigned long lowest = 0;
+        _BitScanForward(&lowest, affinity);
+        processor = int(lowest);
+    }
+    const uint32_t handle = createThread(stackSize, entry, argument, startup, flags & 1, id, nullptr, processor);
     if (handleOut) store32(handleOut, handle);
     if (idOut) store32(idOut, id);
     ctx.r3.u64 = kStatusSuccess;
@@ -56,10 +65,25 @@ PPC_FUNC(__imp__NtSuspendThread) {
 }
 
 PPC_FUNC(__imp__KeSetAffinityThread) {
-    TZ_TRACE("thread", "[thread] KeSetAffinityThread %08X affinity %X", ctx.r3.u32, ctx.r4.u32);
-    // Returns the previous affinity; host scheduling is left to Windows.
-    if (ctx.r5.u32) store32(ctx.r5.u32, 0x3F);
-    ctx.r3.u64 = 0x3F;
+    // (kthread, affinity, previous*). Host scheduling is left to Windows, but the
+    // thread's processor number moves to the lowest allowed one: titles index
+    // per-processor data with it (the audio workers' barrier needs distinct slots).
+    auto thread = threadByKthread(ctx.r3.u32);
+    TZ_TRACE("thread", "[thread] KeSetAffinityThread %08X (%s) affinity %X", ctx.r3.u32,
+             thread ? thread->name.c_str() : "unknown", ctx.r4.u32);
+    uint32_t previous = 0x3F;
+    if (thread && thread->pcr) {
+        uint8_t* number = memory->host(thread->pcr + 0x10C);
+        previous = 1u << *number;
+        const uint32_t affinity = ctx.r4.u32 & 0x3F;
+        if (affinity) {
+            unsigned long processor = 0;
+            _BitScanForward(&processor, affinity);
+            *number = uint8_t(processor);
+        }
+    }
+    if (ctx.r5.u32) store32(ctx.r5.u32, previous);
+    ctx.r3.u64 = previous;
 }
 
 PPC_FUNC(__imp__KeSetBasePriorityThread) { ctx.r3.u64 = 0; }
@@ -133,6 +157,7 @@ PPC_FUNC(__imp__KeWaitForMultipleObjects) {
              currentThread()->name.c_str(), uint32_t(objects.size()), objects.empty() ? 0 : objects[0],
              ctx.r5.u32 == 0, uint32_t(ctx.lr));
     ctx.r3.u64 = waitForObjects(objects, ctx.r5.u32 == 0, ctx.r8.u32 != 0, timeout);
+    TZ_TRACE("evt", "[evt] %-20s KeWaitForMultipleObjects -> %08X", currentThread()->name.c_str(), ctx.r3.u32);
 }
 
 namespace {

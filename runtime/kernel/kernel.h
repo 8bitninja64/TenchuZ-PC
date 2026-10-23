@@ -168,7 +168,7 @@ struct ThreadExit { uint32_t code; };
 std::shared_ptr<GuestThread> attachThread(uint32_t stackSize, const char* name);
 // Creates and optionally starts a new guest thread. Returns its handle.
 uint32_t createThread(uint32_t stackSize, uint32_t entry, uint32_t argument, uint32_t startup,
-                      bool suspended, uint32_t& threadId, uint32_t* kthreadOut = nullptr);
+                      bool suspended, uint32_t& threadId, uint32_t* kthreadOut = nullptr, int processor = -1);
 // Runs a guest function on a new host thread that is not visible to the
 // guest as an XThread (interrupt and audio callbacks).
 std::shared_ptr<GuestThread> createSystemThread(const char* name);

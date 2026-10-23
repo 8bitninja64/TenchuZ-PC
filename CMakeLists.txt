@@ -45,11 +45,11 @@ add_library(TenchuRuntime STATIC
     runtime/gpu/d3d11/renderer.cpp
     runtime/gpu/d3d11/xenos_backend.cpp
     runtime/gpu/d3d11/texture_cache.cpp
-    runtime/audio/null_audio.cpp
+    runtime/audio/audio_driver.cpp
     runtime/movie/movie_player.cpp)
 target_include_directories(TenchuRuntime PUBLIC "${CMAKE_SOURCE_DIR}/runtime")
 target_compile_options(TenchuRuntime PRIVATE /clang:-msse4.1 -Wno-unused-parameter)
-target_link_libraries(TenchuRuntime PUBLIC TenchuPPC TenchuXenos bcrypt xinput winmm shell32 ole32 d3d11 dxgi d3dcompiler)
+target_link_libraries(TenchuRuntime PUBLIC TenchuPPC TenchuXenos bcrypt xinput winmm shell32 ole32 d3d11 dxgi d3dcompiler xaudio2)
 
 add_executable(TenchuZ app/main.cpp)
 target_link_libraries(TenchuZ PRIVATE TenchuRuntime)
