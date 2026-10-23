@@ -91,6 +91,11 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   (same base/size) between draws, and reusing a copy within a frame caused one-frame
   black tiles and stretched polygons. Direct-indexed streams copy only the draw's index
   range (ShaderInfo::vertexStreams), which keeps the 5 MB level buffer cheap.
+- The upload ring must not wrap inside a draw: wrapping maps with DISCARD (renames the
+  buffer), so streams copied before the wrap are gone for that draw. Draws reserve their
+  total upload first (reserveUploads). This was the remaining one-tile glitch source.
+- Jump tables: tools/audit_switch_tables.py checks every generated switch register against
+  the disassembly; run it after regenerating with new switch tables.
 - Flicker hunting: control-file `burst <n> <dir>` saves consecutive frames;
   `python tools/flicker.py <dir>` reports one-frame glitches (region ratio > 1.5 is real;
   the per-block "spike" list also catches ordinary motion). Navigation by timing alone is
