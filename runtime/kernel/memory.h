@@ -1,6 +1,8 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -75,7 +77,27 @@ public:
 
     uint64_t physicalBytesInUse() const;
 
+    // ---- Write watching of physical memory (4 KiB pages) -------------------------
+    // GPU-side copies of guest memory stay valid until the guest writes the page:
+    // watchPages write-protects pages in all three views; the first write faults, the
+    // vectored handler unprotects the page and clears its watched bit. Writes made by
+    // the OS on our behalf do not fault, so callers announce them (prepareHostWrite).
+    static constexpr uint32_t kPhysicalPages = kPhysicalSize >> 12;
+    void watchPages(uint32_t firstPage, uint32_t count);
+    bool pageWatched(uint32_t page) const {
+        return (watched_[page >> 6].load(std::memory_order_acquire) >> (page & 63)) & 1;
+    }
+    // True when every page in [firstPage, lastPage] is watched (a few word compares).
+    bool rangeWatched(uint32_t firstPage, uint32_t lastPage) const;
+    void prepareHostWrite(uint32_t address, uint32_t size);
+    // Fault handler entry: true when the write may be retried.
+    bool unwatchForWrite(uint32_t physicalPage);
+
 private:
+    void protectPhysical(uint32_t firstPage, uint32_t count, bool readOnly);
+    std::unique_ptr<std::atomic<uint64_t>[]> watched_{new std::atomic<uint64_t>[kPhysicalPages / 64]()};
+    std::mutex watchMutex_;
+
     static bool firstFit(std::map<uint32_t, uint32_t>& used, uint64_t begin, uint64_t end,
                          uint32_t size, uint32_t alignment, uint32_t& result);
     uint8_t* base_ = nullptr;

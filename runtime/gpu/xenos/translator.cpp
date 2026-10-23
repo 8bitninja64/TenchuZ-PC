@@ -13,14 +13,15 @@ cbuffer FloatConstants : register(b0) { float4 c[256]; };
 cbuffer SharedConstants : register(b1) {
     uint4 g_bools[2];          // 256 boolean constants, one bit each
     uint4 g_loops[8];          // 32 loop constants: count, start, step bytes
-    uint4 g_vertexEndian[4];   // endian mode per vertex buffer binding
+    uint4 g_vertexEndian[4];   // endian mode per vertex buffer binding; bit 2: read from guestMemory
     uint4 g_vertexBase[4];     // byte offset of each vertex buffer binding in guestData
     float4 g_textureSize[16];  // per texture binding: width, height, depth
     uint4 g_textureSwizzle[4]; // per texture binding: 3 bits per component (0-3 channel, 4 zero, 5 one)
     float4 g_positionScale;    // guest clip space -> host clip space: xyz scale
     float4 g_positionOffset;   // xyz offset, multiplied by w
     float4 g_alphaTest;        // x: function (0 never .. 7 always), y: reference
-    uint4 g_draw;              // x: index list byte offset (0xFFFFFFFF: auto), y: index offset
+    uint4 g_draw;              // x: index list byte offset (0xFFFFFFFF: auto), y: index offset,
+                               // z: bit 0 guest indices in guestMemory, bit 1 32-bit, bits 2-3 endian
 };
 static const float kFltMax = 3.402823466e+38;
 // Xenos multiplies follow the D3D9 rule 0 * x = 0, even for infinities and NaN
@@ -435,7 +436,8 @@ struct Emitter {
         line("uint address = g_vertexBase" + element + " + uint(vfIndex * " + std::to_string(fetch.vertexStride()) +
              " + " + std::to_string(fetch.vertexOffset()) + ") * 4;");
         auto word = [&](int n) {
-            return "SwapEndian(guestData.Load(address + " + std::to_string(n * 4) + "), g_vertexEndian" + element + ")";
+            return "SwapEndian(VertexLoad(address + " + std::to_string(n * 4) + ", g_vertexEndian" + element +
+                   "), g_vertexEndian" + element + " & 3)";
         };
         const bool isSigned = fetch.vertexSigned();
         const bool normalized = !fetch.vertexInteger();
@@ -801,6 +803,16 @@ struct Emitter {
         if (!pixel) {
             // Vertex data of every binding and the host index list share one buffer.
             hlsl += "ByteAddressBuffer guestData : register(t0);\n";
+            // Streams with endian bit 2 set are read in place from the mirror of guest
+            // physical memory; the others were copied into guestData.
+            hlsl += "ByteAddressBuffer guestMemory : register(t1);\n";
+            hlsl += "uint VertexLoad(uint address, uint flags) {\n"
+                    "    return (flags & 4) ? guestMemory.Load(address) : guestData.Load(address);\n}\n";
+            hlsl += "uint MirrorIndex(uint i) {\n"
+                    "    uint endian = (g_draw.z >> 2) & 3;\n"
+                    "    if (g_draw.z & 2) return SwapEndian(guestMemory.Load(g_draw.x + i * 4), endian);\n"
+                    "    uint word = SwapEndian(guestMemory.Load(g_draw.x + (i & ~1u) * 2), endian);\n"
+                    "    return (i & 1) ? word >> 16 : word & 0xFFFFu;\n}\n";
             for (const auto& [constant, slot] : vertexBindings)
                 hlsl += "// vertex binding " + std::to_string(slot) + ": fetch constant " + std::to_string(constant) + "\n";
         }
@@ -818,7 +830,8 @@ struct Emitter {
         if (!pixel) {
             hlsl += "Interpolators main(uint vertexId : SV_VertexID) {\n";
             hlsl += "    float4 r[64];\n    [unroll] for (int i = 0; i < 64; ++i) r[i] = 0.0;\n";
-            hlsl += "    uint vertexIndex = g_draw.x == 0xFFFFFFFFu ? vertexId : guestData.Load(g_draw.x + vertexId * 4);\n";
+            hlsl += "    uint vertexIndex = g_draw.x == 0xFFFFFFFFu ? vertexId\n"
+                    "                     : (g_draw.z & 1) ? MirrorIndex(vertexId) : guestData.Load(g_draw.x + vertexId * 4);\n";
             hlsl += "    r[0].x = float(vertexIndex + g_draw.y);\n";
             hlsl += "    float4 oPos = float4(0, 0, 0, 1), oPoint = 0.0, oDiscard = 0.0;\n";
             hlsl += "    float4 o[16];\n    [unroll] for (int j = 0; j < 16; ++j) o[j] = 0.0;\n";

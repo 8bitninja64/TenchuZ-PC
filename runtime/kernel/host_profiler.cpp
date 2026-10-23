@@ -8,6 +8,8 @@
 #include <dbghelp.h>
 
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 #include <map>
 #include <string>
 #include <thread>
@@ -26,9 +28,14 @@ void startHostProfiler(const char* name) {
         char window[32]{};
         if (GetEnvironmentVariableA("TENCHU_PROF", window, sizeof(window)))
             sscanf_s(window, "%d,%d", &startSeconds, &durationSeconds);
-        // With a control file, the 'profile' command starts the window instead.
+        // With a control file, the 'profile' command starts the window instead (for
+        // every profiled thread: the first one to see the flag tells the others).
+        static std::atomic<bool> started{false};
         if (control::active()) {
-            while (!control::takeFlag("profile")) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            while (!started) {
+                if (control::takeFlag("profile")) started = true;
+                else std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
         } else {
             std::this_thread::sleep_for(std::chrono::seconds(startSeconds));
         }
@@ -70,9 +77,15 @@ void startHostProfiler(const char* name) {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+        // DbgHelp is single-threaded: one report at a time.
+        static std::mutex symbols;
+        std::lock_guard lock(symbols);
         HANDLE process = GetCurrentProcess();
-        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
-        SymInitialize(process, nullptr, TRUE);
+        static const bool initialized = [process] {
+            SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+            return SymInitialize(process, nullptr, TRUE) != FALSE;
+        }();
+        (void)initialized;
         auto report = [&](const std::map<DWORD64, uint32_t>& counts, const char* title) {
         std::map<std::string, uint32_t> byFunction;
         for (const auto& [address, count] : counts) {

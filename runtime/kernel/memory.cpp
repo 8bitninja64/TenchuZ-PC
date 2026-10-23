@@ -58,6 +58,85 @@ Memory::Memory() {
         throw std::runtime_error("Cannot commit kernel memory");
 }
 
+// Writes to watched physical pages: unprotect and let the store run again.
+static LONG CALLBACK watchedPageFault(EXCEPTION_POINTERS* info) {
+    const auto* record = info->ExceptionRecord;
+    if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record->NumberParameters < 2 ||
+        record->ExceptionInformation[0] != 1 || !memory)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(memory->base());
+    const uintptr_t host = record->ExceptionInformation[1];
+    if (host < base + 0xA0000000ull || host >= base + 0xFFFFF000ull) return EXCEPTION_CONTINUE_SEARCH;
+    const uint32_t physical = Memory::physicalAddress(uint32_t(host - base));
+    return memory->unwatchForWrite(physical >> 12) ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
+}
+
+void Memory::protectPhysical(uint32_t firstPage, uint32_t count, bool readOnly) {
+    DWORD old;
+    const DWORD protection = readOnly ? PAGE_READONLY : PAGE_READWRITE;
+    const size_t offset = size_t(firstPage) * kPage, size = size_t(count) * kPage;
+    VirtualProtect(base_ + 0xA0000000ull + offset, size, protection, &old);
+    VirtualProtect(base_ + 0xC0000000ull + offset, size, protection, &old);
+    // The E view maps physical memory from its second page on.
+    if (firstPage == 0) {
+        if (count == 1) return;
+        VirtualProtect(base_ + 0xE0000000ull, size - kPage, protection, &old);
+    } else {
+        VirtualProtect(base_ + 0xE0000000ull + offset - kPage, size, protection, &old);
+    }
+}
+
+void Memory::watchPages(uint32_t firstPage, uint32_t count) {
+    static const PVOID handler = AddVectoredExceptionHandler(1, watchedPageFault);
+    (void)handler;
+    std::lock_guard lock(watchMutex_);
+    uint32_t run = 0;
+    for (uint32_t page = firstPage; page <= firstPage + count; ++page) {
+        const bool protect = page < firstPage + count && page < kPhysicalPages && !pageWatched(page);
+        if (protect) {
+            // Protect before the caller copies: a write after this point faults.
+            watched_[page >> 6].fetch_or(1ull << (page & 63), std::memory_order_acq_rel);
+            ++run;
+        } else if (run) {
+            protectPhysical(page - run, run, true);
+            run = 0;
+        }
+    }
+}
+
+bool Memory::unwatchForWrite(uint32_t physicalPage) {
+    if (physicalPage >= kPhysicalPages) return false;
+    std::lock_guard lock(watchMutex_);
+    if (pageWatched(physicalPage)) {
+        watched_[physicalPage >> 6].fetch_and(~(1ull << (physicalPage & 63)), std::memory_order_acq_rel);
+        protectPhysical(physicalPage, 1, false);
+        return true;
+    }
+    // Another thread already unprotected it, or the page was never ours to protect.
+    MEMORY_BASIC_INFORMATION info{};
+    VirtualQuery(base_ + 0xA0000000ull + size_t(physicalPage) * kPage, &info, sizeof(info));
+    return info.Protect == PAGE_READWRITE;
+}
+
+bool Memory::rangeWatched(uint32_t firstPage, uint32_t lastPage) const {
+    if (lastPage >= kPhysicalPages || firstPage > lastPage) return false;
+    for (uint32_t word = firstPage >> 6; word <= lastPage >> 6; ++word) {
+        uint64_t need = ~0ull;
+        if (word == firstPage >> 6) need &= ~0ull << (firstPage & 63);
+        if (word == lastPage >> 6) need &= ~0ull >> (63 - (lastPage & 63));
+        if ((watched_[word].load(std::memory_order_acquire) & need) != need) return false;
+    }
+    return true;
+}
+
+void Memory::prepareHostWrite(uint32_t address, uint32_t size) {
+    if (address < 0xA0000000 || !size) return;
+    const uint32_t first = physicalAddress(address) >> 12;
+    const uint32_t last = (physicalAddress(address) + size - 1) >> 12;
+    for (uint32_t page = first; page <= last && page < kPhysicalPages; ++page)
+        if (pageWatched(page)) unwatchForWrite(page);
+}
+
 Memory::~Memory() {
     // The process is exiting; the OS reclaims the reservation and views.
 }

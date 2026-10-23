@@ -228,6 +228,7 @@ PPC_FUNC(__imp__NtReadFile) {
     overlapped.Offset = uint32_t(file->position);
     overlapped.OffsetHigh = uint32_t(file->position >> 32);
     DWORD read = 0;
+    memory->prepareHostWrite(buffer, length);  // ReadFile cannot write write-watched pages
     const BOOL ok = ReadFile(file->handle, memory->host(buffer), length, &read, &overlapped);
     file->position += read;
     const uint32_t status = !ok && GetLastError() != ERROR_HANDLE_EOF ? kStatusUnsuccessful

@@ -219,6 +219,97 @@ struct XenosBackend::Impl {
     std::map<std::pair<uint32_t, uint32_t>, uint32_t> vertexStats;  // trace 'vbstats
     uint8_t* ringMapped = nullptr;
 
+    // ---- Guest memory mirror: physical memory on the GPU, uploaded per 4 KiB page ----
+    // Vertex data is read from here in place: a page is uploaded once and write-watched
+    // (Memory::watchPages), and re-uploaded only after the guest writes it. Pages the
+    // title rewrites every frame (skinning, particles) would fault constantly, so those
+    // are marked hot for a while and their streams are copied into the ring per draw
+    // instead. TENCHU_TRACE=nomirror uses the ring for everything.
+    ID3D11Buffer* mirror = nullptr;
+    ID3D11ShaderResourceView* mirrorView = nullptr;
+    std::vector<uint8_t> pageUploads;      // re-uploads in the current window
+    std::vector<uint8_t> pageSeen;         // uploaded at least once
+    std::vector<uint64_t> pageHotUntil;    // frame number
+    std::vector<uint64_t> hotBits;         // pages with pageHotUntil > frames, rebuilt per window
+    uint64_t mirrorWindowStart = 0;
+    uint64_t mirroredBytes = 0;            // per frame (trace 'hosttime')
+
+    void createMirror() {
+        if (traceEnabled("nomirror")) return;
+        D3D11_BUFFER_DESC desc{};
+        desc.ByteWidth = Memory::kPhysicalSize;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+        if (FAILED(device->CreateBuffer(&desc, nullptr, &mirror))) {
+            logf("[d3d11] no guest memory mirror (512 MB buffer refused); vertex data goes through the ring");
+            return;
+        }
+        D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+        view.Format = DXGI_FORMAT_R32_TYPELESS;
+        view.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+        view.BufferEx.NumElements = Memory::kPhysicalSize / 4;
+        view.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
+        if (FAILED(device->CreateShaderResourceView(mirror, &view, &mirrorView))) {
+            release(mirror);
+            return;
+        }
+        pageUploads.assign(Memory::kPhysicalPages, 0);
+        pageSeen.assign(Memory::kPhysicalPages, 0);
+        pageHotUntil.assign(Memory::kPhysicalPages, 0);
+        hotBits.assign(Memory::kPhysicalPages / 64, 0);
+    }
+
+    bool rangeHot(uint32_t first, uint32_t last) const {
+        for (uint32_t word = first >> 6; word <= last >> 6; ++word) {
+            uint64_t bits = hotBits[word];
+            if (word == first >> 6) bits &= ~0ull << (first & 63);
+            if (word == last >> 6) bits &= ~0ull >> (63 - (last & 63));
+            if (bits) return true;
+        }
+        return false;
+    }
+
+    // Makes [physical, physical + size) current in the mirror. False: the range has
+    // hot pages (or there is no mirror) and should be copied into the ring.
+    bool mirrorRange(uint32_t physical, uint32_t size) {
+        if (!mirror || !size || uint64_t(physical) + size > Memory::kPhysicalSize) return false;
+        const uint32_t first = physical >> 12, last = (physical + size - 1) >> 12;
+        if (rangeHot(first, last)) return false;
+        if (memory->rangeWatched(first, last)) return true;  // nothing written since the upload
+        uint32_t run = 0;
+        for (uint32_t page = first; page <= last + 1; ++page) {
+            if (page <= last && !memory->pageWatched(page)) {
+                ++run;
+                continue;
+            }
+            if (!run) continue;
+            const uint32_t runFirst = page - run;
+            memory->watchPages(runFirst, run);  // before copying: later writes fault
+            const D3D11_BOX box{runFirst * 0x1000u, 0, 0, page * 0x1000u, 1, 1};
+            context->UpdateSubresource(mirror, 0, &box, memory->host(Memory::fromPhysical(runFirst * 0x1000u)), 0, 0);
+            mirroredBytes += uint64_t(run) * 0x1000;
+            for (uint32_t p = runFirst; p < page; ++p) {
+                if (pageSeen[p] && pageUploads[p] < 255) ++pageUploads[p];
+                pageSeen[p] = 1;
+            }
+            run = 0;
+        }
+        return true;
+    }
+
+    // Once per frame: pages re-uploaded in most frames of the last window turn hot.
+    void updateHotPages() {
+        if (!mirror || frames - mirrorWindowStart < 30) return;
+        std::fill(hotBits.begin(), hotBits.end(), 0ull);
+        for (uint32_t page = 0; page < Memory::kPhysicalPages; ++page) {
+            if (pageUploads[page] >= 15) pageHotUntil[page] = frames + 1800;
+            pageUploads[page] = 0;
+            if (pageHotUntil[page] > frames) hotBits[page >> 6] |= 1ull << (page & 63);
+        }
+        mirrorWindowStart = frames;
+    }
+
     void beginUploads() {
         if (ringMapped) return;
         D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -742,6 +833,7 @@ struct XenosBackend::Impl {
         view.BufferEx.NumElements = kRingSize / 4;
         view.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
         device->CreateShaderResourceView(ring, &view, &ringView);
+        createMirror();
         vertexConstants = createConstantBuffer(256 * 16);
         pixelConstants = createConstantBuffer(256 * 16);
         sharedConstants = createConstantBuffer((sizeof(SharedConstants) + 15) & ~15u);
@@ -926,15 +1018,42 @@ struct XenosBackend::Impl {
         auto* ps = edramMode == 4 ? shader(psHash, xenos::ShaderType::Pixel) : nullptr;
         if (!vs || (edramMode == 4 && !ps)) { ++dropped[2]; return; }  // shader
 
-        std::vector<uint32_t>& indices = drawIndices;  // reused across draws
-        D3D11_PRIMITIVE_TOPOLOGY topology;
-        bool rectangles;
-        if (!buildIndices(request, primitive, count, indices, topology, rectangles)) {
-            TZ_TRACE("draw", "[d3d11] unsupported primitive type %u", primitive);
-            ++dropped[6];
-            return;
+        // Direct draws: list primitives whose vertex buffers and indices are all current
+        // in the mirror read their indices in the vertex shader, so the index list is
+        // neither converted nor uploaded. Strips, fans, quads, inline indices and hot
+        // (rewritten every frame) data take the host path below.
+        const uint32_t indexSource = (request.initiator >> 6) & 3;
+        const bool wideIndices = (request.initiator >> 11) & 1;
+        const auto& bindings = vs->info.vertexFetchConstants;
+        const size_t streamCount = (std::min)(bindings.size(), size_t(16));
+        static const bool noDirect = traceEnabled("nodirect");
+        bool direct = mirror && !noDirect && (primitive <= 4 || primitive == 8) && primitive >= 1 &&
+                      (indexSource == 2 || (indexSource == 0 && !(request.indexBase & 3)));
+        for (size_t slot = 0; direct && slot < streamCount; ++slot) {
+            const uint32_t base = reg::SHADER_CONSTANT_FETCH_00_0 + bindings[slot] * 2;
+            const uint32_t size = (std::max)(((reg(base + 1) >> 2) & 0xFFFFFF) * 4, 16u);
+            direct = mirrorRange(reg(base) & 0x1FFFFFFC, size);
         }
-        if (indices.empty()) { ++dropped[3]; return; }  // indices
+        if (direct && indexSource == 0) direct = mirrorRange(request.indexBase & 0x1FFFFFFF, count * (wideIndices ? 4 : 2));
+
+        std::vector<uint32_t>& indices = drawIndices;  // reused across draws
+        D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        bool rectangles = primitive == 8;
+        uint32_t vertexCount = count;
+        if (direct) {
+            topology = primitive == 1 ? D3D11_PRIMITIVE_TOPOLOGY_POINTLIST
+                     : primitive == 2 ? D3D11_PRIMITIVE_TOPOLOGY_LINELIST
+                     : primitive == 3 ? D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP
+                                      : D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        } else {
+            if (!buildIndices(request, primitive, count, indices, topology, rectangles)) {
+                TZ_TRACE("draw", "[d3d11] unsupported primitive type %u", primitive);
+                ++dropped[6];
+                return;
+            }
+            if (indices.empty()) { ++dropped[3]; return; }  // indices
+            vertexCount = uint32_t(indices.size());
+        }
 
         // Render targets.
         const uint32_t surfaceInfo = reg(reg::RB_SURFACE_INFO);
@@ -979,9 +1098,19 @@ struct XenosBackend::Impl {
         SharedConstants shared{};
         for (int i = 0; i < 8; ++i) shared.bools[i] = reg(reg::SHADER_CONSTANT_BOOL_000_031 + i);
         for (int i = 0; i < 32; ++i) shared.loops[i] = reg(reg::SHADER_CONSTANT_LOOP_00 + i);
-        // Vertex data is copied fresh for every draw: dynamic buffers change between
-        // draws of a frame. Streams indexed by the raw vertex index copy only the bytes
-        // this draw's index range can reach, which keeps large static buffers cheap.
+        if (direct) {
+            for (size_t slot = 0; slot < streamCount; ++slot) {
+                const uint32_t base = reg::SHADER_CONSTANT_FETCH_00_0 + bindings[slot] * 2;
+                shared.vertexEndian[slot] = (reg(base + 1) & 3) | 4;
+                shared.vertexBase[slot] = reg(base) & 0x1FFFFFFC;
+            }
+            shared.draw[0] = indexSource == 2 ? ~0u : request.indexBase & 0x1FFFFFFF;
+            shared.draw[1] = reg(reg::VGT_INDX_OFFSET);
+            shared.draw[2] = indexSource == 2 ? 0 : 1 | (wideIndices ? 2 : 0) | (request.indexEndian & 3) << 2;
+        } else {
+        // Vertex data not current in the mirror is copied for every draw: dynamic buffers
+        // change between draws of a frame. Streams indexed by the raw vertex index copy
+        // only the bytes this draw's index range can reach.
         uint32_t minIndex = ~0u, maxIndex = 0;
         for (const uint32_t index : indices) {
             minIndex = (std::min)(minIndex, index);
@@ -992,10 +1121,8 @@ struct XenosBackend::Impl {
         const bool rangeKnown = !indices.empty() && firstVertex <= lastVertex;  // no wraparound
         // Plan every upload of this draw first: they must land in the same ring
         // generation, since a wrap renames the buffer the draw will read.
-        struct StreamUpload { uint32_t address, start, length; };
+        struct StreamUpload { uint32_t address, start, length; bool mirrored; };
         StreamUpload streams[16];
-        const auto& bindings = vs->info.vertexFetchConstants;
-        const size_t streamCount = (std::min)(bindings.size(), size_t(16));
         uint64_t total = (uint64_t(indices.size()) * 4 + 15) & ~15ull;
         for (size_t slot = 0; slot < streamCount; ++slot) {
             const uint32_t base = reg::SHADER_CONSTANT_FETCH_00_0 + bindings[slot] * 2;
@@ -1011,12 +1138,18 @@ struct XenosBackend::Impl {
                 end = (std::min)((uint64_t(lastVertex) * stream.maxStride + stream.maxEnd) * 4, uint64_t(size));
                 if (start >= end) start = end = 0;  // out of range: the draw reads nothing valid
             }
-            streams[slot] = {address, uint32_t(start), (std::max)(uint32_t(end - start), 16u)};
-            total += (uint64_t(streams[slot].length) + 15) & ~15ull;
+            streams[slot] = {address, uint32_t(start), (std::max)(uint32_t(end - start), 16u), false};
+            streams[slot].mirrored = mirrorRange((address & 0x1FFFFFFF) + uint32_t(start), streams[slot].length);
+            if (streams[slot].mirrored) shared.vertexEndian[slot] |= 4;  // read from the mirror
+            else total += (uint64_t(streams[slot].length) + 15) & ~15ull;
         }
         reserveUploads(total);
         for (size_t slot = 0; slot < streamCount; ++slot) {
             const auto& stream = streams[slot];
+            if (stream.mirrored) {
+                shared.vertexBase[slot] = stream.address & 0x1FFFFFFF;
+                continue;
+            }
             const uint32_t offset = upload(memory->host(Memory::fromPhysical(stream.address + stream.start)), stream.length);
             // The shader adds (index * stride + offset) * 4 to the base; wraparound is intended.
             shared.vertexBase[slot] = offset == ~0u ? ~0u : offset - stream.start;
@@ -1025,6 +1158,7 @@ struct XenosBackend::Impl {
         shared.draw[1] = reg(reg::VGT_INDX_OFFSET);
         endUploads();
         if (shared.draw[0] == ~0u) { ++dropped[5]; return; }  // upload
+        }
 
         // Guest screen space -> host clip space.
         const uint32_t vte = reg(reg::PA_CL_VTE_CNTL);
@@ -1121,7 +1255,8 @@ struct XenosBackend::Impl {
         context->VSSetShader(vs->vertex, nullptr, 0);
         ID3D11Buffer* vsBuffers[2] = {vertexConstants, sharedConstants};
         context->VSSetConstantBuffers(0, 2, vsBuffers);
-        context->VSSetShaderResources(0, 1, &ringView);
+        ID3D11ShaderResourceView* vertexData[2] = {ringView, mirrorView};
+        context->VSSetShaderResources(0, mirrorView ? 2 : 1, vertexData);
         if (!vertexViews.empty()) {
             context->VSSetShaderResources(8, UINT(vertexViews.size()), vertexViews.data());
             context->VSSetSamplers(0, UINT(vertexSamplers.size()), vertexSamplers.data());
@@ -1226,7 +1361,7 @@ struct XenosBackend::Impl {
             context->SOSetTargets(1, &target, &zero);
             const D3D11_PRIMITIVE_TOPOLOGY topologyBefore = topology;
             context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
-            context->Draw((std::min)(UINT(indices.size()), 64u), 0);
+            context->Draw((std::min)(UINT(vertexCount), 64u), 0);
             ID3D11Buffer* none = nullptr;
             context->SOSetTargets(1, &none, &zero);
             context->GSSetShader(previous, nullptr, 0);
@@ -1244,7 +1379,7 @@ struct XenosBackend::Impl {
             release(staging);
             release(target);
         }
-        context->Draw(UINT(indices.size()), 0);
+        context->Draw(UINT(vertexCount), 0);
         hostTime[5] += std::chrono::steady_clock::now() - drawStart;
         if (statistics) {
             context->End(statistics);
@@ -1513,8 +1648,8 @@ struct XenosBackend::Impl {
         if (traceEnabled("hosttime")) {
             auto ms = [](std::chrono::steady_clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
             logf("[hosttime] draws %.1f ms (textures %.1f, constants %.1f, Draw %.1f), resolves %.1f, present %.1f, "
-                 "uploads %.1f MB", ms(hostTime[1]), ms(hostTime[0]), ms(hostTime[4]), ms(hostTime[5]), ms(hostTime[2]),
-                 ms(hostTime[3]), uploadedBytes / 1048576.0);
+                 "uploads %.1f MB, mirrored %.1f MB", ms(hostTime[1]), ms(hostTime[0]), ms(hostTime[4]), ms(hostTime[5]),
+                 ms(hostTime[2]), ms(hostTime[3]), uploadedBytes / 1048576.0, mirroredBytes / 1048576.0);
         }
         if (traceEnabled("vbstats") && !vertexStats.empty()) {
             uint64_t unique = 0;
@@ -1529,6 +1664,7 @@ struct XenosBackend::Impl {
         }
         for (auto& time : hostTime) time = {};
         uploadedBytes = 0;
+        mirroredBytes = 0;
         if (flickerLog) {
             if (renderer.takeSuspicious()) {
                 static int dumps = 0;
@@ -1545,6 +1681,7 @@ struct XenosBackend::Impl {
         tileDraws[0] = tileDraws[1] = resolves = 0;
         std::fill(std::begin(dropped), std::end(dropped), 0);
         ++frames;
+        updateHotPages();
         if (control::takeFlag("traceframe")) liveTraceFrame = frames;
         if (control::takeFlag("dumpframe")) liveDumpFrame = frames;
         textures.beginFrame();

@@ -225,7 +225,9 @@ void writeRegister(uint32_t index, uint32_t value) {
     if (index == kRegScratchUmsk || index == kRegScratchAddr || (index >= kRegScratch0 && index < kRegScratch0 + 8))
         TZ_TRACE("scratch", "[cp] reg %04X = %08X (packet %08X depth %d, IBs %08X %08X)", index, value, packetAddress,
                  packetDepth, ibStack[0], ibStack[1]);
-    gs.registers[index] = value;
+    // Relaxed: a plain store; seq_cst would be a locked xchg for each of the tens of
+    // thousands of register and constant writes per frame.
+    gs.registers[index].store(value, std::memory_order_relaxed);
     if (index >= kRegScratch0 && index < kRegScratch0 + 8) {
         const uint32_t slot = index - kRegScratch0;
         if (gs.registers[kRegScratchUmsk] & (1u << slot))
@@ -782,6 +784,9 @@ PPC_FUNC(__imp__VdSwap) {
     store32(ctx.r3.u32 + 8, frontBuffer);
     for (uint32_t i = 3; i < 64; ++i) store32(ctx.r3.u32 + i * 4, 0);
     const uint64_t frame = ++gs.frames;
+    // The title's frame thread (TENCHU_TRACE=hostprof profiles it with the CP thread).
+    static const bool profiled = (startHostProfiler("guest-swap-thread"), true);
+    (void)profiled;
     // Frames submitted earlier that the command processor has not presented yet.
     const uint64_t pending = frame - 1 - (std::min)(frame - 1, gs.presented.load());
     if (traceEnabled("framegap")) {
