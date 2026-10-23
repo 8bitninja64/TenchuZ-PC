@@ -87,6 +87,14 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   interval (when refresh % limit == 0) or a timer in the CP (limitFrameRate). Missions
   are bound by the command processor thread: profile it with TENCHU_TRACE=hostprof and
   the control file's `profile` command (the runtime has /Z7 symbols for this).
+- Vertex data must be read fresh for every draw: the title rewrites dynamic buffers
+  (same base/size) between draws, and reusing a copy within a frame caused one-frame
+  black tiles and stretched polygons. Direct-indexed streams copy only the draw's index
+  range (ShaderInfo::vertexStreams), which keeps the 5 MB level buffer cheap.
+- Flicker hunting: control-file `burst <n> <dir>` saves consecutive frames;
+  `python tools/flicker.py <dir>` reports one-frame glitches (region ratio > 1.5 is real;
+  the per-block "spike" list also catches ordinary motion). Navigation by timing alone is
+  fragile: keep waits generous (build/live/nav_hideout.txt uses 17/6/6/6/18 s).
 - Hybrid laptop (Intel iGPU + RTX 3070, 240 Hz): verify rendering on NVIDIA. GPU
   differences found so far: interpolated alpha just below 1.0 (alpha test now
   quantized), 0*inf in normalizations (XMul helpers).
