@@ -8,6 +8,12 @@
 #include <d3dcompiler.h>
 #include <algorithm>
 #include <chrono>
+#include <memory>
+#include <thread>
+#include <mutex>
+#include <deque>
+#include <condition_variable>
+#include <filesystem>
 #include <cmath>
 #include <cstring>
 #include <set>
@@ -309,8 +315,39 @@ struct XenosBackend::Impl {
         ID3D11GeometryShader* streamOut = nullptr;  // TENCHU_PROBE_VS: captures SV_Position + t0
         xenos::ShaderInfo info;
         bool failed = false;
+        std::atomic<bool> done{false};  // set by the compiling thread after everything above
     };
-    std::unordered_map<uint64_t, CompiledShader> shaderCache;
+    // Entries never move (workers fill them in); the map itself belongs to the
+    // command processor thread.
+    std::unordered_map<uint64_t, std::unique_ptr<CompiledShader>> shaderCache;
+
+    // Shaders compile on worker threads; a draw whose shader is not ready yet is
+    // skipped: a short pop-in the first time a scene appears instead of a freeze
+    // (the largest shaders take seconds in FXC). TENCHU_SYNC_SHADERS=1 compiles inline.
+    struct ShaderJob {
+        uint64_t hash = 0;
+        xenos::ShaderType type{};
+        std::vector<uint32_t> words;
+        CompiledShader* entry = nullptr;
+    };
+    std::mutex shaderJobMutex;
+    std::condition_variable shaderJobReady;
+    std::deque<ShaderJob> shaderJobs;
+    std::vector<std::thread> shaderWorkers;
+
+    void shaderWorker() {
+        for (;;) {
+            ShaderJob job;
+            {
+                std::unique_lock lock(shaderJobMutex);
+                shaderJobReady.wait(lock, [&] { return !shaderJobs.empty(); });
+                job = std::move(shaderJobs.front());
+                shaderJobs.pop_front();
+            }
+            build(job.hash, job.type, job.words, *job.entry);
+            job.entry->done.store(true, std::memory_order_release);
+        }
+    }
     ID3D11GeometryShader* rectangleShader = nullptr;
     ID3D11PixelShader* flatShader = nullptr;
     ID3D11VertexShader* copyVertexShader = nullptr;
@@ -318,16 +355,55 @@ struct XenosBackend::Impl {
     ID3D11PixelShader* depthCopyShaders[2] = {};  // single-sample, multisampled source
     ID3D11Buffer* copyConstants = nullptr;
 
+    static std::filesystem::path shaderCacheDirectory() {
+        static const std::filesystem::path directory = [] {
+            auto path = userDirectory() / "shadercache";
+            std::error_code error;
+            std::filesystem::create_directories(path, error);
+            return path;
+        }();
+        return directory;
+    }
+
     CompiledShader* shader(uint64_t hash, xenos::ShaderType type) {
-        auto [it, inserted] = shaderCache.try_emplace(hash);
-        CompiledShader& entry = it->second;
-        if (!inserted) return entry.failed ? nullptr : &entry;
-        const auto* words = shaderSource(hash);
-        if (!words) {
-            entry.failed = true;
-            return nullptr;
+        auto& slot = shaderCache[hash];
+        if (!slot) {
+            slot = std::make_unique<CompiledShader>();
+            const auto* words = shaderSource(hash);
+            if (!words) {
+                slot->failed = true;
+                slot->done = true;
+                return nullptr;
+            }
+            static const bool synchronous = [] {
+                char value[8]{};
+                return GetEnvironmentVariableA("TENCHU_SYNC_SHADERS", value, sizeof(value)) && value[0] == '1';
+            }();
+            if (synchronous) {
+                build(hash, type, *words, *slot);
+                slot->done = true;
+            } else {
+                if (shaderWorkers.empty()) {
+                    const unsigned count = std::clamp(std::thread::hardware_concurrency() / 2, 2u, 6u);
+                    for (unsigned i = 0; i < count; ++i) shaderWorkers.emplace_back([this] { shaderWorker(); });
+                    for (auto& worker : shaderWorkers) worker.detach();
+                }
+                {
+                    std::lock_guard lock(shaderJobMutex);
+                    shaderJobs.push_back({hash, type, *words, slot.get()});
+                }
+                shaderJobReady.notify_one();
+            }
         }
-        auto translated = xenos::translate(xenos::decode(type, *words));
+        CompiledShader& entry = *slot;
+        if (!entry.done.load(std::memory_order_acquire) || entry.failed) return nullptr;
+        return &entry;
+    }
+
+    // Translates and compiles one shader into entry (any thread: the D3D11 device
+    // is thread-safe for resource creation).
+    void build(uint64_t hash, xenos::ShaderType type, const std::vector<uint32_t>& words, CompiledShader& entry) {
+        auto translated = xenos::translate(xenos::decode(type, words));
         entry.info = translated.info;
         // TENCHU_PS_OVERRIDE=<hash>=<hlsl> replaces that pixel shader's color output, e.g. r[6].
         static const std::string override = [] {
@@ -349,10 +425,54 @@ struct XenosBackend::Impl {
         ID3DBlob* code = nullptr;
         ID3DBlob* errors = nullptr;
         const bool pixel = type == xenos::ShaderType::Pixel;
-        TZ_TRACE("compile", "[d3d11] compiling %s shader %016llX (%zu cached)", type == xenos::ShaderType::Pixel ? "pixel" : "vertex",
-                 (unsigned long long)hash, shaderCache.size());
-        if (FAILED(D3DCompile(translated.hlsl.data(), translated.hlsl.size(), nullptr, nullptr, nullptr, "main",
-                              pixel ? "ps_5_0" : "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors))) {
+        const char* profile = pixel ? "ps_5_0" : "vs_5_0";
+        // TENCHU_SHADER_OPT: optimization level 0-3 (default 1), or -1 to skip optimization.
+        static const int optimization = [] {
+            char value[8]{};
+            return GetEnvironmentVariableA("TENCHU_SHADER_OPT", value, sizeof(value)) ? atoi(value) : 1;
+        }();
+        const UINT flags = optimization < 0 ? D3DCOMPILE_SKIP_OPTIMIZATION
+                         : optimization == 0 ? D3DCOMPILE_OPTIMIZATION_LEVEL0
+                         : optimization == 1 ? D3DCOMPILE_OPTIMIZATION_LEVEL1
+                         : optimization == 2 ? D3DCOMPILE_OPTIMIZATION_LEVEL2
+                                             : D3DCOMPILE_OPTIMIZATION_LEVEL3;
+        // Compiled bytecode is cached on disk, keyed by the translated source, profile and
+        // flags, so a translator change never reuses stale code.
+        uint64_t sourceHash = 1469598103934665603ull;
+        for (const char c : translated.hlsl) sourceHash = (sourceHash ^ uint8_t(c)) * 1099511628211ull;
+        sourceHash = (sourceHash ^ flags) * 1099511628211ull;
+        char cacheName[64];
+        snprintf(cacheName, sizeof(cacheName), "%s_%016llX.dxbc", profile, (unsigned long long)sourceHash);
+        const auto cachePath = shaderCacheDirectory() / cacheName;
+        if (std::FILE* file = _wfopen(cachePath.c_str(), L"rb")) {
+            std::fseek(file, 0, SEEK_END);
+            const long size = std::ftell(file);
+            std::fseek(file, 0, SEEK_SET);
+            if (size > 0 && SUCCEEDED(D3DCreateBlob(size_t(size), &code)) &&
+                std::fread(code->GetBufferPointer(), 1, size_t(size), file) != size_t(size))
+                release(code);
+            std::fclose(file);
+        }
+        TZ_TRACE("compile", "[d3d11] %s %s shader %016llX (%zu cached)", code ? "loading" : "compiling",
+                 pixel ? "pixel" : "vertex", (unsigned long long)hash, size_t(0));
+        const auto compileStart = std::chrono::steady_clock::now();
+        struct CompileTimer {
+            std::chrono::steady_clock::time_point start;
+            uint64_t hash;
+            ~CompileTimer() {
+                TZ_TRACE("compile", "[d3d11] shader %016llX ready in %.0f ms", (unsigned long long)hash,
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            }
+        } compileTimer{compileStart, hash};
+        if (!code &&
+            SUCCEEDED(D3DCompile(translated.hlsl.data(), translated.hlsl.size(), nullptr, nullptr, nullptr, "main",
+                                 profile, flags, 0, &code, &errors))) {
+            if (std::FILE* file = _wfopen(cachePath.c_str(), L"wb")) {
+                std::fwrite(code->GetBufferPointer(), 1, code->GetBufferSize(), file);
+                std::fclose(file);
+            }
+        }
+        if (!code) {
             logf("[d3d11] shader %016llX failed to compile: %s", (unsigned long long)hash,
                  errors ? static_cast<const char*>(errors->GetBufferPointer()) : "");
             entry.failed = true;
@@ -371,7 +491,6 @@ struct XenosBackend::Impl {
         }
         release(code);
         release(errors);
-        return entry.failed ? nullptr : &entry;
     }
 
     // ---- Resolution scaling ----------------------------------------------------------

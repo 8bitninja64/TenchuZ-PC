@@ -1,7 +1,7 @@
 #pragma once
 // Game controllers through SDL3: Xbox, PlayStation, Switch, 8BitDo and other
-// pads, mapped by position onto the Xbox 360 layout. Controller N of the title
-// is the Nth connected pad, so the first pad is always player 1 whatever its slot.
+// pads, mapped by position onto the Xbox 360 layout. Pad N is the Nth connected
+// pad; the XAM layer merges them all into player 1.
 #include "host/input.h"
 
 namespace tz::host {

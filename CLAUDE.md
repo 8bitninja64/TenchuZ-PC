@@ -96,6 +96,13 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
 - The upload ring must not wrap inside a draw: wrapping maps with DISCARD (renames the
   buffer), so streams copied before the wrap are gone for that draw. Draws reserve their
   total upload first (reserveUploads). This was the remaining one-tile glitch source.
+- Shaders compile on worker threads (draws skip until ready) and are cached on disk in
+  %APPDATA%\TenchuZRecomp\shadercache keyed by translated HLSL + flags; skinned vertex
+  shaders take ~5 s each in FXC, which used to freeze scene loads for up to a minute.
+  TENCHU_SYNC_SHADERS=1 compiles inline (deterministic captures).
+- Only player 1 is signed in: all controllers merge into user 0 (a pad seen as player 2
+  made the game refuse to load/save). Test the real input path with build/live/keys.py
+  (posted keys, no control file); TENCHU_CONTROL_USER picks the control file's player.
 - Jump tables: tools/audit_switch_tables.py checks every generated switch register against
   the disassembly; run it after regenerating with new switch tables.
 - Flicker hunting: control-file `burst <n> <dir>` saves consecutive frames;

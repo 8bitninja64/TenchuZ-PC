@@ -491,7 +491,12 @@ PPC_FUNC(__imp__XamInputGetState) {
     // active, else the XInput pad; keyboard and mouse join it once used.
     bool connected = false;
     bool synthesized = false;
-    if (ctx.r3.u32 == 0 && control::active()) {
+    // TENCHU_CONTROL_USER: which controller the control file drives (default 0).
+    static const uint32_t controlUser = [] {
+        char value[8]{};
+        return GetEnvironmentVariableA("TENCHU_CONTROL_USER", value, sizeof(value)) ? uint32_t(atoi(value)) : 0u;
+    }();
+    if (ctx.r3.u32 == controlUser && control::active()) {
         const auto pad = control::pad();
         state.Gamepad.wButtons = pad.buttons;
         state.Gamepad.sThumbLX = pad.thumbs[0];
@@ -502,10 +507,17 @@ PPC_FUNC(__imp__XamInputGetState) {
     } else if (ctx.r3.u32 == 0 && scriptedInput().active) {
         state.Gamepad.wButtons = scriptedButtons();
         connected = synthesized = true;
-    } else {
-        // Any controller SDL knows (XInput, PlayStation, Switch, 8BitDo...), first pad = player 1.
+    } else if (ctx.r3.u32 == 0) {
+        // Every controller SDL knows (XInput, PlayStation, Switch, 8BitDo...) drives player 1,
+        // the only signed-in profile: a pad reported as player 2 cannot load or save, and the
+        // title then plays from player 1's input. Players 2-4 are never connected.
         host::VirtualPad pad;
-        connected = host::gamepadState(ctx.r3.u32, pad);
+        for (uint32_t index = 0; index < 4; ++index) {
+            host::VirtualPad other;
+            if (!host::gamepadState(index, other)) continue;
+            host::mergePad(pad, other);
+            connected = true;
+        }
         if (connected) {
             state.Gamepad.wButtons = pad.buttons;
             state.Gamepad.bLeftTrigger = pad.leftTrigger;
@@ -535,6 +547,9 @@ PPC_FUNC(__imp__XamInputGetState) {
         ctx.r3.u64 = kErrorDeviceNotConnected;
         return;
     }
+    if (traceEnabled("inputstate") && (state.Gamepad.wButtons || state.Gamepad.sThumbLX || state.Gamepad.sThumbLY))
+        logf("[input] user %u flags %X lr %08X buttons %04X lx %d ly %d packet %u", ctx.r3.u32, ctx.r4.u32,
+             uint32_t(ctx.lr), state.Gamepad.wButtons, state.Gamepad.sThumbLX, state.Gamepad.sThumbLY, state.dwPacketNumber);
     if (synthesized) {
         // A changing packet number tells the title the state may differ.
         static std::atomic<uint32_t> packet{0};
@@ -554,8 +569,12 @@ PPC_FUNC(__imp__XamInputGetState) {
 
 PPC_FUNC(__imp__XamInputSetState) {
     // (user, flags, vibration*) where vibration = { left u16, right u16 }
-    ctx.r3.u64 = host::gamepadRumble(ctx.r3.u32, load16(ctx.r5.u32), load16(ctx.r5.u32 + 2)) ? kErrorSuccess
-                                                                                        : kErrorDeviceNotConnected;
+    // Player 1's vibration goes to every connected controller.
+    bool any = false;
+    if (ctx.r3.u32 == 0)
+        for (uint32_t index = 0; index < 4; ++index)
+            any |= host::gamepadRumble(index, load16(ctx.r5.u32), load16(ctx.r5.u32 + 2));
+    ctx.r3.u64 = any ? kErrorSuccess : kErrorDeviceNotConnected;
 }
 
 // ---- Title and system ---------------------------------------------------------------------
