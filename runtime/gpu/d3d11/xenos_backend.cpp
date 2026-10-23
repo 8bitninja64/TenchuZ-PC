@@ -306,6 +306,7 @@ struct XenosBackend::Impl {
     struct CompiledShader {
         ID3D11VertexShader* vertex = nullptr;
         ID3D11PixelShader* pixel = nullptr;
+        ID3D11GeometryShader* streamOut = nullptr;  // TENCHU_PROBE_VS: captures SV_Position + t0
         xenos::ShaderInfo info;
         bool failed = false;
     };
@@ -359,6 +360,14 @@ struct XenosBackend::Impl {
             device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &entry.pixel);
         } else {
             device->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &entry.vertex);
+            char probe[32]{};
+            if (GetEnvironmentVariableA("TENCHU_PROBE_VS", probe, sizeof(probe)) && strtoull(probe, nullptr, 16) == hash) {
+                const D3D11_SO_DECLARATION_ENTRY declaration[] = {{0, "SV_Position", 0, 0, 4, 0}, {0, "TEXCOORD", 0, 0, 4, 0}};
+                const UINT stride = 32;
+                device->CreateGeometryShaderWithStreamOutput(code->GetBufferPointer(), code->GetBufferSize(), declaration, 2,
+                                                             &stride, 1, D3D11_SO_NO_RASTERIZED_STREAM, nullptr,
+                                                             &entry.streamOut);
+            }
         }
         release(code);
         release(errors);
@@ -580,8 +589,9 @@ struct XenosBackend::Impl {
                                                                                            : D3D11_CULL_NONE;
         // Face bit 2: 0 = counter-clockwise front faces. The host y flip keeps winding.
         desc.FrontCounterClockwise = (key & 4) == 0;
-        desc.DepthClipEnable = !clipDisabled;
-        desc.ScissorEnable = TRUE;
+        static const bool noClip = traceEnabled("nozclip"), noScissor = traceEnabled("noscissor");
+        desc.DepthClipEnable = !clipDisabled && !noClip;
+        desc.ScissorEnable = !noScissor;
         device->CreateRasterizerState(&desc, &state);
         return state;
     }
@@ -766,6 +776,9 @@ struct XenosBackend::Impl {
                      fetch.width(), fetch.height());
             const auto textureStart = std::chrono::steady_clock::now();
             if (auto* view = textures.view(fetch)) views[slot] = view;
+            else if (traceFrame())
+                logf("[draw]   texture %u UNSUPPORTED: type %u dimension %u format %u (shader dim %u)", uint32_t(slot),
+                     fetch.type(), fetch.dimension(), fetch.format(), info.textures[slot].dimension);
             hostTime[0] += std::chrono::steady_clock::now() - textureStart;
         }
     }
@@ -832,7 +845,16 @@ struct XenosBackend::Impl {
                 if (!firstTarget) firstTarget = target;
             }
         }
-        if (!firstTarget) { ++dropped[4]; return; }  // target
+        if (!firstTarget) {
+            if (traceFrame())
+                logf("[draw] DROPPED (no target) prim %u count %u vs %016llX ps %016llX colormask %X psmask %X depthctl %08X "
+                     "rt %08X depth %08X modecontrol %X",
+                     primitive, count, (unsigned long long)vsHash, (unsigned long long)psHash, colorMask,
+                     ps ? ps->info.colorTargetMask : 0, depthControl, reg(reg::RB_COLOR_INFO), reg(reg::RB_DEPTH_INFO),
+                     reg(reg::RB_MODECONTROL));
+            ++dropped[4];
+            return;
+        }  // target
 
         // Uploads: vertex data per binding, then the index list.
         SharedConstants shared{};
@@ -967,7 +989,13 @@ struct XenosBackend::Impl {
         context->OMSetBlendState(blendState(blendControl, colorMask), blendColor, 0xFFFFFFFF);
         const uint32_t stencil = reg(reg::RB_STENCILREFMASK);
         static const bool noDepth = traceEnabled("nodepth");
-        context->OMSetDepthStencilState(depthState(noDepth ? 0 : depthControl, stencil), stencil & 0xFF);
+        // TENCHU_NODEPTH_PS=<hash>: depth test off for one pixel shader (debugging).
+        static const uint64_t noDepthShader = [] {
+            char value[32]{};
+            return GetEnvironmentVariableA("TENCHU_NODEPTH_PS", value, sizeof(value)) ? strtoull(value, nullptr, 16) : 0ull;
+        }();
+        const bool skipDepth = noDepth || (noDepthShader && psHash == noDepthShader);
+        context->OMSetDepthStencilState(depthState(skipDepth ? 0 : depthControl, stencil), stencil & 0xFF);
 
         context->IASetInputLayout(nullptr);
         context->IASetPrimitiveTopology(topology);
@@ -1009,6 +1037,34 @@ struct XenosBackend::Impl {
                  reg(reg::PA_SC_WINDOW_OFFSET), scissorTl, scissorBr, reg(reg::RB_BLENDCONTROL0),
                  reg(reg::RB_COLORCONTROL), reg(reg::RB_ALPHA_REF));
         }
+        // TENCHU_PROBE_VS=<hash>: on traced frames, print that shader's constants and first vertices.
+        static const uint64_t probeShader = [] {
+            char value[32]{};
+            return GetEnvironmentVariableA("TENCHU_PROBE_VS", value, sizeof(value)) ? strtoull(value, nullptr, 16) : 0ull;
+        }();
+        if (traceFrame() && probeShader && vsHash == probeShader) {
+            for (int c = 0; c < 256; ++c) {
+                const float x = asFloat(reg(reg::SHADER_CONSTANT_000_X + c * 4)), y = asFloat(reg(reg::SHADER_CONSTANT_000_X + c * 4 + 1)),
+                            z = asFloat(reg(reg::SHADER_CONSTANT_000_X + c * 4 + 2)), w = asFloat(reg(reg::SHADER_CONSTANT_000_X + c * 4 + 3));
+                if (x || y || z || w) logf("[probe]   c%d = %g %g %g %g", c, x, y, z, w);
+            }
+            for (int b = 0; b < 8; ++b) logf("[probe]   bool %d = %08X", b, reg(reg::SHADER_CONSTANT_BOOL_000_031 + b));
+            if (!bindings.empty()) {
+                const uint32_t base = reg::SHADER_CONSTANT_FETCH_00_0 + bindings[0] * 2;
+                const uint32_t address = reg(base) & ~3u, endian = reg(base + 1) & 3;
+                for (uint32_t v = 0; v < 2 && !indices.empty(); ++v) {
+                    std::string words;
+                    char cell[16];
+                    for (uint32_t k = 0; k < 10; ++k) {
+                        uint32_t raw;
+                        std::memcpy(&raw, memory->host(Memory::fromPhysical(address + (indices[v] * 10 + k) * 4)), 4);
+                        snprintf(cell, sizeof(cell), " %08X", gpuSwap(raw, endian));
+                        words += cell;
+                    }
+                    logf("[probe]   vertex %u:%s", indices[v], words.c_str());
+                }
+            }
+        }
         ID3D11Query* statistics = nullptr;
         if (traceFrame()) {
             const D3D11_QUERY_DESC query{D3D11_QUERY_PIPELINE_STATISTICS, 0};
@@ -1031,6 +1087,43 @@ struct XenosBackend::Impl {
                      (unsigned long long)sampleChecksum(memory->host(Memory::fromPhysical(reg(fetchBase) & ~3u)),
                                                         (std::min)(4096u, (std::max)(16u, ((reg(fetchBase + 1) >> 2) & 0xFFFFFF) * 4))));
             frameLog.emplace_back(line);
+        }
+        if (vs->streamOut && traceFrame()) {
+            // Capture the first vertices' outputs (debug), then draw normally.
+            D3D11_BUFFER_DESC desc{};
+            desc.ByteWidth = 32 * 64;
+            desc.BindFlags = D3D11_BIND_STREAM_OUTPUT;
+            ID3D11Buffer* target = nullptr;
+            device->CreateBuffer(&desc, nullptr, &target);
+            desc.BindFlags = 0;
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            ID3D11Buffer* staging = nullptr;
+            device->CreateBuffer(&desc, nullptr, &staging);
+            const UINT zero = 0;
+            ID3D11GeometryShader* previous = nullptr;
+            context->GSGetShader(&previous, nullptr, nullptr);
+            context->GSSetShader(vs->streamOut, nullptr, 0);
+            context->SOSetTargets(1, &target, &zero);
+            const D3D11_PRIMITIVE_TOPOLOGY topologyBefore = topology;
+            context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
+            context->Draw((std::min)(UINT(indices.size()), 64u), 0);
+            ID3D11Buffer* none = nullptr;
+            context->SOSetTargets(1, &none, &zero);
+            context->GSSetShader(previous, nullptr, 0);
+            release(previous);
+            context->IASetPrimitiveTopology(topologyBefore);
+            context->CopyResource(staging, target);
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (SUCCEEDED(context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+                const float* v = static_cast<const float*>(mapped.pData);
+                for (int i = 0; i < 6; ++i)
+                    logf("[probe]   out %d: pos %g %g %g %g  t0 %g %g %g %g", i, v[i * 8], v[i * 8 + 1], v[i * 8 + 2],
+                         v[i * 8 + 3], v[i * 8 + 4], v[i * 8 + 5], v[i * 8 + 6], v[i * 8 + 7]);
+                context->Unmap(staging, 0);
+            }
+            release(staging);
+            release(target);
         }
         context->Draw(UINT(indices.size()), 0);
         hostTime[5] += std::chrono::steady_clock::now() - drawStart;
@@ -1131,11 +1224,20 @@ struct XenosBackend::Impl {
             uint32_t base = destination;
             UINT destX = 0, destY = 0;
             ResolvedTexture* target = containingResolved(destination, base, destX, destY);
-            if (target && (target->width != destWidth || target->height != destHeight || target->format != destFormat)) {
+            if (target && base != destination) {
+                // A resolve into part of a larger texture (a later tile, or the lower half of
+                // a reflection map resolved with its own smaller destination height): keep
+                // writing into the containing texture when the layout matches and it fits.
+                const bool fits = target->width == destWidth && target->format == destFormat &&
+                                  destY + destHeight <= target->height;
+                if (!fits) {
+                    target = nullptr;
+                    destX = destY = 0;
+                    base = destination;
+                }
+            } else if (target && (target->width != destWidth || target->height != destHeight || target->format != destFormat)) {
                 // A different texture now lives here.
-                if (base != destination) target = nullptr;
                 destX = destY = 0;
-                base = destination;
             }
             if (!target || base == destination) {
                 target = resolvedTexture(destination, destWidth, destHeight, destFormat);
