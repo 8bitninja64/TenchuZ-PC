@@ -232,8 +232,8 @@ PPC_FUNC(__imp__NtReadFile) {
     file->position += read;
     const uint32_t status = !ok && GetLastError() != ERROR_HANDLE_EOF ? kStatusUnsuccessful
                           : (read == 0 && length) ? kStatusEndOfFile : kStatusSuccess;
-    TZ_TRACE("io", "[io] read %s @%llX len %X -> %X", file->guestPath.c_str(),
-             (unsigned long long)(file->position - read), length, read);
+    TZ_TRACE("io", "[io] read %s @%llX len %X -> %X into %08X (lr %08X)", file->guestPath.c_str(),
+             (unsigned long long)(file->position - read), length, read, buffer, uint32_t(ctx.lr));
     completeIo(ioStatus, status, read);
     signalCompletion(ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ioStatus);
     ctx.r3.u64 = status;
