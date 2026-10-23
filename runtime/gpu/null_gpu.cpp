@@ -6,6 +6,7 @@
 #include "host/settings.h"
 #include "gpu/d3d11/renderer.h"
 #include "gpu/d3d11/xenos_backend.h"
+#include <map>
 #include <unordered_map>
 #include "ppc_recomp_shared.h"
 #include <array>
@@ -122,6 +123,10 @@ gpu::XenosBackend* activeBackend() {
     return backend.get();
 }
 
+// Per-frame predication statistics (trace 'predstats').
+std::map<uint64_t, std::pair<uint32_t, uint32_t>> predStats;  // bin mask -> (ran, skipped)
+uint32_t extentWrites = 0;
+
 // Unlocked frame rates: the host caps presents at frame_rate_limit. The title
 // measures real time, so the cap paces rendering without changing game speed.
 void limitFrameRate() {
@@ -147,6 +152,17 @@ void limitFrameRate() {
 }
 
 void presentFrame(uint32_t frontBuffer) {
+    if (traceEnabled("predstats")) {
+        std::string line;
+        char cell[64];
+        for (const auto& [mask, counts] : predStats) {
+            snprintf(cell, sizeof(cell), " %llX:%u/%u", (unsigned long long)mask, counts.first, counts.second);
+            line += cell;
+        }
+        logf("[predstats] ext %u%s", extentWrites, line.c_str());
+    }
+    predStats.clear();
+    extentWrites = 0;
     limitFrameRate();
     if (auto* active = activeBackend()) active->swap(frontBuffer);
 }
@@ -252,6 +268,11 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         TZ_TRACE("pred", "[cp] predicated draw %s: mask %016llX select %016llX",
                  (gs.binSelect & gs.binMask) ? "runs" : "skipped", (unsigned long long)gs.binMask,
                  (unsigned long long)gs.binSelect);
+    if ((header & 1) && (opcode == 0x22 || opcode == 0x36)) {
+        // Per-frame predication statistics (trace 'predstats'), by bin mask.
+        auto& stats = predStats[gs.binMask];
+        ++((gs.binSelect & gs.binMask) ? stats.first : stats.second);
+    }
     if ((header & 1) && !(gs.binSelect & gs.binMask)) {
         reader.skip(count);
         return;
@@ -369,6 +390,7 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         // without rasterizer feedback report the whole surface (min/max x and y in
         // 8-pixel units, then z) so nothing is skipped.
         TZ_TRACE("cp", "[cp] EVENT_WRITE_EXT %08X to %08X", initiator, address);
+        ++extentWrites;
         const uint16_t extents[6] = {0, 8192 >> 3, 0, 8192 >> 3, 0, 1};
         const uint32_t target = Memory::fromPhysical(address & ~3u);
         for (int i = 0; i < 6; ++i) store16(target + i * 2, extents[i]);

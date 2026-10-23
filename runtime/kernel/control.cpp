@@ -29,6 +29,8 @@ struct Controller {
     uint16_t held = 0, tapped = 0;
     int16_t thumbs[4] = {};
     std::string screenshot;
+    int burstRemaining = 0, burstIndex = 0;  // consecutive frames still to save
+    std::string burstDirectory;
     std::set<std::string> flags;
 };
 
@@ -99,6 +101,9 @@ void execute(Controller& c, Clock::time_point now) {
             c.resumeAt = now + std::chrono::milliseconds(ms);
         } else if (command == "shot") {
             stream >> c.screenshot;
+        } else if (command == "burst") {
+            stream >> c.burstRemaining >> c.burstDirectory;
+            c.burstIndex = 0;
         } else if (command == "traceframe" || command == "dumpframe" || command == "profile") {
             c.flags.insert(command);
         } else if (command == "quit") {
@@ -162,6 +167,12 @@ std::string takeScreenshotRequest() {
     poll();
     auto& c = controller();
     std::lock_guard lock(c.mutex);
+    if (c.burstRemaining > 0) {
+        --c.burstRemaining;
+        char name[32];
+        snprintf(name, sizeof(name), "/burst_%05d.bmp", c.burstIndex++);
+        return c.burstDirectory + name;
+    }
     return std::exchange(c.screenshot, std::string{});
 }
 

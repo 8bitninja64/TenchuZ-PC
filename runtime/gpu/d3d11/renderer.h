@@ -5,6 +5,7 @@
 #include <d3d11.h>
 #include <dxgi1_6.h>
 #include <cstdint>
+#include <utility>
 
 namespace tz::gpu {
 
@@ -20,12 +21,15 @@ public:
     void present(ID3D11ShaderResourceView* source, bool swapRedBlue = false);
     // True when Present's vsync interval holds frames at the frame rate limit.
     bool pacedByVsync() const;
+    // True when the last captured frame looked like a flicker frame (trace 'flickerlog').
+    bool takeSuspicious() { return std::exchange(lastCaptureSuspicious_, false); }
 
 private:
     void resizeIfNeeded();
     uint32_t refreshRate() const;
     uint32_t syncInterval();
     uint32_t refresh_ = 0;
+    bool lastCaptureSuspicious_ = false;
     // TENCHU_SCREENSHOTS=<dir>,<every N frames> saves presented frames as BMP.
     void captureIfRequested();
     ID3D11Device* device_ = nullptr;

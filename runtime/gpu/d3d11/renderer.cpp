@@ -256,6 +256,19 @@ void D3D11Renderer::captureIfRequested() {
         file.bfType = 0x4D42;
         file.bfOffBits = sizeof(file) + sizeof(info);
         file.bfSize = file.bfOffBits + imageSize;
+        // Flicker hunting (trace 'flickerlog'): a right half that is almost all
+        // black while the left half is not marks a suspicious frame.
+        if (traceEnabled("flickerlog") && desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM) {
+            uint32_t dark[2] = {}, total[2] = {};
+            for (UINT y = desc.Height / 8; y < desc.Height * 7 / 8; y += 4)
+                for (UINT x = 0; x < desc.Width; x += 4) {
+                    const uint8_t* p = static_cast<const uint8_t*>(mapped.pData) + size_t(y) * mapped.RowPitch + x * 4;
+                    const int half = x >= desc.Width / 2;
+                    ++total[half];
+                    if (p[0] + p[1] + p[2] < 9) ++dark[half];
+                }
+            lastCaptureSuspicious_ = dark[1] * 100 > total[1] * 85 && dark[0] * 100 < total[0] * 60;
+        }
         if (FILE* out = _wfopen(target.c_str(), L"wb")) {
             fwrite(&file, sizeof(file), 1, out);
             fwrite(&info, sizeof(info), 1, out);

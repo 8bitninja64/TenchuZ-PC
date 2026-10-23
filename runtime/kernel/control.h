@@ -7,6 +7,7 @@
 //   stick <lx> <ly> [<rx> <ry>]   stick positions in -1..1
 //   wait <ms>              delay the following commands
 //   shot <file.bmp>        save the next presented frame
+//   burst <count> <dir>    save the next count frames as dir/burst_NNNNN.bmp
 //   traceframe             log every draw of the next frame (like TENCHU_TRACE_FRAME)
 //   dumpframe              save the next frame's resolved textures to build/resolved
 //   profile                start the host profiler window (TENCHU_TRACE=hostprof)

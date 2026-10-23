@@ -231,7 +231,6 @@ struct XenosBackend::Impl {
         if (ringOffset + size > kRingSize) {
             endUploads();
             ringOffset = 0;
-            ++ringGeneration;
         }
         beginUploads();
         const uint32_t offset = ringOffset;
@@ -241,16 +240,16 @@ struct XenosBackend::Impl {
         return offset;
     }
 
-    // Vertex ranges are uploaded once per frame: one level-geometry buffer can be
-    // bound by hundreds of draws. A sampled checksum catches ranges the title
-    // rewrites between draws of the same frame.
-    struct VertexUpload {
-        uint32_t offset;
-        uint64_t checksum;
-    };
-    std::map<std::pair<uint32_t, uint32_t>, VertexUpload> vertexUploads;
-    uint64_t ringGeneration = 0;  // bumped when the ring wraps (earlier offsets are reused)
-    uint64_t vertexUploadsGeneration = 0;
+    // Diagnostic hashes (trace 'flickerlog').
+    static uint64_t hashFloats(const float (&values)[256 * 4]) {
+        uint64_t hash = 1469598103934665603ull;
+        for (float value : values) {
+            uint32_t bits;
+            std::memcpy(&bits, &value, 4);
+            hash = (hash ^ bits) * 1099511628211ull;
+        }
+        return hash;
+    }
 
     static uint64_t sampleChecksum(const uint8_t* data, uint32_t size) {
         uint64_t hash = 1469598103934665603ull;
@@ -262,26 +261,6 @@ struct XenosBackend::Impl {
             hash = (hash ^ word) * 1099511628211ull;
         }
         return hash;
-    }
-
-    uint32_t uploadVertices(uint32_t address, uint32_t size) {
-        const uint8_t* data = memory->host(Memory::fromPhysical(address));
-        if (vertexUploadsGeneration != ringGeneration) {
-            vertexUploads.clear();
-            vertexUploadsGeneration = ringGeneration;
-        }
-        const uint64_t checksum = sampleChecksum(data, size);
-        const auto key = std::make_pair(address, size);
-        if (auto it = vertexUploads.find(key); it != vertexUploads.end() && it->second.checksum == checksum)
-            return it->second.offset;
-        const uint32_t offset = upload(data, size);
-        // The upload may have wrapped the ring and invalidated the other entries.
-        if (vertexUploadsGeneration != ringGeneration) {
-            vertexUploads.clear();
-            vertexUploadsGeneration = ringGeneration;
-        }
-        if (offset != ~0u) vertexUploads[key] = {offset, checksum};
-        return offset;
     }
 
     // ---- Constant buffers ------------------------------------------------------------
@@ -846,14 +825,36 @@ struct XenosBackend::Impl {
         SharedConstants shared{};
         for (int i = 0; i < 8; ++i) shared.bools[i] = reg(reg::SHADER_CONSTANT_BOOL_000_031 + i);
         for (int i = 0; i < 32; ++i) shared.loops[i] = reg(reg::SHADER_CONSTANT_LOOP_00 + i);
+        // Vertex data is copied fresh for every draw: dynamic buffers change between
+        // draws of a frame. Streams indexed by the raw vertex index copy only the bytes
+        // this draw's index range can reach, which keeps large static buffers cheap.
+        uint32_t minIndex = ~0u, maxIndex = 0;
+        for (const uint32_t index : indices) {
+            minIndex = (std::min)(minIndex, index);
+            maxIndex = (std::max)(maxIndex, index);
+        }
+        const uint32_t indexOffset = reg(reg::VGT_INDX_OFFSET);
+        const uint32_t firstVertex = minIndex + indexOffset, lastVertex = maxIndex + indexOffset;
+        const bool rangeKnown = !indices.empty() && firstVertex <= lastVertex;  // no wraparound
         const auto& bindings = vs->info.vertexFetchConstants;
         for (size_t slot = 0; slot < bindings.size() && slot < 16; ++slot) {
             const uint32_t base = reg::SHADER_CONSTANT_FETCH_00_0 + bindings[slot] * 2;
             const uint32_t word0 = reg(base), word1 = reg(base + 1);
-            const uint32_t address = word0 & ~3u, size = ((word1 >> 2) & 0xFFFFFF) * 4;
+            const uint32_t address = word0 & ~3u, size = (std::max)(((word1 >> 2) & 0xFFFFFF) * 4, 16u);
             shared.vertexEndian[slot] = word1 & 3;
             if (traceEnabled("vbstats")) vertexStats[{address, size}]++;
-            shared.vertexBase[slot] = uploadVertices(address, (std::max)(size, 16u));
+            uint64_t start = 0, end = size;
+            if (rangeKnown && slot < vs->info.vertexStreams.size() && vs->info.vertexStreams[slot].direct &&
+                !traceEnabled("wholevb")) {
+                const auto& stream = vs->info.vertexStreams[slot];
+                start = (uint64_t(firstVertex) * stream.minStride + stream.minOffset) * 4;
+                end = (std::min)((uint64_t(lastVertex) * stream.maxStride + stream.maxEnd) * 4, uint64_t(size));
+                if (start >= end) start = end = 0;  // out of range: the draw reads nothing valid
+            }
+            const uint32_t length = (std::max)(uint32_t(end - start), 16u);
+            const uint32_t offset = upload(memory->host(Memory::fromPhysical(address + uint32_t(start))), length);
+            // The shader adds (index * stride + offset) * 4 to the base; wraparound is intended.
+            shared.vertexBase[slot] = offset == ~0u ? ~0u : offset - uint32_t(start);
         }
         shared.draw[0] = upload(indices.data(), uint32_t(indices.size() * 4));
         shared.draw[1] = reg(reg::VGT_INDX_OFFSET);
@@ -902,13 +903,14 @@ struct XenosBackend::Impl {
         // Constant buffers are rewritten only when the registers changed.
         float constants[256 * 4];
         for (int i = 0; i < 256 * 4; ++i) constants[i] = asFloat(reg(reg::SHADER_CONSTANT_000_X + i));
-        if (std::memcmp(constants, lastVertexConstants, sizeof(constants)) != 0) {
+        static const bool alwaysConstants = traceEnabled("noconstskip");
+        if (alwaysConstants || std::memcmp(constants, lastVertexConstants, sizeof(constants)) != 0) {
             writeBuffer(vertexConstants, constants, sizeof(constants));
             std::memcpy(lastVertexConstants, constants, sizeof(constants));
         }
         if (ps) {
             for (int i = 0; i < 256 * 4; ++i) constants[i] = asFloat(reg(reg::SHADER_CONSTANT_000_X + 1024 + i));
-            if (std::memcmp(constants, lastPixelConstants, sizeof(constants)) != 0) {
+            if (alwaysConstants || std::memcmp(constants, lastPixelConstants, sizeof(constants)) != 0) {
                 writeBuffer(pixelConstants, constants, sizeof(constants));
                 std::memcpy(lastPixelConstants, constants, sizeof(constants));
             }
@@ -990,6 +992,22 @@ struct XenosBackend::Impl {
             context->Begin(statistics);
         }
         const auto drawStart = std::chrono::steady_clock::now();
+        if (reg(reg::PA_SC_WINDOW_OFFSET)) ++tileDraws[1]; else ++tileDraws[0];
+        if (flickerLog) {
+            char line[512];
+            const uint32_t fetchBase = reg::SHADER_CONSTANT_FETCH_00_0 + (vs->info.vertexFetchConstants.empty() ? 0 : vs->info.vertexFetchConstants[0] * 2);
+            snprintf(line, sizeof(line),
+                     "prim %u n %u vs %016llX ps %016llX rt %08X wo %08X sc %ld,%ld-%ld,%ld scale %.1f %.1f off %.1f %.1f vb %08X/%u ib %08X mode %X "
+                     "vc %016llX pc %016llX vd %016llX",
+                     primitive, count, (unsigned long long)vsHash, (unsigned long long)psHash, reg(reg::RB_COLOR_INFO),
+                     reg(reg::PA_SC_WINDOW_OFFSET), scissor.left, scissor.top, scissor.right, scissor.bottom, scale[0],
+                     scale[1], offset[0], offset[1], reg(fetchBase) & ~3u, ((reg(fetchBase + 1) >> 2) & 0xFFFFFF) * 4,
+                     request.indexBase, reg(reg::PA_SU_SC_MODE_CNTL), (unsigned long long)hashFloats(lastVertexConstants),
+                     (unsigned long long)hashFloats(lastPixelConstants),
+                     (unsigned long long)sampleChecksum(memory->host(Memory::fromPhysical(reg(fetchBase) & ~3u)),
+                                                        (std::min)(4096u, (std::max)(16u, ((reg(fetchBase + 1) >> 2) & 0xFFFFFF) * 4))));
+            frameLog.emplace_back(line);
+        }
         context->Draw(UINT(indices.size()), 0);
         hostTime[5] += std::chrono::steady_clock::now() - drawStart;
         if (statistics) {
@@ -1004,6 +1022,9 @@ struct XenosBackend::Impl {
     }
     uint64_t draws = 0;
     uint64_t frames = 0;
+    uint32_t tileDraws[2] = {}, resolves = 0;  // per frame (swap trace)
+    const bool flickerLog = traceEnabled("flickerlog");
+    std::vector<std::string> frameLog, previousFrameLog;  // flickerlog: this and the last good frame
     // Draws skipped since the last swap: mode, count, shader, indices, target, upload, primitive.
     uint64_t dropped[7] = {};
     // TENCHU_TRACE_FRAME=<n> logs every draw of frame n.
@@ -1023,6 +1044,13 @@ struct XenosBackend::Impl {
     // ---- Resolve -------------------------------------------------------------------
     void resolve() {
         ScopedTime timed{hostTime[2]};
+        ++resolves;
+        if (flickerLog) {
+            char line[160];
+            snprintf(line, sizeof(line), "resolve control %08X dest %08X pitch %08X wo %08X", reg(reg::RB_COPY_CONTROL),
+                     reg(reg::RB_COPY_DEST_BASE), reg(reg::RB_COPY_DEST_PITCH), reg(reg::PA_SC_WINDOW_OFFSET));
+            frameLog.emplace_back(line);
+        }
         const uint32_t copyControl = reg(reg::RB_COPY_CONTROL);
         const uint32_t sourceSelect = copyControl & 7;
         const bool clearColor = (copyControl >> 8) & 1, clearDepth = (copyControl >> 9) & 1;
@@ -1230,8 +1258,9 @@ struct XenosBackend::Impl {
         const auto presentStart = std::chrono::steady_clock::now();
         renderer.present(it != resolved.end() ? it->second.view : nullptr,
                          it != resolved.end() && it->second.swapped);
-        TZ_TRACE("swap", "[d3d11] swap %08X (%s), %llu draws, dropped %llu/%llu/%llu/%llu/%llu/%llu/%llu", frontBuffer,
-                 it != resolved.end() ? "resolved" : "missing", (unsigned long long)draws,
+        TZ_TRACE("swap", "[d3d11] swap %llu %08X (%s), tiles %u/%u, resolves %u, %llu draws, dropped %llu/%llu/%llu/%llu/%llu/%llu/%llu",
+                 (unsigned long long)frames, frontBuffer, it != resolved.end() ? "resolved" : "missing", tileDraws[0],
+                 tileDraws[1], resolves, (unsigned long long)draws,
                  (unsigned long long)dropped[0], (unsigned long long)dropped[1], (unsigned long long)dropped[2],
                  (unsigned long long)dropped[3], (unsigned long long)dropped[4], (unsigned long long)dropped[5],
                  (unsigned long long)dropped[6]);
@@ -1253,10 +1282,22 @@ struct XenosBackend::Impl {
                 logf("[vbstats]   %08X size %u x%u", top[i].second.first, top[i].second.second, top[i].first);
             vertexStats.clear();
         }
-        vertexUploads.clear();  // the title may rewrite any buffer before the next frame
         for (auto& time : hostTime) time = {};
         uploadedBytes = 0;
+        if (flickerLog) {
+            if (renderer.takeSuspicious()) {
+                static int dumps = 0;
+                if (dumps++ < 4) {
+                    logf("[flicker] suspicious frame %llu: previous frame then this one", (unsigned long long)frames);
+                    for (const auto& line : previousFrameLog) logf("[flicker] prev %s", line.c_str());
+                    for (const auto& line : frameLog) logf("[flicker] this %s", line.c_str());
+                }
+            }
+            previousFrameLog.swap(frameLog);
+            frameLog.clear();
+        }
         draws = 0;
+        tileDraws[0] = tileDraws[1] = resolves = 0;
         std::fill(std::begin(dropped), std::end(dropped), 0);
         ++frames;
         if (control::takeFlag("traceframe")) liveTraceFrame = frames;

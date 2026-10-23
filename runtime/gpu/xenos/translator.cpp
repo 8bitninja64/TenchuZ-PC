@@ -93,6 +93,27 @@ struct Emitter {
 
     // ---- Operands ----------------------------------------------------------------
 
+    // Size of one vertex element in dwords (upper bound 4 for unknown formats).
+    static uint32_t vertexFormatDwords(uint32_t format) {
+        switch (format) {
+        case 6: case 7: case 16: case 17: case 25: case 31: case 33: case 36: return 1;
+        case 26: case 32: case 34: case 37: return 2;
+        case 57: return 3;
+        default: return 4;
+        }
+    }
+
+    // r0.x (the vertex index on entry) written so far in program order; CF index being
+    // emitted; lowest CF index any jump, call or loop can transfer to.
+    bool r0xWritten = false;
+    bool lastFetchDirect = false;
+    uint32_t currentCf = 0;
+    uint32_t firstBranchTarget = ~0u;
+
+    void noteTempWrite(uint32_t dest, bool relative, bool writesX) {
+        if (relative || (dest == 0 && writesX)) r0xWritten = true;
+    }
+
     std::string tempRegister(uint32_t index, bool relative) {
         if (relative) return "r[clamp(int(" + std::to_string(index) + ") + aL, 0, 63)]";
         return "r[" + std::to_string(index) + "]";
@@ -345,6 +366,11 @@ struct Emitter {
             const std::string m = mask(alu.vectorWriteMask());
             line(dest + "." + m + " = v." + m + ";");
         }
+        if (!alu.exportData()) {
+            if (vectorActive && alu.vectorWriteMask())
+                noteTempWrite(alu.vectorDest(), alu.vectorDestRelative(), alu.vectorWriteMask() & 1);
+            if (alu.scalarWriteMask()) noteTempWrite(alu.scalarDest(), alu.scalarDestRelative(), alu.scalarWriteMask() & 1);
+        }
         if (alu.scalarWriteMask()) {
             const std::string dest = destination(alu.scalarDest(), alu.exportData(), alu.scalarDestRelative());
             const std::string m = mask(alu.scalarWriteMask());
@@ -363,6 +389,7 @@ struct Emitter {
 
     std::string fetchDestination(const FetchInstruction& fetch, const std::string& value) {
         // 3 bits per component: 0-3 select, 4 = 0.0, 5 = 1.0, 6/7 = keep.
+        noteTempWrite(fetch.destRegister(), fetch.destRelative(), (fetch.destSwizzle() & 7) < 6);
         const std::string dest = tempRegister(fetch.destRegister(), fetch.destRelative());
         std::string out;
         for (int i = 0; i < 4; ++i) {
@@ -380,12 +407,27 @@ struct Emitter {
             constant = lastVertexFetchConstant;
         } else {
             lastVertexFetchConstant = constant;
+            // The index is the raw vertex index when it comes from an unwritten r0.x and
+            // no branch can reach this clause after r0 changes.
+            lastFetchDirect = !fetch.sourceRelative() && fetch.sourceRegister() == 0 &&
+                              fetch.vertexSourceComponent() == 0 && !r0xWritten && currentCf < firstBranchTarget;
             line("vfIndex = int(floor(" + tempRegister(fetch.sourceRegister(), fetch.sourceRelative()) + "." +
                  kComponents[fetch.vertexSourceComponent()] + " + 0.5));");
         }
         auto [it, inserted] = vertexBindings.emplace(constant, uint32_t(vertexBindings.size()));
-        if (inserted) result.info.vertexFetchConstants.push_back(constant);
+        if (inserted) {
+            result.info.vertexFetchConstants.push_back(constant);
+            result.info.vertexStreams.emplace_back();
+        }
         const uint32_t slot = it->second;
+        {
+            auto& stream = result.info.vertexStreams[slot];
+            stream.direct = stream.direct && lastFetchDirect;
+            stream.minStride = (std::min)(stream.minStride, fetch.vertexStride());
+            stream.maxStride = (std::max)(stream.maxStride, fetch.vertexStride());
+            stream.minOffset = (std::min)(stream.minOffset, fetch.vertexOffset());
+            stream.maxEnd = (std::max)(stream.maxEnd, fetch.vertexOffset() + vertexFormatDwords(fetch.vertexFormat()));
+        }
         const std::string element = "[" + std::to_string(slot / 4) + "][" + std::to_string(slot % 4) + "]";
         line("{");
         ++indent;
@@ -586,7 +628,9 @@ struct Emitter {
     }
 
     void emitLinear() {
+        currentCf = 0;
         for (const auto& cf : program.controlFlow) {
+            ++currentCf;
             if (!cf.isExec()) continue;
             const std::string condition = execCondition(cf);
             if (!condition.empty()) {
@@ -604,6 +648,14 @@ struct Emitter {
 
     void emitStateMachine() {
         const int end = int(program.controlFlow.size());
+        for (const auto& cf : program.controlFlow) {
+            const auto op = cf.opcode();
+            if (op == CfOpcode::CondJmp || op == CfOpcode::CondCall)
+                firstBranchTarget = (std::min)(firstBranchTarget, cf.jumpAddress());
+            if (op == CfOpcode::LoopStart || op == CfOpcode::LoopEnd)
+                firstBranchTarget = (std::min)(firstBranchTarget, cf.loopAddress());
+            if (op == CfOpcode::Return) firstBranchTarget = 0;  // returns go to unknown call sites
+        }
         line("int pc = 0;");
         line("int loopCounter[4] = {0, 0, 0, 0}; int loopStep[4] = {0, 0, 0, 0}; int loopDepth = 0;");
         line("int callStack[4] = {0, 0, 0, 0}; int callDepth = 0;");
@@ -612,6 +664,7 @@ struct Emitter {
         line("switch (pc) {");
         for (int i = 0; i < end; ++i) {
             const auto& cf = program.controlFlow[size_t(i)];
+            currentCf = uint32_t(i);
             line("case " + std::to_string(i) + ": {");
             ++indent;
             const std::string next = cf.isEnd() ? "-1" : std::to_string(i + 1);
