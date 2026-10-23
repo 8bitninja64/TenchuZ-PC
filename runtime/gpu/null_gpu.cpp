@@ -306,10 +306,18 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         gs.binMask = (gs.binMask & 0xFFFFFFFFull) | uint64_t(reader.read()) << 32;
         reader.skip(count - 1);
         break;
-    case 0x62:  // SET_BIN_SELECT_LO
+    case 0x62: {  // SET_BIN_SELECT_LO
+        // TENCHU_TILE_DELAY_US: stall at each tile switch to expose races between the
+        // title's CPU writes and the tile replays (diagnostic).
+        static const int delay = [] {
+            char value[16]{};
+            return GetEnvironmentVariableA("TENCHU_TILE_DELAY_US", value, sizeof(value)) ? atoi(value) : 0;
+        }();
+        if (delay > 0) std::this_thread::sleep_for(std::chrono::microseconds(delay));
         gs.binSelect = (gs.binSelect & 0xFFFFFFFF00000000ull) | reader.read();
         reader.skip(count - 1);
         break;
+    }
     case 0x63:  // SET_BIN_SELECT_HI
         gs.binSelect = (gs.binSelect & 0xFFFFFFFFull) | uint64_t(reader.read()) << 32;
         reader.skip(count - 1);
