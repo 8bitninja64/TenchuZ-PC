@@ -75,7 +75,7 @@ struct Emitter {
     int indent = 1;
     bool pixel;
     std::map<uint32_t, uint32_t> vertexBindings;   // fetch constant -> t slot
-    std::map<uint32_t, uint32_t> textureBindings;  // fetch constant -> t/s slot
+    std::map<uint32_t, uint32_t> textureBindings;  // fetch constant | filters << 8 -> t/s slot
     std::map<uint32_t, uint32_t> textureDimensions;
     uint32_t lastVertexFetchConstant = 0;
 
@@ -528,9 +528,11 @@ struct Emitter {
     void emitTextureFetch(const FetchInstruction& fetch) {
         const uint32_t constant = fetch.textureConstant();
         const uint32_t dimension = fetch.dimension() == 3 ? 4 : fetch.dimension() + 1;
-        auto [it, inserted] = textureBindings.emplace(constant, uint32_t(textureBindings.size()));
+        // One binding per constant and filter override: a fetch may force point sampling.
+        const uint32_t filters = fetch.magFilter() | fetch.minFilter() << 2 | fetch.mipFilter() << 4;
+        auto [it, inserted] = textureBindings.emplace(constant | filters << 8, uint32_t(textureBindings.size()));
         if (inserted) {
-            result.info.textures.push_back({constant, dimension});
+            result.info.textures.push_back({constant, dimension, filters});
             textureDimensions[it->second] = dimension;
         } else if (textureDimensions[it->second] != dimension) {
             unsupported("texture constant used with several dimensions");
@@ -741,7 +743,8 @@ struct Emitter {
                 hlsl += "// vertex binding " + std::to_string(slot) + ": fetch constant " + std::to_string(constant) + "\n";
         }
         const uint32_t textureBase = pixel ? 0 : 8;
-        for (const auto& [constant, slot] : textureBindings) {
+        for (const auto& [key, slot] : textureBindings) {
+            const uint32_t constant = key & 0xFF;
             const uint32_t dimension = textureDimensions[slot];
             const char* type = dimension == 1 ? "Texture1D" : dimension == 2 ? "Texture2D"
                              : dimension == 3 ? "Texture3D" : "TextureCube";

@@ -224,11 +224,24 @@ struct XenosBackend::Impl {
         context->Unmap(ring, 0);
         ringMapped = nullptr;
     }
+    // Starts a new ring generation now unless `total` bytes still fit, so that a
+    // draw's uploads never straddle a wrap. Wrapping maps the ring with DISCARD,
+    // which renames it: data copied before the wrap is not in the buffer the draw
+    // then reads (one-frame garbage geometry in one tile).
+    void reserveUploads(uint64_t total) {
+        if (total <= kRingSize && ringOffset + total > kRingSize) {
+            endUploads();
+            ringOffset = 0;
+        }
+    }
+
     // Returns the byte offset of the copy, or ~0u if it does not fit.
     uint32_t upload(const void* data, uint32_t size) {
         size = (size + 15) & ~15u;
         if (size > kRingSize) return ~0u;
         if (ringOffset + size > kRingSize) {
+            // Only reachable when a draw's uploads exceed the whole ring.
+            logf("[d3d11] upload ring wrapped inside a draw");
             endUploads();
             ringOffset = 0;
         }
@@ -741,7 +754,7 @@ struct XenosBackend::Impl {
             shared.textureSwizzle[slot] = fetch.swizzle();
             shared.textureSize[slot][0] = float(fetch.width());
             shared.textureSize[slot][1] = float(fetch.height());
-            states[slot] = textures.sampler(fetch);
+            states[slot] = textures.sampler(fetch, info.textures[slot].filters);
             auto it = resolved.find(fetch.baseAddress() & 0x1FFFFFFF);
             if (it != resolved.end() && it->second.view) {
                 if (traceFrame()) logf("[draw]   texture %u uses resolved %08X", uint32_t(slot), it->first);
@@ -836,8 +849,14 @@ struct XenosBackend::Impl {
         const uint32_t indexOffset = reg(reg::VGT_INDX_OFFSET);
         const uint32_t firstVertex = minIndex + indexOffset, lastVertex = maxIndex + indexOffset;
         const bool rangeKnown = !indices.empty() && firstVertex <= lastVertex;  // no wraparound
+        // Plan every upload of this draw first: they must land in the same ring
+        // generation, since a wrap renames the buffer the draw will read.
+        struct StreamUpload { uint32_t address, start, length; };
+        StreamUpload streams[16];
         const auto& bindings = vs->info.vertexFetchConstants;
-        for (size_t slot = 0; slot < bindings.size() && slot < 16; ++slot) {
+        const size_t streamCount = (std::min)(bindings.size(), size_t(16));
+        uint64_t total = (uint64_t(indices.size()) * 4 + 15) & ~15ull;
+        for (size_t slot = 0; slot < streamCount; ++slot) {
             const uint32_t base = reg::SHADER_CONSTANT_FETCH_00_0 + bindings[slot] * 2;
             const uint32_t word0 = reg(base), word1 = reg(base + 1);
             const uint32_t address = word0 & ~3u, size = (std::max)(((word1 >> 2) & 0xFFFFFF) * 4, 16u);
@@ -851,10 +870,15 @@ struct XenosBackend::Impl {
                 end = (std::min)((uint64_t(lastVertex) * stream.maxStride + stream.maxEnd) * 4, uint64_t(size));
                 if (start >= end) start = end = 0;  // out of range: the draw reads nothing valid
             }
-            const uint32_t length = (std::max)(uint32_t(end - start), 16u);
-            const uint32_t offset = upload(memory->host(Memory::fromPhysical(address + uint32_t(start))), length);
+            streams[slot] = {address, uint32_t(start), (std::max)(uint32_t(end - start), 16u)};
+            total += (uint64_t(streams[slot].length) + 15) & ~15ull;
+        }
+        reserveUploads(total);
+        for (size_t slot = 0; slot < streamCount; ++slot) {
+            const auto& stream = streams[slot];
+            const uint32_t offset = upload(memory->host(Memory::fromPhysical(stream.address + stream.start)), stream.length);
             // The shader adds (index * stride + offset) * 4 to the base; wraparound is intended.
-            shared.vertexBase[slot] = offset == ~0u ? ~0u : offset - uint32_t(start);
+            shared.vertexBase[slot] = offset == ~0u ? ~0u : offset - stream.start;
         }
         shared.draw[0] = upload(indices.data(), uint32_t(indices.size() * 4));
         shared.draw[1] = reg(reg::VGT_INDX_OFFSET);

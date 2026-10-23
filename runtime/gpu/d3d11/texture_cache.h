@@ -33,7 +33,8 @@ public:
     void initialize(ID3D11Device* device, ID3D11DeviceContext* context);
     // Returns a view for the fetch constant, or nullptr when unsupported.
     ID3D11ShaderResourceView* view(const TextureFetch& fetch);
-    ID3D11SamplerState* sampler(const TextureFetch& fetch);
+    // instructionFilters: mag/min/mip from the fetch instruction (2 bits each, 3 = use the constant's).
+    ID3D11SamplerState* sampler(const TextureFetch& fetch, uint32_t instructionFilters = 0x3F);
     // Drops cached uploads when a resolve overwrites guest memory.
     void invalidate(uint32_t physicalAddress);
     // Uploads are revalidated against guest memory at most once per frame.

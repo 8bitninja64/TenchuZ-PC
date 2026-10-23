@@ -2448,7 +2448,7 @@ labels = [
 
 [[switch]]
 base = 0x822B2B88
-r = 10
+r = 11
 default = 0x822B30B8
 labels = [
     0x822B2BE0,

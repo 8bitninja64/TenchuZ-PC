@@ -26,7 +26,9 @@ struct ShaderInfo {
     };
     std::vector<VertexStream> vertexStreams;
     // Texture fetch constants and their dimension (1-3, 4 = cube), binding order.
-    struct Texture { uint32_t fetchConstant; uint32_t dimension; };
+    // filters: the fetch instruction's mag/min/mip filter fields (2 bits each, 3 = use
+    // the fetch constant's), which override the constant's filtering.
+    struct Texture { uint32_t fetchConstant; uint32_t dimension; uint32_t filters; };
     std::vector<Texture> textures;
     bool writesDepth = false;
     bool usesKill = false;

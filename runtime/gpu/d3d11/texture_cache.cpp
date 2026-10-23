@@ -341,15 +341,19 @@ ID3D11ShaderResourceView* TextureCache::view(const TextureFetch& fetch) {
     return entry.view;
 }
 
-ID3D11SamplerState* TextureCache::sampler(const TextureFetch& fetch) {
-    const uint32_t key = fetch.clampX() | fetch.clampY() << 3 | fetch.clampZ() << 6 | fetch.magFilter() << 9 |
-                         fetch.minFilter() << 11 | fetch.mipFilter() << 13;
+ID3D11SamplerState* TextureCache::sampler(const TextureFetch& fetch, uint32_t instructionFilters) {
+    // Filter values: 0 point, 1 linear, 2 basemap (mip only: no mipmapping), 3 = take
+    // the other source's. The instruction's fields override the constant's.
+    auto pick = [](uint32_t instruction, uint32_t constant) { return instruction != 3 ? instruction : constant; };
+    const uint32_t mag = pick(instructionFilters & 3, fetch.magFilter());
+    const uint32_t min = pick((instructionFilters >> 2) & 3, fetch.minFilter());
+    const uint32_t mip = pick((instructionFilters >> 4) & 3, fetch.mipFilter());
+    const uint32_t key = fetch.clampX() | fetch.clampY() << 3 | fetch.clampZ() << 6 | mag << 9 | min << 11 | mip << 13;
     auto& state = samplers_[key];
     if (state) return state;
     D3D11_SAMPLER_DESC desc{};
-    // Filter values: 0 point, 1 linear, 2 basemap (mip only), 3 use fetch instruction.
-    const bool linearMag = fetch.magFilter() != 0, linearMin = fetch.minFilter() != 0;
-    const bool linearMip = fetch.mipFilter() == 1;
+    const bool linearMag = mag != 0, linearMin = min != 0;
+    const bool linearMip = mip == 1;
     desc.Filter = D3D11_ENCODE_BASIC_FILTER(linearMin ? D3D11_FILTER_TYPE_LINEAR : D3D11_FILTER_TYPE_POINT,
                                             linearMag ? D3D11_FILTER_TYPE_LINEAR : D3D11_FILTER_TYPE_POINT,
                                             linearMip ? D3D11_FILTER_TYPE_LINEAR : D3D11_FILTER_TYPE_POINT,
@@ -363,7 +367,7 @@ ID3D11SamplerState* TextureCache::sampler(const TextureFetch& fetch) {
     desc.AddressU = addressMode(fetch.clampX());
     desc.AddressV = addressMode(fetch.clampY());
     desc.AddressW = addressMode(fetch.clampZ());
-    desc.MaxLOD = D3D11_FLOAT32_MAX;
+    desc.MaxLOD = mip == 2 ? 0.0f : D3D11_FLOAT32_MAX;  // basemap: level 0 only
     device_->CreateSamplerState(&desc, &state);
     return state;
 }

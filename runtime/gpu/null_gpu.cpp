@@ -15,6 +15,8 @@
 #include <intrin.h>
 #include <chrono>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
 
 using namespace tz;
 
@@ -48,7 +50,10 @@ struct Gpu {
     std::atomic<uint32_t> interruptCallback{0};
     std::atomic<uint32_t> interruptData{0};
     std::mutex interruptMutex;
-    std::atomic<uint64_t> frames{0};
+    std::atomic<uint64_t> frames{0};     // VdSwap calls (frames the title has submitted)
+    std::atomic<uint64_t> presented{0};  // swap packets the command processor has executed
+    std::mutex presentMutex;
+    std::condition_variable presentDone;
     std::atomic<uint64_t> draws{0};
     uint64_t exitAfterFrames = 0;
     std::atomic<int64_t> lastVblankNs{0};
@@ -152,6 +157,11 @@ void limitFrameRate() {
 }
 
 void presentFrame(uint32_t frontBuffer) {
+    {
+        std::lock_guard lock(gs.presentMutex);
+        ++gs.presented;
+    }
+    gs.presentDone.notify_all();
     if (traceEnabled("predstats")) {
         std::string line;
         char cell[64];
@@ -551,6 +561,9 @@ void execute(Reader& reader, int depth) {
 
 void commandProcessorMain() {
     createSystemThread("gpu-command-processor");
+    // This thread presents: keep it responsive when guest workers saturate the
+    // cores during loads (as The Darkness Recomp does for its display thread).
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
     startHostProfiler("gpu-command-processor");
     for (;;) {
         uint32_t writeIndex;
@@ -575,6 +588,8 @@ thread_local bool inVblankInterrupt = false;
 
 void vblankMain() {
     createSystemThread("gpu-vblank");
+    // Late ticks delay the title's frame release; the thread sleeps nearly always.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     // TENCHU_VBLANK_US overrides the 60 Hz interval (diagnostics only).
     char value[32]{};
     // Unlocked frame rates use a fine 240 Hz vblank so frames are not held to
@@ -759,6 +774,29 @@ PPC_FUNC(__imp__VdSwap) {
     store32(ctx.r3.u32 + 8, frontBuffer);
     for (uint32_t i = 3; i < 64; ++i) store32(ctx.r3.u32 + i * 4, 0);
     const uint64_t frame = ++gs.frames;
+    // Frames submitted earlier that the command processor has not presented yet.
+    const uint64_t pending = frame - 1 - (std::min)(frame - 1, gs.presented.load());
+    if (traceEnabled("framegap")) {
+        static uint32_t histogram[8] = {};
+        ++histogram[(std::min)(pending, uint64_t(7))];
+        if (frame % 300 == 0) {
+            logf("[framegap] frames pending at VdSwap over the last 300: 0:%u 1:%u 2:%u 3:%u 4+:%u", histogram[0],
+                 histogram[1], histogram[2], histogram[3], histogram[4] + histogram[5] + histogram[6] + histogram[7]);
+            std::fill(std::begin(histogram), std::end(histogram), 0u);
+        }
+    }
+    // TENCHU_MAX_AHEAD=N: hold the title until at most N earlier frames are pending
+    // (bounded wait, in case the command processor needs this thread to progress).
+    static const int maxAhead = [] {
+        char value[16]{};
+        return GetEnvironmentVariableA("TENCHU_MAX_AHEAD", value, sizeof(value)) ? atoi(value) : -1;
+    }();
+    if (maxAhead >= 0 && pending > uint64_t(maxAhead)) {
+        std::unique_lock lock(gs.presentMutex);
+        gs.presentDone.wait_for(lock, std::chrono::milliseconds(100), [&] {
+            return frame - 1 - (std::min)(frame - 1, gs.presented.load()) <= uint64_t(maxAhead);
+        });
+    }
     if (traceEnabled("gputime")) {
         static auto last = std::chrono::steady_clock::now();
         logf("[gputime] frame %llu: %.1f ms total, cp idle %.1f, reg waits %.1f, mem waits %.1f, interrupts %.1f",
