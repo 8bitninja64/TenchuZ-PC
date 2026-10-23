@@ -112,6 +112,10 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
 - Hybrid laptop (Intel iGPU + RTX 3070, 240 Hz): verify rendering on NVIDIA. GPU
   differences found so far: interpolated alpha just below 1.0 (alpha test now
   quantized), 0*inf in normalizations (XMul helpers).
+- Save (content/00000001/TENCHU_Z/tenchu.bin, 5216 bytes, no checksum): chapters of mission
+  records at +0x500, per-difficulty status bits 0|1 = cleared; tools/save_unlock.py marks
+  missions cleared so Mission Select offers all 50. Unset XAM title settings must read as
+  source 1 (default), or the game copies zeros (dead buttons, volume 0).
 - Saved profile settings once had all volumes at 0 from button-mashing tests: if the
   game is silent, check Options > Sound Settings before debugging audio.
 

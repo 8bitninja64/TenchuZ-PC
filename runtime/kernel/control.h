@@ -11,6 +11,7 @@
 //   traceframe             log every draw of the next frame (like TENCHU_TRACE_FRAME)
 //   dumpframe              save the next frame's resolved textures to build/resolved
 //   profile                start the host profiler window (TENCHU_TRACE=hostprof)
+//   peek [*]addr[+off] [n] log n guest words at addr ('*': through the pointer at addr)
 //   quit                   exit the process
 #include <cstdint>
 #include <string>

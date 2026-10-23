@@ -106,6 +106,25 @@ void execute(Controller& c, Clock::time_point now) {
             c.burstIndex = 0;
         } else if (command == "traceframe" || command == "dumpframe" || command == "profile") {
             c.flags.insert(command);
+        } else if (command == "peek") {
+            // peek [*]<hex address>[+<hex offset>] [words]: logs guest words; '*' reads a pointer first.
+            std::string where;
+            int words = 4;
+            stream >> where >> words;
+            const bool deref = !where.empty() && where[0] == '*';
+            const auto plus = where.find('+');
+            uint32_t address = uint32_t(strtoul(where.c_str() + (deref ? 1 : 0), nullptr, 16));
+            if (deref) address = tz::load32(address);
+            if (plus != std::string::npos) address += uint32_t(strtoul(where.c_str() + plus + 1, nullptr, 16));
+            for (int i = 0; i < words; i += 8) {
+                std::string text;
+                for (int j = i; j < words && j < i + 8; ++j) {
+                    char word[12];
+                    snprintf(word, sizeof(word), " %08X", tz::load32(address + uint32_t(j) * 4));
+                    text += word;
+                }
+                logf("[control] peek %08X:%s", address + uint32_t(i) * 4, text.c_str());
+            }
         } else if (command == "quit") {
             logf("[control] quitting");
             fflush(nullptr);
