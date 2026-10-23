@@ -55,7 +55,8 @@ Build: `python tools/build_xma_codec.py` once (FFmpeg into build/deps/ffmpeg, ne
 Driving the game (preferred over timed scripts): `TENCHU_CONTROL=<file>` executes lines
 appended at runtime (press/hold/release/stick/wait/shot/traceframe/dumpframe/quit, see
 runtime/kernel/control.h). `python tools/drive.py <file> "press a" "wait 2000" --shot out`
-appends commands and waits for the PNG. Path to the hideout from boot:
+appends commands and waits for the PNG. Path to the hideout from boot (with
+`TENCHU_SKIP_MOVIES=1`, otherwise the logo and opening movies play first):
 wait 14000, start, wait 3000, a (load save), wait 3000, down, a (Continue), wait 4000,
 a (Solo Mission), ~16 s load. Forward-slash paths for `shot`.
 Debug aids: `TENCHU_PS_OVERRIDE=<hash>=<hlsl>` replaces a pixel shader's color (e.g. r[6],
@@ -64,7 +65,8 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
 `TENCHU_AUDIO_DUMP=x.wav` + tools/wav_levels.py.
 
 ## Status (2026-10-23)
-- Title, menus, save/load, hideout and Mission 1 render on D3D11 at 30 fps.
+- Title, menus, save/load, hideout and Mission 1 render on D3D11 at 30 fps; movies play
+  through the title's own WMV player in real time; music and sound effects play.
 - Fixed along the way (see git log): XAPI heap needs MEM_LARGE_PAGES 64 KiB commit
   rounding; eieio stores are ordinary memory unless in MMIO ranges; scratch
   registers are 0x1DC/0x1DD; INTERRUPT dispatches per CPU in its mask with the PCR
@@ -84,17 +86,10 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
 - Fence/status block *(dev+10768) = physical 0xB000 (+0 fence, +4 consumed CB ptr).
 - FXO files are a custom effect format (magic A3D70141), no XDK shader containers.
 
-## Renderer plan
-Command-stream renderer on D3D11 (Darkness uses D3D11): the null GPU's command
-processor already parses everything. Translate Xenos microcode (from IM_LOAD /
-IM_LOAD_IMMEDIATE) to SM5 HLSL using register state for constants, vertex fetch
-via raw buffers in the shader, EDRAM targets as host render targets, resolves as
-host copies (enables resolution scaling). Movies: Media Foundation in the
-sub_82296FF8 hook.
-
 ## Next steps
-1. Shader capture + Xenos microcode disassembler/translator.
-2. Window, D3D11 device, present on VdSwap.
-3. Draw path: vertex/index fetch, render state, textures (untiling, formats),
-   EDRAM render targets and resolves.
-4. Audio (XAudio render client -> XAudio2, XMA via FFmpeg as Darkness does), movies.
+1. Gameplay check of missions (combat, stealth kills, cutscenes in DATA/CUTSCENE).
+2. Modern features as in Darkness: keyboard/mouse, settings file, fullscreen/borderless
+   with Alt+Enter, resolution scaling (render targets are host textures already) and
+   widescreen/ultrawide, frame pacing.
+3. XMA loop fields (loop_start/end/count) are not implemented; check that looping
+   sounds and music keep playing.

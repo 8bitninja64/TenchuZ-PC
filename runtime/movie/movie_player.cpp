@@ -1,17 +1,28 @@
 // Full-screen movie playback.
 //
-// The title plays WMV9/WMA Pro movies with a software decoder whose clock is
-// driven by audio output, which the runtime does not provide yet. Movies are
-// intercepted at the game's blocking play routine; host playback (Media
-// Foundation decodes both codecs natively) belongs here once a renderer exists.
+// The title's own player (a software WMV9/WMA Pro decoder whose clock follows
+// audio output) runs in real time now that the audio driver and XMA decoder
+// exist, so movies play as on the console. TENCHU_SKIP_MOVIES=1 skips them at
+// the game's blocking play routine, which saves time in automated runs.
 #include "kernel/kernel.h"
 #include "ppc_recomp_shared.h"
 
 using namespace tz;
 
+extern "C" PPC_FUNC(__imp__sub_82296FF8);
+
 // int PlayMovie(const char* path, ...): returns 1 when playback completed and
 // 0 when the movie could not be opened.
 PPC_FUNC(sub_82296FF8) {
-    logf("[movie] skipping %s (host movie playback not implemented yet)", loadString(ctx.r3.u32).c_str());
-    ctx.r3.u64 = 1;
+    static const bool skip = [] {
+        char value[8]{};
+        return GetEnvironmentVariableA("TENCHU_SKIP_MOVIES", value, sizeof(value)) && value[0] == '1';
+    }();
+    if (skip) {
+        logf("[movie] skipping %s", loadString(ctx.r3.u32).c_str());
+        ctx.r3.u64 = 1;
+        return;
+    }
+    TZ_TRACE("movie", "[movie] playing %s", loadString(ctx.r3.u32).c_str());
+    __imp__sub_82296FF8(ctx, base);
 }
