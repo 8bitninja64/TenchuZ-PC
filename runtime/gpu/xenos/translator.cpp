@@ -1,4 +1,5 @@
 #include "translator.h"
+#include <windows.h>
 #include <cstdio>
 #include <map>
 #include <set>
@@ -729,10 +730,71 @@ struct Emitter {
         line("}");
     }
 
+    // Only forward conditional jumps (no loops, calls or returns): the program runs
+    // in control-flow order, so it can be emitted as a sequence of guarded blocks
+    // without the loop + switch of the state machine, which FXC compiles many
+    // times faster (seconds per skinned vertex shader otherwise).
+    bool forwardJumpsOnly() {
+        for (size_t i = 0; i < program.controlFlow.size(); ++i) {
+            const auto& cf = program.controlFlow[i];
+            const auto op = cf.opcode();
+            if (op == CfOpcode::CondCall || op == CfOpcode::Return || op == CfOpcode::LoopStart ||
+                op == CfOpcode::LoopEnd)
+                return false;
+            if (op == CfOpcode::CondJmp && cf.jumpAddress() <= i) return false;
+        }
+        return true;
+    }
+
+    void emitForward() {
+        const int end = int(program.controlFlow.size());
+        for (const auto& cf : program.controlFlow)
+            if (cf.opcode() == CfOpcode::CondJmp)
+                firstBranchTarget = (std::min)(firstBranchTarget, cf.jumpAddress());
+        line("int pc = 0;");
+        for (int i = 0; i < end; ++i) {
+            const auto& cf = program.controlFlow[size_t(i)];
+            currentCf = uint32_t(i);
+            const std::string next = cf.isEnd() ? "-1" : std::to_string(i + 1);
+            line("if (pc == " + std::to_string(i) + ") {");
+            ++indent;
+            if (cf.opcode() == CfOpcode::CondJmp) {
+                std::string condition = "true";
+                if (!cf.forceCall())
+                    condition = cf.predicatedJump()
+                                    ? std::string(cf.condition() ? "p" : "!p")
+                                    : std::string(cf.condition() ? "" : "!") + "BoolConstant(" +
+                                          std::to_string(cf.boolAddress()) + ")";
+                line("pc = (" + condition + ") ? " + std::to_string(cf.jumpAddress()) + " : " + next + ";");
+            } else {
+                if (cf.isExec()) {
+                    const std::string condition = execCondition(cf);
+                    if (!condition.empty()) {
+                        line("if (" + condition + ") {");
+                        ++indent;
+                    }
+                    emitExec(cf);
+                    if (!condition.empty()) {
+                        --indent;
+                        line("}");
+                    }
+                }
+                line("pc = " + next + ";");
+            }
+            --indent;
+            line("}");
+        }
+    }
+
     void emit() {
         body.clear();
-        if (needsStateMachine()) emitStateMachine();
-        else emitLinear();
+        static const bool noForward = [] {
+            char value[8]{};
+            return GetEnvironmentVariableA("TENCHU_NO_FORWARD_CF", value, sizeof(value)) && value[0] == '1';
+        }();
+        if (!needsStateMachine()) emitLinear();
+        else if (forwardJumpsOnly() && !noForward) emitForward();
+        else emitStateMachine();
 
         std::string hlsl = kPrelude;
         // Resources are known after the body has been generated.
