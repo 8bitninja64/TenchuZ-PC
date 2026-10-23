@@ -36,6 +36,7 @@ add_library(TenchuRuntime STATIC
     runtime/kernel/host_profiler.cpp
     runtime/host/settings.cpp
     runtime/host/input.cpp
+    runtime/host/gamepad.cpp
     runtime/kernel/kernel_data.cpp
     runtime/kernel/format.cpp
     runtime/kernel/imports_ke.cpp
@@ -65,6 +66,15 @@ target_link_libraries(TenchuRuntime PUBLIC
     "${TENCHU_FFMPEG}/lib/avcodec-tenchu.lib" "${TENCHU_FFMPEG}/lib/avutil-tenchu.lib"
     "${TENCHU_FFMPEG}/lib/avformat-tenchu.lib")
 file(GLOB TENCHU_FFMPEG_DLLS "${TENCHU_FFMPEG}/bin/*.dll")
+
+# SDL3 (game controllers), fetched by tools/fetch_sdl.py.
+set(TENCHU_SDL "${CMAKE_SOURCE_DIR}/build/deps/SDL3")
+if(NOT EXISTS "${TENCHU_SDL}/include/SDL3/SDL.h")
+    message(FATAL_ERROR "SDL3 is missing: run python tools/fetch_sdl.py")
+endif()
+target_include_directories(TenchuRuntime PUBLIC "${TENCHU_SDL}/include")
+target_link_libraries(TenchuRuntime PUBLIC "${TENCHU_SDL}/lib/x64/SDL3.lib")
+list(APPEND TENCHU_FFMPEG_DLLS "${TENCHU_SDL}/lib/x64/SDL3.dll" "${CMAKE_SOURCE_DIR}/assets/gamecontrollerdb.txt")
 
 add_executable(TenchuZ app/main.cpp)
 target_link_libraries(TenchuZ PRIVATE TenchuRuntime)

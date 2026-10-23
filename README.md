@@ -22,7 +22,7 @@ hideout and missions with D3D11 rendering at the original 30 fps.
 | Graphics | Xenos command processor + microcode-to-HLSL translator on D3D11 |
 | Audio | XAudio2 output; XMA decoder hardware emulated with FFmpeg |
 | Movies | the game's own WMV player, real time |
-| Input | XInput controllers, keyboard and mouse (rebindable) |
+| Input | any controller via SDL3 (Xbox, PlayStation, Switch, 8BitDo...), keyboard and mouse (rebindable) |
 | Modern features | 60 fps and higher, resolution scaling up to 4x (4K = scale 3), borderless fullscreen |
 
 Not done yet: widescreen beyond 16:9, achievements.
@@ -71,6 +71,12 @@ enough) with the C++ and Clang (ClangCL) components.
    python tools/build_xma_codec.py
    ```
 
+   Then fetch SDL3 (game controllers):
+
+   ```bash
+   python tools/fetch_sdl.py
+   ```
+
 5. Build the port:
 
    ```bash
@@ -99,7 +105,9 @@ locked to the display. Missions currently reach about 75-80 fps unlimited on an
 RTX 3070 laptop; menus and the hideout run far higher.
 
 - **Alt+Enter** or **F11**: toggle borderless fullscreen.
-- Controller: works as on the console. Keyboard and mouse act as controller 1:
+- Controller: any pad SDL3 recognizes, buttons by position as on an Xbox pad; the first
+  connected pad is player 1. Layouts come from `gamecontrollerdb.txt` next to the
+  executable; add your own lines to `gamecontrollerdb_user.txt`. Keyboard and mouse act as controller 1:
   WASD moves (Alt walks), click the window to capture the mouse for the camera,
   Escape releases it. Default buttons: Space = A, C = B, left mouse = X,
   right mouse = Y, Q/E = LB/RB, F/R = LT/RT, Enter or P = Start, Tab = Back,

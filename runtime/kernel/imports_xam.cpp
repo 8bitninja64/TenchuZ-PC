@@ -2,6 +2,7 @@
 // One local profile is signed in on controller 0; online features are absent.
 #include "kernel.h"
 #include "control.h"
+#include "host/gamepad.h"
 #include "host/input.h"
 #include "filesystem.h"
 #include "ppc_recomp_shared.h"
@@ -502,7 +503,19 @@ PPC_FUNC(__imp__XamInputGetState) {
         state.Gamepad.wButtons = scriptedButtons();
         connected = synthesized = true;
     } else {
-        connected = ctx.r3.u32 < 4 && XInputGetState(ctx.r3.u32, &state) == ERROR_SUCCESS;
+        // Any controller SDL knows (XInput, PlayStation, Switch, 8BitDo...), first pad = player 1.
+        host::VirtualPad pad;
+        connected = host::gamepadState(ctx.r3.u32, pad);
+        if (connected) {
+            state.Gamepad.wButtons = pad.buttons;
+            state.Gamepad.bLeftTrigger = pad.leftTrigger;
+            state.Gamepad.bRightTrigger = pad.rightTrigger;
+            state.Gamepad.sThumbLX = pad.thumbs[0];
+            state.Gamepad.sThumbLY = pad.thumbs[1];
+            state.Gamepad.sThumbRX = pad.thumbs[2];
+            state.Gamepad.sThumbRY = pad.thumbs[3];
+            synthesized = true;
+        }
     }
     if (ctx.r3.u32 == 0 && host::keyboardMouseActive()) {
         host::VirtualPad merged{state.Gamepad.wButtons, state.Gamepad.bLeftTrigger, state.Gamepad.bRightTrigger,
@@ -541,9 +554,8 @@ PPC_FUNC(__imp__XamInputGetState) {
 
 PPC_FUNC(__imp__XamInputSetState) {
     // (user, flags, vibration*) where vibration = { left u16, right u16 }
-    XINPUT_VIBRATION vibration{load16(ctx.r5.u32), load16(ctx.r5.u32 + 2)};
-    ctx.r3.u64 = ctx.r3.u32 < 4 && XInputSetState(ctx.r3.u32, &vibration) == ERROR_SUCCESS
-                     ? kErrorSuccess : kErrorDeviceNotConnected;
+    ctx.r3.u64 = host::gamepadRumble(ctx.r3.u32, load16(ctx.r5.u32), load16(ctx.r5.u32 + 2)) ? kErrorSuccess
+                                                                                        : kErrorDeviceNotConnected;
 }
 
 // ---- Title and system ---------------------------------------------------------------------
