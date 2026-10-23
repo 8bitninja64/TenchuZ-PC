@@ -882,7 +882,9 @@ struct XenosBackend::Impl {
         }
         const uint32_t windowOffset = reg(reg::PA_SC_WINDOW_OFFSET);
         const int offsetX = int32_t(windowOffset << 17) >> 17, offsetY = int32_t(windowOffset << 1) >> 17;
-        D3D11_RECT rect{LONG(minX) + offsetX, LONG(minY) + offsetY, LONG(maxX) + offsetX, LONG(maxY) + offsetY};
+        // Pixels whose centers lie inside the rectangle (vertices sit on pixel edges, -0.5..639.5).
+        auto edge = [](float value) { return LONG(std::floor(value + 0.5f)); };
+        D3D11_RECT rect{edge(minX) + offsetX, edge(minY) + offsetY, edge(maxX) + offsetX, edge(maxY) + offsetY};
         rect.left = (std::max)(0L, rect.left);
         rect.top = (std::max)(0L, rect.top);
 
