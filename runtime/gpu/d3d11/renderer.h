@@ -3,7 +3,7 @@
 // All methods run on the command processor thread, which owns the context.
 #include <windows.h>
 #include <d3d11.h>
-#include <dxgi1_2.h>
+#include <dxgi1_6.h>
 #include <cstdint>
 
 namespace tz::gpu {

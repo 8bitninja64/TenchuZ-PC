@@ -1,6 +1,7 @@
 #include "renderer.h"
 #include "kernel/kernel.h"
 #include "kernel/control.h"
+#include "host/settings.h"
 #include <d3dcompiler.h>
 #include <atomic>
 #include <cmath>
@@ -55,8 +56,28 @@ bool D3D11Renderer::initialize(HWND target) {
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
     if (traceEnabled("d3ddebug")) flags |= D3D11_CREATE_DEVICE_DEBUG;
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, 2, D3D11_SDK_VERSION,
-                                 &device_, nullptr, &context_))) {
+    // Prefer the discrete GPU on hybrid laptops.
+    IDXGIAdapter1* preferred = nullptr;
+    IDXGIFactory6* factory6 = nullptr;
+    if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory6), reinterpret_cast<void**>(&factory6)))) {
+        factory6->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, __uuidof(IDXGIAdapter1),
+                                             reinterpret_cast<void**>(&preferred));
+        release(factory6);
+    }
+    HRESULT created = D3D11CreateDevice(preferred, preferred ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+                                        nullptr, flags, levels, 2, D3D11_SDK_VERSION, &device_, nullptr, &context_);
+    if (FAILED(created) && preferred)
+        created = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, 2, D3D11_SDK_VERSION,
+                                    &device_, nullptr, &context_);
+    if (preferred) {
+        DXGI_ADAPTER_DESC1 description{};
+        preferred->GetDesc1(&description);
+        char name[128]{};
+        WideCharToMultiByte(CP_UTF8, 0, description.Description, -1, name, sizeof(name), nullptr, nullptr);
+        logf("[d3d11] adapter: %s", name);
+    }
+    release(preferred);
+    if (FAILED(created)) {
         logf("[d3d11] device creation failed");
         return false;
     }
@@ -147,7 +168,7 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue) 
         context_->ClearRenderTargetView(backBufferView_, color);
     }
     captureIfRequested();
-    swapChain_->Present(0, 0);
+    swapChain_->Present(host::settings().vsync ? 1 : 0, 0);
 }
 
 void D3D11Renderer::captureIfRequested() {

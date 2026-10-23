@@ -18,6 +18,9 @@ fullscreen = false
 window_width = 1280
 window_height = 720
 vsync = true
+; Internal rendering resolution as a multiple of the original 1280x720
+; (1 = 720p, 2 = 1440p, 3 = 4K). Higher values need much more video memory.
+resolution_scale = 1
 
 [input]
 mouse_sensitivity = 1.0
@@ -72,6 +75,7 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "window_width") settings.windowWidth = (std::max)(320, std::stoi(value));
             else if (key == "window_height") settings.windowHeight = (std::max)(180, std::stoi(value));
             else if (key == "vsync") settings.vsync = parseBool(value);
+            else if (key == "resolution_scale") settings.resolutionScale = std::clamp(std::stoi(value), 1, 4);
         } else if (section == "input") {
             if (key == "mouse_sensitivity") settings.mouseSensitivity = std::stof(value);
             else if (key == "invert_mouse_y") settings.invertMouseY = parseBool(value);
@@ -114,6 +118,10 @@ const Settings& settings() {
             std::ofstream out(path, std::ios::binary);
             out << kDefaultFile;
         }
+        // TENCHU_RESOLUTION_SCALE overrides the file (testing).
+        char value[16]{};
+        if (GetEnvironmentVariableA("TENCHU_RESOLUTION_SCALE", value, sizeof(value)))
+            apply(result, "display", "resolution_scale", value);
         return result;
     }();
     return instance;

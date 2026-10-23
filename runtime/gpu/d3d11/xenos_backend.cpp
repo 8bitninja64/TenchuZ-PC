@@ -3,6 +3,7 @@
 #include "gpu/d3d11/texture_cache.h"
 #include "kernel/kernel.h"
 #include "kernel/control.h"
+#include "host/settings.h"
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 #include <algorithm>
@@ -315,6 +316,15 @@ struct XenosBackend::Impl {
         return entry.failed ? nullptr : &entry;
     }
 
+    // ---- Resolution scaling ----------------------------------------------------------
+    // Host render targets and resolved textures are renderScale times the guest
+    // size; guest coordinates are scaled only where they meet host resources.
+    const uint32_t renderScale = uint32_t(std::clamp(host::settings().resolutionScale, 1, 4));
+    D3D11_RECT scaled(const D3D11_RECT& rect) const {
+        const LONG s = LONG(renderScale);
+        return {rect.left * s, rect.top * s, rect.right * s, rect.bottom * s};
+    }
+
     // ---- Render targets (EDRAM) --------------------------------------------------
     // Each distinct EDRAM base/pitch/format/samples is a host render target.
     struct RenderTarget {
@@ -340,8 +350,9 @@ struct XenosBackend::Impl {
         const uint32_t tilesPerRow = (pitch + 79) / 80;
         const uint32_t height = (std::min)(2048u, 2048 / tilesPerRow * 16);
         D3D11_TEXTURE2D_DESC desc{};
-        desc.Width = pitch;
-        desc.Height = (std::max)(16u, height / (samples >= 2 ? 2 : 1));
+        const uint32_t guestHeight = (std::max)(16u, height / (samples >= 2 ? 2 : 1));
+        desc.Width = pitch * renderScale;
+        desc.Height = guestHeight * renderScale;
         desc.MipLevels = 1;
         desc.ArraySize = 1;
         desc.SampleDesc.Count = samples;
@@ -382,8 +393,8 @@ struct XenosBackend::Impl {
                 device->CreateShaderResourceView(target.texture, nullptr, &target.view);
             }
         }
-        target.width = desc.Width;
-        target.height = desc.Height;
+        target.width = pitch;
+        target.height = guestHeight;
         target.samples = samples;
         target.format = desc.Format;
         TZ_TRACE("rt", "[d3d11] %s target base %u pitch %u format %u samples %u -> %ux%u", isDepth ? "depth" : "color",
@@ -430,8 +441,8 @@ struct XenosBackend::Impl {
         }
         if (!entry.texture) {
             D3D11_TEXTURE2D_DESC desc{};
-            desc.Width = width;
-            desc.Height = height;
+            desc.Width = width * renderScale;
+            desc.Height = height * renderScale;
             desc.MipLevels = 1;
             desc.ArraySize = 1;
             desc.Format = format;
@@ -826,7 +837,7 @@ struct XenosBackend::Impl {
 
         // Pipeline.
         context->OMSetRenderTargets(4, colorViews, depthView);
-        const D3D11_VIEWPORT viewport{0, 0, width, height, 0, 1};
+        const D3D11_VIEWPORT viewport{0, 0, width * renderScale, height * renderScale, 0, 1};
         context->RSSetViewports(1, &viewport);
         const uint32_t scissorTl = reg(reg::PA_SC_WINDOW_SCISSOR_TL), scissorBr = reg(reg::PA_SC_WINDOW_SCISSOR_BR);
         D3D11_RECT scissor{LONG(scissorTl & 0x7FFF), LONG((scissorTl >> 16) & 0x7FFF),
@@ -840,7 +851,8 @@ struct XenosBackend::Impl {
             scissor.top = (std::max)(0L, scissor.top + dy);
             scissor.bottom = (std::max)(0L, scissor.bottom + dy);
         }
-        context->RSSetScissorRects(1, &scissor);
+        const D3D11_RECT hostScissor = scaled(scissor);
+        context->RSSetScissorRects(1, &hostScissor);
         context->RSSetState(rasterState(reg(reg::PA_SU_SC_MODE_CNTL), (reg(reg::PA_CL_CLIP_CNTL) >> 16) & 1));
         const uint32_t blendControl[4] = {reg(reg::RB_BLENDCONTROL0), reg(reg::RB_BLENDCONTROL1),
                                           reg(reg::RB_BLENDCONTROL2), reg(reg::RB_BLENDCONTROL3)};
@@ -1015,12 +1027,14 @@ struct XenosBackend::Impl {
                 if (!sourceView || !copyShader) return;
                 const bool swap = !depthSource && ((reg(reg::RB_COPY_DEST_INFO) >> 24) & 1);
                 const bool float24 = depthSource && ((reg(reg::RB_DEPTH_INFO) >> 16) & 1);
-                const int32_t constants[8] = {int32_t(rect.left), int32_t(rect.top), int32_t(destX), int32_t(destY),
-                                              swap || float24 ? 1 : 0, 0, 0, 0};
+                const int32_t s = int32_t(renderScale);
+                const int32_t constants[8] = {int32_t(rect.left) * s, int32_t(rect.top) * s, int32_t(destX) * s,
+                                              int32_t(destY) * s, swap || float24 ? 1 : 0, 0, 0, 0};
                 writeBuffer(copyConstants, constants, sizeof(constants));
                 context->OMSetRenderTargets(1, &target->target, nullptr);
-                const D3D11_VIEWPORT viewport{float(destX), float(destY), float(rect.right - rect.left),
-                                              float(rect.bottom - rect.top), 0, 1};
+                const D3D11_VIEWPORT viewport{float(destX * renderScale), float(destY * renderScale),
+                                              float((rect.right - rect.left) * renderScale),
+                                              float((rect.bottom - rect.top) * renderScale), 0, 1};
                 context->RSSetViewports(1, &viewport);
                 context->RSSetState(nullptr);
                 context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
@@ -1056,7 +1070,8 @@ struct XenosBackend::Impl {
                                     (value & 0xFF) / 255.0f, (value >> 24) / 255.0f};
             ID3D11DeviceContext1* context1 = nullptr;
             if (SUCCEEDED(context->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void**>(&context1)))) {
-                context1->ClearView(colorTarget->color, color, &rect, 1);
+                const D3D11_RECT hostRect = scaled(rect);
+                context1->ClearView(colorTarget->color, color, &hostRect, 1);
                 release(context1);
             } else {
                 context->ClearRenderTargetView(colorTarget->color, color);

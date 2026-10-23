@@ -13,6 +13,7 @@ struct Settings {
     int windowWidth = 1280;
     int windowHeight = 720;
     bool vsync = true;
+    int resolutionScale = 1;      // internal resolution multiplier (1 = 720p, 2 = 1440p, 3 = 4K)
     // Input
     float mouseSensitivity = 1.0f;
     bool invertMouseY = false;
