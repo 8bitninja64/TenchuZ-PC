@@ -120,3 +120,6 @@ on first run: fullscreen, window size, vsync, `resolution_scale` (1 = 720p,
 GPLv3 (see `COPYING`). The generator patches, the XEX decoder and the AOT
 pipeline design come from The Darkness Recomp by portingpete (GPLv3), built on
 hedge-dev's XenonRecomp (GPLv3).
+Audio and movie decoding use FFmpeg (LGPL 2.1+), built from pinned source with
+a small opt-in patch to its XMA decoder; `tools/build_xma_codec.py` keeps the
+patch, provenance and license files beside the DLLs.
