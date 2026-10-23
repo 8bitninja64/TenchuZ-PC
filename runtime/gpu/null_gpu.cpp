@@ -511,10 +511,25 @@ void vblankMain() {
     // TENCHU_VBLANK_US overrides the 60 Hz interval (diagnostics only).
     char value[32]{};
     const int64_t interval = GetEnvironmentVariableA("TENCHU_VBLANK_US", value, sizeof(value)) ? atoll(value) : 16667;
+    // sleep_until alone wakes up to a millisecond late; a high-resolution
+    // waitable timer plus a short spin keeps the 60 Hz ticks even, which keeps
+    // the title's 30 fps frame pacing even.
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     auto next = std::chrono::steady_clock::now();
     for (;;) {
         next += std::chrono::microseconds(interval);
-        std::this_thread::sleep_until(next);
+        const auto now = std::chrono::steady_clock::now();
+        if (next < now - std::chrono::milliseconds(100)) next = now;  // resync after a stall
+        const auto early = next - std::chrono::microseconds(500);
+        if (timer && early > now) {
+            LARGE_INTEGER due;
+            due.QuadPart = -std::chrono::duration_cast<std::chrono::nanoseconds>(early - now).count() / 100;
+            SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+            WaitForSingleObject(timer, INFINITE);
+        } else if (!timer) {
+            std::this_thread::sleep_until(early);
+        }
+        while (std::chrono::steady_clock::now() < next) _mm_pause();
         gs.lastVblankNs = std::chrono::steady_clock::now().time_since_epoch().count();
         ++gs.vblanks;
         dispatchInterrupt(0, 2);

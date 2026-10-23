@@ -4,6 +4,7 @@
 #include "host/settings.h"
 #include <d3dcompiler.h>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -170,6 +171,12 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue) 
     }
     captureIfRequested();
     swapChain_->Present(host::settings().vsync ? 1 : 0, 0);
+    if (traceEnabled("present")) {
+        static auto last = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        logf("[present] %.2f ms", std::chrono::duration<double, std::milli>(now - last).count());
+        last = now;
+    }
 }
 
 void D3D11Renderer::captureIfRequested() {
