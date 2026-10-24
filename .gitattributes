@@ -1,0 +1,2 @@
+# Patches for the generator apply byte for byte: never convert their line endings.
+*.patch -text
