@@ -2,6 +2,7 @@
 #include "kernel.h"
 #include "filesystem.h"
 #include "guest/host.h"
+#include "xdvdfs.h"
 #include <algorithm>
 #include <map>
 #include <shared_mutex>
@@ -10,8 +11,19 @@ using namespace tz;
 
 namespace {
 
+struct Mount {
+    std::filesystem::path directory;
+    std::shared_ptr<DiscImage> disc;
+};
 std::shared_mutex mountMutex;
-std::map<std::string, std::filesystem::path> mounts;
+std::map<std::string, Mount> mounts;
+
+// Where a guest path leads: a host file or directory, or an entry of a disc image.
+struct Location {
+    std::filesystem::path host;
+    std::shared_ptr<DiscImage> disc;
+    std::string discPath;  // '/' separated, relative to the disc root
+};
 
 std::string lower(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return char(tolower(c)); });
@@ -23,6 +35,9 @@ struct FileObject : KernelObject {
     ~FileObject() override { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
     HANDLE handle = INVALID_HANDLE_VALUE;
     std::filesystem::path path;
+    std::shared_ptr<DiscImage> disc;  // files on a disc image: no handle
+    std::string discPath;
+    DiscImage::Entry entry;
     std::string guestPath;
     bool directory = false;
     std::mutex mutex;
@@ -51,39 +66,95 @@ void completeIo(uint32_t ioStatus, uint32_t status, uint32_t information) {
     store32(ioStatus + 4, information);
 }
 
-// OBJECT_ATTRIBUTES { root directory handle; ANSI_STRING* name; attributes }
-std::string objectName(uint32_t attributes, std::filesystem::path* relativeRoot) {
-    const uint32_t root = load32(attributes);
-    std::string name = loadAnsiString(load32(attributes + 4));
-    if (root && relativeRoot) {
-        auto object = lookupHandleAs<FileObject>(root);
-        if (object) *relativeRoot = object->path;
-    }
-    return name;
+// Attributes of a host path or disc entry, in the host's form.
+bool attributeData(const Location& location, WIN32_FILE_ATTRIBUTE_DATA& data) {
+    data = {};
+    if (!location.disc) return GetFileAttributesExW(location.host.c_str(), GetFileExInfoStandard, &data);
+    const DiscImage::Entry* entry = location.disc->find(location.discPath);
+    if (!entry) return false;
+    data.dwFileAttributes = entry->directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    data.ftCreationTime = data.ftLastAccessTime = data.ftLastWriteTime = location.disc->fileTime();
+    data.nFileSizeHigh = DWORD(entry->size >> 32);
+    data.nFileSizeLow = DWORD(entry->size);
+    return true;
 }
 
-bool resolveAttributes(uint32_t attributes, std::filesystem::path& path, std::string& guestName) {
-    std::filesystem::path root;
-    guestName = objectName(attributes, &root);
-    if (!root.empty()) {
-        std::string relative = guestName;
-        std::replace(relative.begin(), relative.end(), '\\', '/');
-        while (!relative.empty() && relative.front() == '/') relative.erase(relative.begin());
-        path = root / std::filesystem::u8path(relative);
-        return true;
+bool resolveLocation(const std::string& guestPath, Location& location);
+
+// OBJECT_ATTRIBUTES { root directory handle; ANSI_STRING* name; attributes }
+bool resolveAttributes(uint32_t attributes, Location& location, std::string& guestName) {
+    const uint32_t root = load32(attributes);
+    guestName = loadAnsiString(load32(attributes + 4));
+    if (root) {
+        auto object = lookupHandleAs<FileObject>(root);
+        if (object) {
+            std::string relative = guestName;
+            std::replace(relative.begin(), relative.end(), '\\', '/');
+            while (!relative.empty() && relative.front() == '/') relative.erase(relative.begin());
+            location = {};
+            if (object->disc) {
+                location.disc = object->disc;
+                location.discPath = object->discPath.empty() ? relative : object->discPath + "/" + relative;
+            } else {
+                location.host = object->path / std::filesystem::u8path(relative);
+            }
+            return true;
+        }
     }
-    return resolveGuestPath(guestName, path);
+    return resolveLocation(guestName, location);
+}
+
+// Disc images are read-only: files and directories open as they are, nothing is created.
+uint32_t openDiscFile(PPCContext& ctx, uint32_t handleOut, uint32_t access, const Location& location,
+                      const std::string& guestName, uint32_t ioStatus, uint32_t disposition, uint32_t options) {
+    const DiscImage::Entry* entry = location.disc->find(location.discPath);
+    const bool wantDirectory = options & 0x1, wantFile = options & 0x40;
+    const bool write = access & (0x40000000 | 0x2 | 0x4 | 0x10000);
+    uint32_t status = kStatusSuccess;
+    if (!entry) {
+        const size_t slash = location.discPath.find_last_of('/');
+        const DiscImage::Entry* parent =
+            location.disc->find(slash == std::string::npos ? std::string() : location.discPath.substr(0, slash));
+        status = disposition == 1 || disposition == 4 ? (parent ? kStatusObjectNameNotFound : kStatusObjectPathNotFound)
+                                                      : kStatusAccessDenied;
+    } else if (wantFile && entry->directory) {
+        status = kStatusFileIsADirectory;
+    } else if (wantDirectory && !entry->directory) {
+        status = kStatusNotADirectory;
+    } else if (disposition == 2) {
+        status = kStatusObjectNameCollision;
+    } else if (write || disposition == 0 || disposition == 4 || disposition == 5) {
+        status = kStatusAccessDenied;
+    }
+    if (status != kStatusSuccess) {
+        TZ_TRACE("file", "[file] open %s -> %08X", guestName.c_str(), status);
+        completeIo(ioStatus, status, 0);
+        return status;
+    }
+    auto object = std::make_shared<FileObject>();
+    object->disc = location.disc;
+    object->discPath = location.discPath;
+    object->entry = *entry;
+    object->guestPath = guestName;
+    object->directory = entry->directory;
+    store32(handleOut, createHandle(object));
+    completeIo(ioStatus, kStatusSuccess, 1);  // FILE_OPENED
+    TZ_TRACE("file", "[file] open %s ok (disc)", guestName.c_str());
+    if (traceEnabled("bt")) logf("[bt] open %s from%s", guestName.c_str(), guestBacktrace(ctx).c_str());
+    return kStatusSuccess;
 }
 
 uint32_t openFile(PPCContext& ctx, uint32_t handleOut, uint32_t access, uint32_t attributes, uint32_t ioStatus,
                   uint32_t disposition, uint32_t options) {
-    std::filesystem::path path;
+    Location location;
     std::string guestName;
-    if (!resolveAttributes(attributes, path, guestName)) {
+    if (!resolveAttributes(attributes, location, guestName)) {
         TZ_TRACE("file", "[file] unmapped path %s", guestName.c_str());
         completeIo(ioStatus, kStatusObjectPathNotFound, 0);
         return kStatusObjectPathNotFound;
     }
+    if (location.disc) return openDiscFile(ctx, handleOut, access, location, guestName, ioStatus, disposition, options);
+    const std::filesystem::path& path = location.host;
     const DWORD attributesOnDisk = GetFileAttributesW(path.c_str());
     const bool exists = attributesOnDisk != INVALID_FILE_ATTRIBUTES;
     const bool isDirectory = exists && (attributesOnDisk & FILE_ATTRIBUTE_DIRECTORY);
@@ -156,7 +227,12 @@ namespace tz {
 
 void mountDevice(const std::string& root, const std::filesystem::path& directory) {
     std::unique_lock lock(mountMutex);
-    mounts[lower(root)] = directory;
+    mounts[lower(root)] = Mount{directory, nullptr};
+}
+
+void mountDevice(const std::string& root, std::shared_ptr<DiscImage> disc) {
+    std::unique_lock lock(mountMutex);
+    mounts[lower(root)] = Mount{{}, std::move(disc)};
 }
 
 void unmountDevice(const std::string& root) {
@@ -165,6 +241,17 @@ void unmountDevice(const std::string& root) {
 }
 
 bool resolveGuestPath(const std::string& guestPath, std::filesystem::path& hostPath) {
+    Location location;
+    if (!resolveLocation(guestPath, location) || location.disc) return false;
+    hostPath = location.host;
+    return true;
+}
+
+}  // namespace tz
+
+namespace {
+
+bool resolveLocation(const std::string& guestPath, Location& location) {
     std::string path = guestPath;
     std::replace(path.begin(), path.end(), '/', '\\');
     std::string rootName, rest;
@@ -179,28 +266,33 @@ bool resolveGuestPath(const std::string& guestPath, std::filesystem::path& hostP
     } else {
         return false;
     }
-    std::filesystem::path root;
+    Mount mount;
     {
         std::shared_lock lock(mountMutex);
         auto it = mounts.find(rootName);
         if (it == mounts.end()) return false;
-        root = it->second;
+        mount = it->second;
     }
-    std::filesystem::path result = root;
+    location = {};
+    location.disc = mount.disc;
+    std::filesystem::path result = mount.directory;
     size_t start = 0;
     while (start <= rest.size()) {
         const size_t end = rest.find('\\', start);
         const std::string part = rest.substr(start, end == std::string::npos ? std::string::npos : end - start);
         if (part == "..") return false;
-        if (!part.empty() && part != ".") result /= std::filesystem::u8path(part);
+        if (!part.empty() && part != ".") {
+            if (mount.disc) location.discPath += (location.discPath.empty() ? "" : "/") + part;
+            else result /= std::filesystem::u8path(part);
+        }
         if (end == std::string::npos) break;
         start = end + 1;
     }
-    hostPath = result;
+    location.host = result;
     return true;
 }
 
-}  // namespace tz
+}  // namespace
 
 TZ_IMPORT(NtCreateFile) {
     // (handle*, access, attributes*, ioStatus*, allocationSize*, fileAttributes,
@@ -224,12 +316,17 @@ TZ_IMPORT(NtReadFile) {
         const uint64_t offset = load64(ctx.r10.u32);
         if (offset != 0xFFFFFFFFFFFFFFFEull) file->position = offset;  // -2: use the file pointer
     }
-    OVERLAPPED overlapped{};
-    overlapped.Offset = uint32_t(file->position);
-    overlapped.OffsetHigh = uint32_t(file->position >> 32);
     DWORD read = 0;
+    BOOL ok = TRUE;
     memory->prepareHostWrite(buffer, length);  // ReadFile cannot write write-watched pages
-    const BOOL ok = ReadFile(file->handle, memory->host(buffer), length, &read, &overlapped);
+    if (file->disc) {
+        read = file->disc->read(file->entry, file->position, memory->host(buffer), length);
+    } else {
+        OVERLAPPED overlapped{};
+        overlapped.Offset = uint32_t(file->position);
+        overlapped.OffsetHigh = uint32_t(file->position >> 32);
+        ok = ReadFile(file->handle, memory->host(buffer), length, &read, &overlapped);
+    }
     file->position += read;
     const uint32_t status = !ok && GetLastError() != ERROR_HANDLE_EOF ? kStatusUnsuccessful
                           : (read == 0 && length) ? kStatusEndOfFile : kStatusSuccess;
@@ -245,6 +342,11 @@ TZ_IMPORT(NtWriteFile) {
     auto file = lookupHandleAs<FileObject>(ctx.r3.u32);
     if (!file || file->directory) { ctx.r3.u64 = kStatusInvalidHandle; return; }
     const uint32_t ioStatus = ctx.r7.u32, buffer = ctx.r8.u32, length = ctx.r9.u32;
+    if (file->disc) {
+        completeIo(ioStatus, kStatusAccessDenied, 0);
+        ctx.r3.u64 = kStatusAccessDenied;
+        return;
+    }
     std::lock_guard lock(file->mutex);
     if (ctx.r10.u32) {
         const uint64_t offset = load64(ctx.r10.u32);
@@ -264,7 +366,7 @@ TZ_IMPORT(NtWriteFile) {
 
 TZ_IMPORT(NtFlushBuffersFile) {
     auto file = lookupHandleAs<FileObject>(ctx.r3.u32);
-    if (file && !file->directory) FlushFileBuffers(file->handle);
+    if (file && !file->directory && !file->disc) FlushFileBuffers(file->handle);
     completeIo(ctx.r4.u32, kStatusSuccess, 0);
     ctx.r3.u64 = file ? kStatusSuccess : kStatusInvalidHandle;
 }
@@ -275,7 +377,7 @@ TZ_IMPORT(NtQueryInformationFile) {
     if (!file) { ctx.r3.u64 = kStatusInvalidHandle; return; }
     const uint32_t ioStatus = ctx.r4.u32, info = ctx.r5.u32, length = ctx.r6.u32, infoClass = ctx.r7.u32;
     WIN32_FILE_ATTRIBUTE_DATA data{};
-    GetFileAttributesExW(file->path.c_str(), GetFileExInfoStandard, &data);
+    attributeData(Location{file->path, file->disc, file->discPath}, data);
     const uint64_t size = uint64_t(data.nFileSizeHigh) << 32 | data.nFileSizeLow;
     uint32_t written = 0;
     switch (infoClass) {
@@ -316,6 +418,11 @@ TZ_IMPORT(NtSetInformationFile) {
     auto file = lookupHandleAs<FileObject>(ctx.r3.u32);
     if (!file) { ctx.r3.u64 = kStatusInvalidHandle; return; }
     const uint32_t ioStatus = ctx.r4.u32, info = ctx.r5.u32, infoClass = ctx.r7.u32;
+    if (file->disc && infoClass != 14 && infoClass != 4) {  // a disc changes only the file pointer
+        completeIo(ioStatus, kStatusAccessDenied, 0);
+        ctx.r3.u64 = kStatusAccessDenied;
+        return;
+    }
     switch (infoClass) {
     case 14:  // FilePositionInformation
         file->position = load64(info);
@@ -346,11 +453,10 @@ TZ_IMPORT(NtSetInformationFile) {
 
 TZ_IMPORT(NtQueryFullAttributesFile) {
     // (attributes*, FILE_NETWORK_OPEN_INFORMATION*)
-    std::filesystem::path path;
+    Location location;
     std::string guestName;
     WIN32_FILE_ATTRIBUTE_DATA data{};
-    if (!resolveAttributes(ctx.r3.u32, path, guestName) ||
-        !GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
+    if (!resolveAttributes(ctx.r3.u32, location, guestName) || !attributeData(location, data)) {
         TZ_TRACE("file", "[file] attributes %s -> not found", guestName.c_str());
         ctx.r3.u64 = kStatusObjectNameNotFound;
         return;

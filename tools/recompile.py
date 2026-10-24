@@ -20,8 +20,14 @@ import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-GENERATOR = ROOT.parent / "_Tools/XenonRecomp/build/XenonRecomp/Release/XenonRecomp.exe"
-TABLES = ROOT.parent / "_Tools/XenonRecomp/XenonUtils/xbox"
+# A release kit carries the generator and export tables in tools/; a source checkout
+# uses the shared ../_Tools/XenonRecomp (tools/setup_generator.py, tools/build.ps1).
+GENERATOR = next((path for path in (ROOT / "tools/XenonRecomp.exe",
+                                    ROOT.parent / "_Tools/XenonRecomp/build-tenchu/XenonRecomp/XenonRecomp.exe",
+                                    ROOT.parent / "_Tools/XenonRecomp/build/XenonRecomp/Release/XenonRecomp.exe")
+                  if path.exists()), ROOT / "tools/XenonRecomp.exe")
+TABLES = next((path for path in (ROOT / "tools/xbox", ROOT.parent / "_Tools/XenonRecomp/XenonUtils/xbox")
+               if path.exists()), ROOT / "tools/xbox")
 CONFIG = ROOT / "config/tenchuz.toml"
 MANUAL_TABLES = ROOT / "config/tenchuz_switch_tables_manual.toml"
 OVERRIDES = ROOT / "config/overrides.txt"

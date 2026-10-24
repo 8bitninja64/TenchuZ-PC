@@ -10,7 +10,9 @@ endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-add_compile_options(/MP)
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    add_compile_options(/MP)
+endif()
 
 set(TENCHU_GENERATED_DIR "${CMAKE_SOURCE_DIR}/build/generated" CACHE PATH "XenonRecomp output (tools/recompile.py)")
 set(TENCHU_SIMDE_DIR "${CMAKE_SOURCE_DIR}/../_Tools/XenonRecomp/thirdparty/simde" CACHE PATH "simde headers")
@@ -63,6 +65,7 @@ add_library(TenchuRuntime OBJECT
     runtime/kernel/mmio_fault.cpp
     runtime/kernel/host_registry.cpp
     runtime/kernel/module_loader.cpp
+    runtime/kernel/xdvdfs.cpp
     runtime/gpu/null_gpu.cpp
     runtime/gpu/d3d11/renderer.cpp
     runtime/gpu/d3d11/xenos_backend.cpp
@@ -109,8 +112,8 @@ target_include_directories(TenchuRuntime PUBLIC "${TENCHU_SDL}/include")
 target_link_libraries(TenchuRuntime PUBLIC "${TENCHU_SDL}/lib/x64/SDL3.lib")
 list(APPEND TENCHU_FFMPEG_DLLS "${TENCHU_SDL}/lib/x64/SDL3.dll" "${CMAKE_SOURCE_DIR}/assets/gamecontrollerdb.txt")
 
-add_executable(TenchuZ app/main.cpp)
-target_link_libraries(TenchuZ PRIVATE TenchuRuntime)
+add_executable(TenchuZ app/main.cpp app/boot.cpp)
+target_link_libraries(TenchuZ PRIVATE TenchuRuntime comdlg32)
 if(TARGET tenchu_game)
     add_dependencies(TenchuZ tenchu_game)
 endif()

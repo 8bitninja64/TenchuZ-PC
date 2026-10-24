@@ -179,8 +179,8 @@ void startHostProfiler(const char* name);
 std::shared_ptr<GuestThread> threadByKthread(uint32_t kthread);
 
 // Kernel bring-up: loads the executable, data imports and the function table.
-void initializeKernel(const std::filesystem::path& gameDirectory);
-const std::filesystem::path& gameDirectory();
+// `xex` is the disc's default.xex; the game module must be loaded (module_loader.h).
+void initializeKernel(const std::vector<uint8_t>& xex);
 const std::filesystem::path& userDirectory();
 uint32_t xexHeaderAddress();
 uint32_t xexEntryPoint();

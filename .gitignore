@@ -9,3 +9,4 @@ basefile.exe
 /build_*/
 __pycache__/
 *.pyc
+/dist/

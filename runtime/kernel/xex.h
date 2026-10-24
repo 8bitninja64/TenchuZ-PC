@@ -17,5 +17,6 @@ struct XexImage {
 };
 
 XexImage loadXex(const std::filesystem::path& path);
+XexImage loadXex(const std::vector<uint8_t>& data);
 
 }  // namespace tz

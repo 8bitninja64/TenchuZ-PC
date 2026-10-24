@@ -25,7 +25,8 @@ std::string hex(uint64_t value) {
 
 const GameModule* gameModule() { return boundModule; }
 
-const GameModule* loadGameModule(const std::filesystem::path& path, std::string& error) {
+const GameModule* loadGameModule(const std::filesystem::path& path, std::string& error,
+                                 const std::string& xexSha256) {
     if (boundModule) return boundModule;
     HMODULE library = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!library) {
@@ -46,6 +47,8 @@ const GameModule* loadGameModule(const std::filesystem::path& path, std::string&
         module->codeBase != PPC_CODE_BASE || module->codeSize != PPC_CODE_SIZE)
         return fail("image layout " + hex(module->imageBase) + "+" + hex(module->imageSize) + " / code " +
                     hex(module->codeBase) + "+" + hex(module->codeSize) + " differs from the runtime's");
+    if (!xexSha256.empty() && xexSha256 != module->xexSha256)
+        return fail("translated from another default.xex (" + std::string(module->xexSha256) + ")");
 
     // Bind every host function the module calls before any guest code runs.
     const auto& registered = host::registeredFunctions();

@@ -16,7 +16,6 @@
 namespace tz {
 namespace {
 
-std::filesystem::path gameDir;
 std::filesystem::path userDir;
 uint32_t xexHeader = 0;
 uint32_t entryPoint = 0;
@@ -593,7 +592,6 @@ uint32_t delayExecution(bool alertable, int64_t interval) {
 
 // ---- Bring-up --------------------------------------------------------------------
 
-const std::filesystem::path& gameDirectory() { return gameDir; }
 const std::filesystem::path& userDirectory() { return userDir; }
 uint32_t xexHeaderAddress() { return xexHeader; }
 uint32_t xexEntryPoint() { return entryPoint; }
@@ -602,14 +600,15 @@ uint32_t staticTlsSize() { return tlsSize; }
 void installDataImports(const XexImage& xex);
 void startTimeStampBundle(uint32_t bundle);
 
-void initializeKernel(const std::filesystem::path& directory) {
-    gameDir = std::filesystem::weakly_canonical(directory);
+void initializeKernel(const std::vector<uint8_t>& xexData) {
     wchar_t* appData = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) {
         userDir = std::filesystem::path(appData) / L"TenchuZRecomp";
         CoTaskMemFree(appData);
     } else {
-        userDir = gameDir.parent_path() / "user";
+        wchar_t executable[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, executable, MAX_PATH);
+        userDir = std::filesystem::path(executable).parent_path() / "user";
     }
     std::filesystem::create_directories(userDir);
 
@@ -617,7 +616,7 @@ void initializeKernel(const std::filesystem::path& directory) {
     installMmioFaultHandler();
     const GameModule* module = gameModule();
     if (!module) throw std::runtime_error("No game module is loaded");
-    const XexImage xex = loadXex(gameDir / "default.xex");
+    const XexImage xex = loadXex(xexData);
     if (xex.loadAddress != PPC_IMAGE_BASE || xex.image.size() > PPC_IMAGE_SIZE || xex.entryPoint != module->entryPoint)
         throw std::runtime_error("default.xex does not match the translated executable");
     entryPoint = xex.entryPoint;

@@ -54,13 +54,19 @@ def main() -> int:
     parser.add_argument("iso", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--list", action="store_true", help="List files without extracting")
+    parser.add_argument("--only", help="Extract just this file (e.g. default.xex) into the output directory")
     args = parser.parse_args()
     with args.iso.open("rb") as stream:
         base = find_partition(stream)
         stream.seek(base + 32 * SECTOR + len(MAGIC))
         root_sector, root_size = struct.unpack("<II", stream.read(8))
         total = 0
+        found = False
         for path, start, length in walk(stream, base, root_sector, root_size, Path()):
+            if args.only is not None:
+                if start is None or path.as_posix().lower() != args.only.replace("\\", "/").lower():
+                    continue
+                path, found = Path(path.name), True
             if start is None:
                 if not args.list:
                     (args.output / path).mkdir(parents=True, exist_ok=True)
@@ -80,6 +86,8 @@ def main() -> int:
                         raise RuntimeError(f"Truncated image while reading {path}")
                     out.write(chunk)
                     remaining -= len(chunk)
+        if args.only is not None and not found:
+            raise RuntimeError(f"{args.only} is not on the disc")
         print(f"{'Listed' if args.list else 'Extracted'} {total / (1 << 20):.1f} MiB "
               f"(partition offset {base:#x})", file=sys.stderr)
     return 0

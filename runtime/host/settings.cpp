@@ -16,6 +16,10 @@ namespace {
 
 const char* kDefaultFile = R"(; Tenchu Z Recomp settings. Delete this file to restore the defaults.
 
+[game]
+; Your Tenchu Z (USA, Europe) disc image, chosen on the first start.
+disc =
+
 [display]
 ; Borderless fullscreen (Alt+Enter or F11 toggles it while playing).
 fullscreen = false
@@ -82,11 +86,20 @@ std::string trim(const std::string& text) {
     return text.substr(first, text.find_last_not_of(" \t\r") - first + 1);
 }
 
+// A setting line without its comment: comments are whole lines starting with ';' or '#'
+// (values such as paths may contain ';').
+std::string content(const std::string& line) {
+    const std::string text = trim(line);
+    return !text.empty() && (text.front() == ';' || text.front() == '#') ? std::string() : text;
+}
+
 bool parseBool(const std::string& value) { return value == "true" || value == "1" || value == "yes" || value == "on"; }
 
 void apply(Settings& settings, const std::string& section, const std::string& key, const std::string& value) {
     try {
-        if (section == "display") {
+        if (section == "game") {
+            if (key == "disc") settings.disc = value;
+        } else if (section == "display") {
             if (key == "fullscreen") settings.fullscreen = parseBool(value);
             else if (key == "window_width") settings.windowWidth = (std::max)(320, std::stoi(value));
             else if (key == "window_height") settings.windowHeight = (std::max)(180, std::stoi(value));
@@ -112,7 +125,7 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
 void parse(Settings& settings, std::istream& input) {
     std::string line, section;
     while (std::getline(input, line)) {
-        line = trim(line.substr(0, line.find(';')));
+        line = content(line);
         if (line.empty()) continue;
         if (line.front() == '[' && line.back() == ']') {
             section = line.substr(1, line.size() - 2);
@@ -187,6 +200,7 @@ void resetKeyboardDefaults() {
 void saveSettings() {
     const Settings& s = instance();
     std::vector<std::tuple<std::string, std::string, std::string>> values = {
+        {"game", "disc", s.disc},
         {"display", "fullscreen", text(s.fullscreen)},
         {"display", "vsync", text(s.vsync)},
         {"display", "resolution_scale", std::to_string(s.resolutionScale)},
@@ -208,7 +222,7 @@ void saveSettings() {
     std::string section;
     std::map<std::string, size_t> sectionEnd;  // line after a section's last setting
     for (size_t i = 0; i < lines.size(); ++i) {
-        const std::string line = trim(lines[i].substr(0, lines[i].find(';')));
+        const std::string line = content(lines[i]);
         if (line.size() > 1 && line.front() == '[' && line.back() == ']') {
             section = line.substr(1, line.size() - 2);
             sectionEnd[section] = i + 1;

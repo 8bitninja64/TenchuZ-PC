@@ -17,6 +17,8 @@ struct Settings {
     int anisotropy = 16;          // texture filtering, 1 = off
     int frameRateLimit = 60;      // 30 = original pacing, 0 = unlimited
     bool showFps = false;         // frame rate counter in the top left corner
+    // Game
+    std::string disc;             // the disc image chosen on the first start (UTF-8)
     // Audio
     int volume = 100;             // master volume, percent
     bool mute = false;

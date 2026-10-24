@@ -8,9 +8,11 @@
 
 namespace tz {
 
-// Loads, validates and binds a module; on failure returns null and describes why in
-// `error`. A module that was bound stays loaded for the life of the process.
-const GameModule* loadGameModule(const std::filesystem::path& path, std::string& error);
+// Loads, validates and binds a module translated from the default.xex with SHA-256
+// `xexSha256` (any, if empty); on failure returns null and describes why in `error`. A
+// module that was bound stays loaded for the life of the process.
+const GameModule* loadGameModule(const std::filesystem::path& path, std::string& error,
+                                 const std::string& xexSha256 = {});
 // The bound module (null before loadGameModule succeeds).
 const GameModule* gameModule();
 

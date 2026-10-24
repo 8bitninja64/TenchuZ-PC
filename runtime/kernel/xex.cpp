@@ -62,7 +62,10 @@ bool XexImage::field(uint32_t key, uint32_t& value) const {
 XexImage loadXex(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) throw std::runtime_error("Cannot open " + path.string());
-    std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    return loadXex(std::vector<uint8_t>((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>()));
+}
+
+XexImage loadXex(const std::vector<uint8_t>& data) {
     if (data.size() < 24 || std::memcmp(data.data(), "XEX2", 4))
         throw std::runtime_error("default.xex is not an XEX2 executable");
 

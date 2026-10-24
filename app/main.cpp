@@ -2,6 +2,7 @@
 #include "kernel/kernel.h"
 #include "kernel/filesystem.h"
 #include "kernel/module_loader.h"
+#include "boot.h"
 #include "gpu/d3d11/renderer.h"
 #include "host/input.h"
 #include "host/settings.h"
@@ -12,28 +13,6 @@
 #include <stdexcept>
 
 namespace {
-std::filesystem::path findGameDirectory(int argc, wchar_t** argv) {
-    if (argc > 1) return argv[1];
-    wchar_t executable[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, executable, MAX_PATH);
-    // Next to the executable, then the repository layout used during development.
-    for (auto directory = std::filesystem::path(executable).parent_path(); !directory.empty();
-         directory = directory.parent_path()) {
-        if (std::filesystem::exists(directory / "game" / "default.xex")) return directory / "game";
-        if (directory == directory.parent_path()) break;
-    }
-    return L"game";
-}
-
-// The game module: TENCHU_MODULE, or tenchu_game.dll next to the executable.
-std::filesystem::path findGameModule() {
-    wchar_t value[MAX_PATH]{};
-    if (GetEnvironmentVariableW(L"TENCHU_MODULE", value, MAX_PATH)) return value;
-    wchar_t executable[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, executable, MAX_PATH);
-    return std::filesystem::path(executable).parent_path() / L"tenchu_game.dll";
-}
-
 // Borderless fullscreen on the window's monitor, or back to the saved window.
 void setFullscreen(HWND window, bool fullscreen) {
     static WINDOWPLACEMENT placement{sizeof(placement)};
@@ -150,13 +129,15 @@ int wmain(int argc, wchar_t** argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     setvbuf(stdout, nullptr, _IONBF, 0);
     try {
-        const auto gameDirectory = findGameDirectory(argc, argv);
-        std::string moduleError;
-        if (!tz::loadGameModule(findGameModule(), moduleError)) throw std::runtime_error(moduleError);
+        // The disc and a game module translated from it (built on the first start).
+        tz::GameSource game;
+        if (!tz::prepareGame(argc, argv, game)) return 1;
         if (!GetEnvironmentVariableW(L"TENCHU_HEADLESS", nullptr, 0)) startWindowThread();
-        tz::initializeKernel(gameDirectory);
-        tz::mountDevice("game", tz::gameDirectory());
-        tz::mountDevice("d", tz::gameDirectory());
+        tz::initializeKernel(game.xex);
+        for (const char* device : {"game", "d"}) {
+            if (game.disc) tz::mountDevice(device, game.disc);
+            else tz::mountDevice(device, game.folder);
+        }
         std::filesystem::create_directories(tz::userDirectory() / "cache");
         tz::mountDevice("cache", tz::userDirectory() / "cache");
         tz::runTitle();
