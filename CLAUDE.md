@@ -39,7 +39,8 @@ Original code following Darkness's architecture (not copied files).
   imports_io.cpp), XAM (profile settings persist under %APPDATA%\TenchuZRecomp),
   offline NetDll.
 - `gpu/null_gpu.cpp`: Xenos register file behind PPCMmioRead32/Write32 (template
-  hook), command processor thread for ring + indirect buffers, vblank at 60 Hz.
+  hook), command processor thread for ring + indirect buffers, vblank (60 Hz in 30 fps
+  mode, 1 kHz otherwise).
 - `audio/audio_driver.cpp`: XAudio render client -> XAudio2 (6 planar BE float channels, 256
   samples, 48 kHz). `audio/xma.cpp`: XMA decoder contexts (APU registers 0x7FEA0000).
 - `kernel/control.cpp`: TENCHU_CONTROL live command file for automated testing.
@@ -85,7 +86,7 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   anisotropic filtering, host-generated mips, discrete GPU preferred.
 - Frame rate: the title presents with interval 2 (device+13248) and times its logic with
   QueryPerformanceCounter (sub_824104E8), so unlocking is safe. frame_rate_limit != 30
-  forces interval 1, runs the emulated vblank at 240 Hz, and paces with Present's sync
+  forces interval 1, runs the emulated vblank at 1 kHz, and paces with Present's sync
   interval (when refresh % limit == 0) or a timer in the CP (limitFrameRate).
 - Performance: two threads bound the frame rate, the command processor and the title's
   frame thread (the one calling VdSwap). TENCHU_TRACE=hostprof + the control file's
@@ -102,9 +103,22 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
 - Vertex data must never be reused from an earlier copy without that check: the title
   rewrites dynamic buffers (same base/size) between draws (one-frame black tiles and
   stretched polygons). Ring copies take only the draw's index range (vertexStreams).
-- Generator: CR/CTR/XER/reservation are function locals (config/tenchuz.toml); register
-  and non-volatile locals stay off (split functions pass registers through jumps).
-  /fp:precise for the generated code measured no gain over /fp:strict: keep strict.
+- Generator: CR/CTR/XER/reservation are function locals (config/tenchuz.toml). Register
+  and non-volatile locals stay off: ~90 analyzer-split functions read r11/r12 (and
+  non-volatiles) live from the code that jumps into them, and the game hangs on save
+  load with them on. /fp:precise measured no gain over /fp:strict: keep strict.
+- Guest loads/stores (runtime/guest/ppc_context.template.h) are plain host accesses with
+  no checks. MMIO (0x7FC00000-0x7FCFFFFF, 0x7FE00000-0x7FEFFFFF) stays unmapped: plain
+  accesses fault into kernel/mmio_fault.cpp, which decodes the x86 mov/movzx and calls
+  PPCMmioRead32/Write32 (~5 per frame). Never commit memory in those ranges. Null
+  (first 64 KiB) is committed zero memory. eieio-marked PPC_MM_* keep explicit routing.
+- Emulated vblank is 1 kHz for unlocked rates (60 Hz in 30 fps mode): Present parks the
+  GPU until the next vblank, so a coarse tick quantizes frame times.
+- Command processor hot paths: type-0 register runs without side-effect registers are
+  bulk-copied (writeRegisterRun); shader constants upload straight from the register
+  file when constantsWritten is set; the backend's BoundState skips unchanged D3D calls
+  (anything else that binds state must call forgetBoundState, e.g. resolve, swap, the
+  texture cache's mip generation via pipelineChanges). TENCHU_TRACE=cpstats counts packets.
 - Native replacements of hot guest functions live in runtime/kernel/native_overrides.cpp
   (TENCHU_TRACE=verifynative runs the original too and logs differences).
 - Never block the title's threads on host devices: gamepad.cpp publishes snapshots; SDL
