@@ -1,7 +1,7 @@
 #pragma once
 // Live control of a running game for automated testing.
 // TENCHU_CONTROL=<file>: lines appended to the file are executed in order:
-//   press <buttons> [ms]   tap buttons ('+'-separated names, default 150 ms)
+//   press <buttons> [ms]   tap buttons ('+'-separated names incl. lt/rt, default 150 ms)
 //   hold <buttons>         keep buttons down until release
 //   release                let go of everything (buttons and sticks)
 //   stick <lx> <ly> [<rx> <ry>]   stick positions in -1..1
@@ -20,6 +20,7 @@ namespace tz::control {
 
 struct PadState {
     uint16_t buttons = 0;
+    uint8_t leftTrigger = 0, rightTrigger = 0;
     int16_t thumbs[4] = {};  // LX, LY, RX, RY
 };
 

@@ -74,3 +74,86 @@ after_instruction = true
 name = "FrameTicks30MidAsmHook"
 address = 0x82298924
 registers = ["f0"]
+
+# Frame-time truncation sites found by the audit (int(ms * 0.03 + 0.5) is 0 at 120 fps).
+# object state countdown 0x82B63D40 (sub_822C2390)
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x822C2488
+registers = ["f0"]
+
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x822C2728
+registers = ["f0"]
+
+# object type 0x2000B state waits (sub_822C27D8)
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x822C2884
+registers = ["f0"]
+
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x822C29E0
+registers = ["f0"]
+
+# object state wait (sub_822C5C40)
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x822C5F2C
+registers = ["f0"]
+
+# effect particle integrator steps (sub_82380520, before floor())
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x82380584
+registers = ["f1"]
+
+# effect particle steps (sub_8237B248, before floor())
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x8237B360
+registers = ["f1"]
+
+# HUD panel slide countdown (sub_8238BA98)
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x8238BB3C
+registers = ["f13"]
+
+# HUD notification popup lifetime (sub_8238BD18)
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x8238BD70
+registers = ["f0"]
+
+# HUD flash timer (sub_8238BF10)
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x8238BF3C
+registers = ["f0"]
+
+# HUD indicator (sub_822BE208): counters in ticks; latched fade rates and the hold below
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x822BE348
+registers = ["f0"]
+
+[[midasm_hook]]
+name = "IndicatorFadeInRateMidAsmHook"
+address = 0x822BE364
+registers = ["r11"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "IndicatorFadeOutRateMidAsmHook"
+address = 0x822BE3B4
+registers = ["r9"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "IndicatorHoldMidAsmHook"
+address = 0x822BE400
+registers = ["r11", "r29"]
+after_instruction = true

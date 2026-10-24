@@ -5,6 +5,7 @@
 #include "kernel/memory.h"
 #include "ppc_recomp_shared.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -117,4 +118,31 @@ void FrameTicks30MidAsmHook(PPCRegister& f0) {
 void QuantizedFrameStepMidAsmHook(PPCRegister& f0) {
     static const bool off = traceEnabled("noquantstep");
     if (!off) f0.f64 = g_quantizedStep.load(std::memory_order_relaxed);
+}
+
+// HUD indicator (sub_822BE208). Its fade rates are computed once from the tick count
+// (64 or 32 per tick) and then applied every frame; with ticks they would latch 0 on
+// most frames above 30 fps. These give the per-frame rate for the real frame time
+// instead (16 and 8 at 120 fps; 64 and 32 at 30 fps as before).
+namespace {
+float frameMilliseconds() {
+    const uint32_t bits = load32(0x82B57824);
+    float ms;
+    std::memcpy(&ms, &bits, 4);
+    return ms;
+}
+}  // namespace
+
+void IndicatorFadeInRateMidAsmHook(PPCRegister& r11) {
+    r11.u64 = uint64_t((std::max)(1, int(64.0f * frameMilliseconds() * 0.03f + 0.5f)));
+}
+
+void IndicatorFadeOutRateMidAsmHook(PPCRegister& r9) {
+    r9.u64 = uint64_t((std::max)(1, int(32.0f * frameMilliseconds() * 0.03f + 0.5f)));
+}
+
+// The display timer (+288) is pinned at 150 while the indicator fades out; a frame that
+// adds no tick must not drop back to the "not expired" branch (which restores alpha).
+void IndicatorHoldMidAsmHook(PPCRegister& r11, PPCRegister& r29) {
+    if (r29.s32 == 0 && r11.s32 == 150) r11.s64 = 151;
 }

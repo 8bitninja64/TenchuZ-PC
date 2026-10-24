@@ -506,6 +506,8 @@ PPC_FUNC(__imp__XamInputGetState) {
     if (ctx.r3.u32 == controlUser && control::active()) {
         const auto pad = control::pad();
         state.Gamepad.wButtons = pad.buttons;
+        state.Gamepad.bLeftTrigger = pad.leftTrigger;
+        state.Gamepad.bRightTrigger = pad.rightTrigger;
         state.Gamepad.sThumbLX = pad.thumbs[0];
         state.Gamepad.sThumbLY = pad.thumbs[1];
         state.Gamepad.sThumbRX = pad.thumbs[2];

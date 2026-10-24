@@ -26,7 +26,7 @@ struct Controller {
     std::deque<std::string> queue;  // commands waiting for a delay to pass
     Clock::time_point resumeAt{};
     Clock::time_point releaseAt{};  // end of a tap
-    uint16_t held = 0, tapped = 0;
+    uint32_t held = 0, tapped = 0;  // buttons; bit 16 LT, bit 17 RT (fully pressed)
     int16_t thumbs[4] = {};
     std::string screenshot;
     int burstRemaining = 0, burstIndex = 0;  // consecutive frames still to save
@@ -44,12 +44,12 @@ Controller& controller() {
     return *instance;
 }
 
-uint16_t parseButtons(const std::string& names) {
-    static const std::pair<const char*, uint16_t> buttons[] = {
+uint32_t parseButtons(const std::string& names) {
+    static const std::pair<const char*, uint32_t> buttons[] = {
         {"up", 0x0001}, {"down", 0x0002}, {"left", 0x0004}, {"right", 0x0008}, {"start", 0x0010},
         {"back", 0x0020}, {"ls", 0x0040}, {"rs", 0x0080}, {"lb", 0x0100}, {"rb", 0x0200},
-        {"a", 0x1000}, {"b", 0x2000}, {"x", 0x4000}, {"y", 0x8000}};
-    uint16_t mask = 0;
+        {"a", 0x1000}, {"b", 0x2000}, {"x", 0x4000}, {"y", 0x8000}, {"lt", 0x10000}, {"rt", 0x20000}};
+    uint32_t mask = 0;
     std::stringstream stream(names);
     std::string name;
     while (std::getline(stream, name, '+'))
@@ -176,7 +176,10 @@ PadState pad() {
     auto& c = controller();
     std::lock_guard lock(c.mutex);
     PadState state;
-    state.buttons = c.held | c.tapped;
+    const uint32_t pressed = c.held | c.tapped;
+    state.buttons = uint16_t(pressed);
+    state.leftTrigger = (pressed & 0x10000) ? 255 : 0;
+    state.rightTrigger = (pressed & 0x20000) ? 255 : 0;
     for (int i = 0; i < 4; ++i) state.thumbs[i] = c.thumbs[i];
     return state;
 }
