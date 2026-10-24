@@ -10,12 +10,12 @@ param(
   [switch]$PauseOnError
 )
 $ErrorActionPreference = "Stop"
+# Paths are literal throughout: [ and ] in a folder name are wildcards to PowerShell.
 $root = Split-Path -Parent $PSScriptRoot
-Set-Location $root
 if (-not [IO.Path]::IsPathRooted($Xex)) { $Xex = Join-Path $root $Xex }
 if (-not [IO.Path]::IsPathRooted($Out)) { $Out = Join-Path $root $Out }
 if (-not [IO.Path]::IsPathRooted($Work)) { $Work = Join-Path $root $Work }
-New-Item -ItemType Directory -Force $Work | Out-Null
+[IO.Directory]::CreateDirectory($Work) | Out-Null
 $log = Join-Path $Work "build.log"
 # Native programs' output reaches the transcript (build.log) only through Write-Host; their
 # stderr must not become terminating errors.
@@ -24,27 +24,27 @@ function Invoke-Logged([scriptblock]$command) {
   $ErrorActionPreference = "Continue"
   try { & $command 2>&1 | ForEach-Object { Write-Host "$_" } } finally { $ErrorActionPreference = $previous }
 }
-Start-Transcript -Path $log -Force | Out-Null
+Start-Transcript -LiteralPath $log -Force | Out-Null
 $failed = $false
 $started = Get-Date
 try {
   Write-Host "Tenchu Z: compiling the game code from your disc. This is done once."
   Write-Host ""
-  if (-not (Get-Command clang-cl -ErrorAction SilentlyContinue) -or -not (Get-Command lld-link -ErrorAction SilentlyContinue)) {
-    . "$PSScriptRoot\vsenv.ps1"
-  }
-  . "$PSScriptRoot\python.ps1"
+  Set-Location -LiteralPath $root
+  # Visual Studio's own Clang first: another LLVM on PATH may not match its C++ library.
+  . (Join-Path $PSScriptRoot "vsenv.ps1")
+  . (Join-Path $PSScriptRoot "python.ps1")
 
   # Every unit is rewritten; units of another version must not be compiled in.
   $gen = Join-Path $Work "gen"
-  if (Test-Path $gen) { Remove-Item -Recurse -Force $gen }
+  if (Test-Path -LiteralPath $gen) { Remove-Item -LiteralPath $gen -Recurse -Force }
   Write-Host "# Translating the game code"
   Invoke-Logged { Invoke-Python tools/recompile.py --xex $Xex --output $gen --strict }
   if ($LASTEXITCODE) { throw "Translating the game code failed." }
 
   # simde: the release's third_party copy, or the generator's in a source checkout.
   $simde = @("$root\third_party\simde", "$root\..\_Tools\XenonRecomp\thirdparty\simde") |
-    Where-Object { Test-Path "$_\x86\avx.h" } | Select-Object -First 1
+    Where-Object { Test-Path -LiteralPath (Join-Path $_ "x86\avx.h") } | Select-Object -First 1
   if (-not $simde) { throw "simde headers are missing (third_party\simde)." }
   $obj = Join-Path $Work "obj"
   Invoke-Logged { Invoke-Python tools/compile_module.py --gen $gen --out $Out --obj $obj `
@@ -52,7 +52,7 @@ try {
   if ($LASTEXITCODE) { throw "Compiling the game code failed." }
 
   # The sources and objects are only needed again after an update.
-  Remove-Item -Recurse -Force $gen, (Join-Path $Work "obj") -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $gen, $obj -Recurse -Force -ErrorAction SilentlyContinue
   Write-Host ("# Done in {0:N0} s: {1}" -f ((Get-Date) - $started).TotalSeconds, $Out)
 } catch {
   Write-Host ""

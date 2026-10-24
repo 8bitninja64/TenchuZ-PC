@@ -26,8 +26,9 @@ public:
 
     // Paths relative to the disc root, '/' or '\' separated, any case; "" is the root.
     const Entry* find(const std::string& path) const;
-    // Reads up to `length` bytes of a file at `position`; returns the bytes read.
-    uint32_t read(const Entry& entry, uint64_t position, void* buffer, uint32_t length) const;
+    // Reads up to `length` bytes of a file at `position`; returns the bytes read, or -1 when
+    // the image cannot be read.
+    int64_t read(const Entry& entry, uint64_t position, void* buffer, uint32_t length) const;
     bool readFile(const std::string& path, std::vector<uint8_t>& data) const;
     const std::filesystem::path& path() const { return path_; }
     FILETIME fileTime() const { return time_; }
@@ -40,6 +41,7 @@ private:
     std::filesystem::path path_;
     HANDLE handle_ = INVALID_HANDLE_VALUE;
     FILETIME time_{};
+    uint64_t size_ = 0;
     std::map<std::string, Entry> entries_;  // lower-case '/' paths
 };
 

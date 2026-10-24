@@ -51,11 +51,6 @@ std::filesystem::path userDirectory() {
     return directory;
 }
 
-std::string utf8(const std::filesystem::path& path) {
-    const std::u8string text = path.u8string();
-    return std::string(text.begin(), text.end());
-}
-
 std::wstring widen(const std::string& text) {
     std::wstring result(MultiByteToWideChar(CP_UTF8, 0, text.c_str(), int(text.size()), nullptr, 0), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, text.c_str(), int(text.size()), result.data(), int(result.size()));
@@ -180,8 +175,14 @@ bool chooseGame(int argc, wchar_t** argv, GameSource& source) {
         return false;
     }
     auto& settings = host::editableSettings();
-    const std::filesystem::path remembered = std::filesystem::u8path(settings.disc);
-    if (!remembered.empty() && std::filesystem::exists(remembered) && openGame(remembered, source, problem)) return true;
+    std::filesystem::path remembered;
+    try {
+        remembered = std::filesystem::u8path(settings.disc);
+    } catch (const std::exception&) {
+    }
+    std::error_code error;
+    if (!remembered.empty() && std::filesystem::exists(remembered, error) && openGame(remembered, source, problem))
+        return true;
     if (const auto folder = findGameFolder(); !folder.empty() && openGame(folder, source, problem)) return true;
     std::filesystem::path start = remembered;
     for (;;) {
@@ -214,22 +215,34 @@ bool tryModule(const std::filesystem::path& path, const std::string& xexHash, bo
 bool buildModule(const std::filesystem::path& xexPath, const std::filesystem::path& out,
                  const std::filesystem::path& work) {
     const auto script = executableDirectory() / "tools" / "make_module.ps1";
-    std::wstring command = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" + script.wstring() +
+    wchar_t system[MAX_PATH]{};
+    GetSystemDirectoryW(system, MAX_PATH);
+    const std::wstring powershell = std::wstring(system) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
+    std::wstring command = L"\"" + powershell + L"\" -NoProfile -ExecutionPolicy Bypass -File \"" + script.wstring() +
                            L"\" -Xex \"" + xexPath.wstring() + L"\" -Out \"" + out.wstring() + L"\" -Work \"" +
                            work.wstring() + L"\" -PauseOnError";
     STARTUPINFOW startup{sizeof(startup)};
     PROCESS_INFORMATION process{};
     const std::wstring directory = executableDirectory().wstring();
-    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr,
-                        directory.c_str(), &startup, &process)) {
+    // The build ends with the game: closing or killing it also stops the compile.
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (job) SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+    if (!CreateProcessW(powershell.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE | CREATE_SUSPENDED,
+                        nullptr, directory.c_str(), &startup, &process)) {
+        if (job) CloseHandle(job);
         showError(L"Cannot start PowerShell to compile the game code (error " + std::to_wstring(GetLastError()) + L").");
         return false;
     }
+    if (job) AssignProcessToJobObject(job, process.hProcess);
+    ResumeThread(process.hThread);
     WaitForSingleObject(process.hProcess, INFINITE);
     DWORD exitCode = 1;
     GetExitCodeProcess(process.hProcess, &exitCode);
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
+    if (job) CloseHandle(job);
     if (exitCode != 0) {
         showError(L"Compiling the game code failed. The log is in\n" + (work / "build.log").wstring());
         return false;
@@ -262,7 +275,8 @@ bool loadModule(const GameSource& source) {
 
     // One build at a time.
     const auto work = user / L"module_build";
-    std::filesystem::create_directories(work);
+    std::error_code error;
+    std::filesystem::create_directories(work, error);
     HANDLE lock = CreateFileW((work / L"lock").c_str(), GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
     if (lock == INVALID_HANDLE_VALUE) {
@@ -289,7 +303,6 @@ bool loadModule(const GameSource& source) {
             return false;
         }
     }
-    std::error_code error;
     std::filesystem::remove(stampFile, error);
     if (!buildModule(xexPath, built, work)) return false;
     if (!tryModule(built, xexHash, true)) return false;

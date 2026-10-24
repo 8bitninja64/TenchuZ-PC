@@ -30,12 +30,12 @@ const GameModule* loadGameModule(const std::filesystem::path& path, std::string&
     if (boundModule) return boundModule;
     HMODULE library = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!library) {
-        error = "cannot load " + path.string() + " (error " + std::to_string(GetLastError()) + ")";
+        error = "cannot load " + utf8(path) + " (error " + std::to_string(GetLastError()) + ")";
         return nullptr;
     }
     auto fail = [&](std::string why) -> const GameModule* {
         FreeLibrary(library);
-        error = path.string() + ": " + why;
+        error = utf8(path) + ": " + why;
         return nullptr;
     };
     auto init = reinterpret_cast<ModuleInitFn>(GetProcAddress(library, kModuleInitSymbol));
@@ -73,7 +73,7 @@ const GameModule* loadGameModule(const std::filesystem::path& path, std::string&
             logf("[module] %s is registered but the module does not call it (config/overrides.txt?)", name.c_str());
 
     boundModule = module;
-    logf("[module] %s: %u functions, %u host functions, built from default.xex %.16s...", path.string().c_str(),
+    logf("[module] %s: %u functions, %u host functions, built from default.xex %.16s...", utf8(path).c_str(),
          module->functionCount, module->hostCount, module->xexSha256);
     return module;
 }

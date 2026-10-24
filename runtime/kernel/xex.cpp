@@ -1,4 +1,5 @@
 #include "xex.h"
+#include "kernel.h"
 #include <windows.h>
 #include <bcrypt.h>
 #include <cstring>
@@ -61,7 +62,7 @@ bool XexImage::field(uint32_t key, uint32_t& value) const {
 
 XexImage loadXex(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
-    if (!file) throw std::runtime_error("Cannot open " + path.string());
+    if (!file) throw std::runtime_error("Cannot open " + utf8(path));
     return loadXex(std::vector<uint8_t>((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>()));
 }
 

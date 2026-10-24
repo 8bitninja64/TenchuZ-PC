@@ -320,7 +320,10 @@ TZ_IMPORT(NtReadFile) {
     BOOL ok = TRUE;
     memory->prepareHostWrite(buffer, length);  // ReadFile cannot write write-watched pages
     if (file->disc) {
-        read = file->disc->read(file->entry, file->position, memory->host(buffer), length);
+        const int64_t count = file->disc->read(file->entry, file->position, memory->host(buffer), length);
+        ok = count >= 0;
+        read = ok ? DWORD(count) : 0;
+        if (!ok) SetLastError(ERROR_READ_FAULT);
     } else {
         OVERLAPPED overlapped{};
         overlapped.Offset = uint32_t(file->position);

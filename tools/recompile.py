@@ -214,7 +214,7 @@ def main() -> int:
     sources = [f"ppc_recomp.{index}.cpp" for index in range(count)] + ["ppc_func_mapping.cpp", "ppc_module.cpp"]
     (out / "sources.cmake").write_text("set(TENCHU_PPC_SOURCES\n" + "".join(
         f'  "${{TENCHU_GENERATED_DIR}}/{name}"\n' for name in sources) + ")\n")
-    (out / "sources.txt").write_text("".join(f"{name}\n" for name in sources))
+    (out / "sources.txt").write_text("".join(f"{name}\n" for name in sources), encoding="utf-8")
     print(json.dumps(counts, indent=2))
     print(f"Generation log: {log_path}")
     return 0

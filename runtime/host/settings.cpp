@@ -169,7 +169,10 @@ std::string text(bool value) { return value ? "true" : "false"; }
 
 const Settings& settings() { return instance(); }
 Settings& editableSettings() { return instance(); }
-std::string settingsFilePath() { return settingsPath().string(); }
+std::string settingsFilePath() {
+    const std::u8string text = settingsPath().u8string();
+    return std::string(text.begin(), text.end());
+}
 
 namespace {
 std::atomic<int64_t> frontEndFrameAt{INT64_MIN / 2};  // steady clock, ms

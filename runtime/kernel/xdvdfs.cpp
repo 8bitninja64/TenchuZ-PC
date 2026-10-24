@@ -32,6 +32,9 @@ std::shared_ptr<DiscImage> DiscImage::open(const std::filesystem::path& path, st
         return nullptr;
     }
     GetFileTime(disc->handle_, nullptr, nullptr, &disc->time_);
+    LARGE_INTEGER size{};
+    GetFileSizeEx(disc->handle_, &size);
+    disc->size_ = uint64_t(size.QuadPart);
     for (const uint64_t base : kPartitions) {
         char magic[sizeof(kMagic) - 1];
         uint32_t root[2];
@@ -40,6 +43,12 @@ std::shared_ptr<DiscImage> DiscImage::open(const std::filesystem::path& path, st
         if (!disc->readAt(base + 32 * kSector + sizeof(magic), root, sizeof(root))) break;
         disc->entries_[""] = Entry{0, 0, true};
         if (!disc->index(base, root[0], root[1], "", 0)) break;
+        // A copy that stopped early (or part of a split dump) would fail mid-game instead.
+        for (const auto& [name, entry] : disc->entries_)
+            if (!entry.directory && entry.offset + entry.size > disc->size_) {
+                error = "The disc image is incomplete (" + name + " lies past its end)";
+                return nullptr;
+            }
         return disc;
     }
     error = "This is not an Xbox 360 disc image";
@@ -100,7 +109,7 @@ const DiscImage::Entry* DiscImage::find(const std::string& path) const {
     return found == entries_.end() ? nullptr : &found->second;
 }
 
-uint32_t DiscImage::read(const Entry& entry, uint64_t position, void* buffer, uint32_t length) const {
+int64_t DiscImage::read(const Entry& entry, uint64_t position, void* buffer, uint32_t length) const {
     if (entry.directory || position >= entry.size) return 0;
     const uint32_t count = uint32_t((std::min)(uint64_t(length), entry.size - position));
     OVERLAPPED overlapped{};
@@ -108,15 +117,15 @@ uint32_t DiscImage::read(const Entry& entry, uint64_t position, void* buffer, ui
     overlapped.Offset = uint32_t(offset);
     overlapped.OffsetHigh = uint32_t(offset >> 32);
     DWORD read = 0;
-    ReadFile(handle_, buffer, count, &read, &overlapped);  // positioned reads are thread-safe
-    return read;
+    if (!ReadFile(handle_, buffer, count, &read, &overlapped) && GetLastError() != ERROR_HANDLE_EOF) return -1;
+    return read;  // positioned reads on one handle are thread-safe
 }
 
 bool DiscImage::readFile(const std::string& path, std::vector<uint8_t>& data) const {
     const Entry* entry = find(path);
     if (!entry || entry->directory || entry->size > (1ull << 31)) return false;
     data.resize(size_t(entry->size));
-    return read(*entry, 0, data.data(), uint32_t(data.size())) == data.size();
+    return read(*entry, 0, data.data(), uint32_t(data.size())) == int64_t(data.size());
 }
 
 }  // namespace tz

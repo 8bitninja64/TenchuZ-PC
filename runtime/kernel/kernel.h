@@ -190,6 +190,11 @@ void runTitle();
 // Diagnostics.
 bool traceEnabled(const char* category);
 void logf(const char* format, ...);
+// A path as UTF-8 text (path::string() throws for characters outside the ANSI code page).
+inline std::string utf8(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
 // Categories are literals: each site looks its category up once.
 #define TZ_TRACE(category, ...) \
     do { static const bool tzTraceOn = ::tz::traceEnabled(category); if (tzTraceOn) ::tz::logf(__VA_ARGS__); } while (0)

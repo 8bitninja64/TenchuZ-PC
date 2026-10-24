@@ -383,7 +383,7 @@ void drawAbout() {
                        "native code, with its graphics on Direct3D 11.");
     ImGui::Spacing();
     ImGui::TextWrapped("Settings: %s", settingsFilePath().c_str());
-    ImGui::TextWrapped("Save: %s", savePath().string().c_str());
+    ImGui::TextWrapped("Save: %s", tz::utf8(savePath()).c_str());
 }
 
 void hint(const char* button, ImVec4 color, const char* action) {

@@ -120,7 +120,7 @@ void inputMain() {
     GetModuleFileNameW(nullptr, executable, MAX_PATH);
     const auto directory = std::filesystem::path(executable).parent_path();
     for (const char* name : {"gamecontrollerdb.txt", "gamecontrollerdb_user.txt"}) {
-        const auto path = (directory / name).string();
+        const auto path = tz::utf8(directory / name);
         if (std::filesystem::exists(path)) {
             const int added = SDL_AddGamepadMappingsFromFile(path.c_str());
             logf("[input] %s: %d controller layouts", name, added);

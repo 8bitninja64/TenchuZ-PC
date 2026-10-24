@@ -12,9 +12,9 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-Set-Location $root
-. "$PSScriptRoot\vsenv.ps1"
-. "$PSScriptRoot\python.ps1"
+Set-Location -LiteralPath $root
+. (Join-Path $PSScriptRoot "vsenv.ps1")
+. (Join-Path $PSScriptRoot "python.ps1")
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw "Git is required (https://git-scm.com)." }
 function Assert-Exit([string]$step) { if ($LASTEXITCODE) { throw "$step failed (exit code $LASTEXITCODE)." } }
 
@@ -59,7 +59,11 @@ if (-not (Test-Path "build/deps/imgui/imgui.h")) { Invoke-Python tools/fetch_img
 
 # 4. Configure and build.
 Write-Host "# Building"
-if ($Configure -or -not (Test-Path "$BuildDir/build.ninja")) {
+# Also when the generated sources appeared after the last configure (the module target).
+$ninja = Join-Path $BuildDir "build.ninja"
+$needsModule = (Test-Path build/generated/sources.cmake) -and (Test-Path $ninja) -and
+  -not (Select-String -LiteralPath $ninja -Pattern "tenchu_game" -SimpleMatch -Quiet)
+if ($Configure -or -not (Test-Path $ninja) -or $needsModule) {
   cmake -S . -B $BuildDir -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_LINKER=lld-link
   Assert-Exit "Configuring"
 }

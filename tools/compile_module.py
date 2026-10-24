@@ -45,7 +45,8 @@ def main() -> int:
     parser.add_argument("--extra", type=Path, action="append", default=[], help="additional source")
     args = parser.parse_args()
 
-    sources = [args.gen / line.strip() for line in (args.gen / "sources.txt").read_text().splitlines() if line.strip()]
+    sources = [args.gen / line.strip()
+               for line in (args.gen / "sources.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
     sources += args.extra
     # Largest first: the long units start early and the tail stays short.
     sources.sort(key=lambda path: path.stat().st_size, reverse=True)
@@ -83,7 +84,8 @@ def main() -> int:
     print("# Linking", flush=True)
     temporary = args.out.with_suffix(".tmp.dll")
     response = args.obj / "link.rsp"
-    response.write_text("\n".join(f'"{args.obj / (source.stem + ".obj")}"' for source in sources))
+    # lld-link reads response files as UTF-8 (the user folder may have any characters).
+    response.write_text("\n".join(f'"{args.obj / (source.stem + ".obj")}"' for source in sources), encoding="utf-8")
     result = subprocess.run(["lld-link", "/nologo", "/DLL", "/OPT:REF", "/OPT:NOICF", f"/OUT:{temporary}",
                              f"@{response}"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if result.returncode:

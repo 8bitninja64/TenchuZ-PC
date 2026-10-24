@@ -153,6 +153,9 @@ def main(rebuild: bool):
     for filename in ['COPYING.LGPLv2.1', 'LICENSE.md']:
         shutil.copy2(source / filename, install / filename)
     shutil.copy2(MSYS / 'mingw64/share/licenses/winpthreads/COPYING', install / 'COPYING.winpthreads')
+    # The MinGW-w64 runtime is linked into the DLLs.
+    shutil.copy2(MSYS / 'mingw64/share/licenses/crt/COPYING.MinGW-w64-runtime.txt',
+                 install / 'COPYING.MinGW-w64-runtime.txt')
     (install / 'PROVENANCE.json').write_text(json.dumps({
         'upstream_commit': COMMIT, 'archive_sha256': ARCHIVE_HASH,
         'patched_decoder_sha256': hashlib.sha256(patched).hexdigest(),
