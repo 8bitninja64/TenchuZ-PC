@@ -19,7 +19,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / "build/deps/ffmpeg"
 URL = "https://github.com/8bitninja64/TenchuZ-PC/releases/download/deps-ffmpeg-n8.1.2-1/ffmpeg-tenchu-n8.1.2-windows-x64.zip"
-SHA256 = ""  # set once the deps-ffmpeg release exists
+SHA256 = "e3aff23c3390bd2aa2b300f8b34450cc6b12cee4c3cd09c6e94b194a570f164f"
 
 
 def main() -> int:
