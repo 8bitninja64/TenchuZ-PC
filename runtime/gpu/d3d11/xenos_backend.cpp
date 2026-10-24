@@ -394,6 +394,14 @@ struct XenosBackend::Impl {
         device->CreateBuffer(&desc, nullptr, &buffer);
         return buffer;
     }
+    uint32_t bufferWrites[3] = {};  // per frame (trace 'hosttime'): shared, vertex, pixel constants
+
+    // Writes one of the three constant blocks (0 vertex, 1 pixel, 2 shared).
+    void writeConstants(int slot, const void* data, UINT size) {
+        bufferWrites[slot == 2 ? 0 : slot == 0 ? 1 : 2]++;
+        writeBuffer(slot == 0 ? vertexConstants : slot == 1 ? pixelConstants : sharedConstants, data, size);
+    }
+
     void writeBuffer(ID3D11Buffer* buffer, const void* data, size_t size) {
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (FAILED(context->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
@@ -1079,6 +1087,11 @@ struct XenosBackend::Impl {
             return GetEnvironmentVariableA("TENCHU_SKIP_VS", value, sizeof(value)) ? strtoull(value, nullptr, 16) : 0ull;
         }();
         if (skipVertexShader && vsHash == skipVertexShader) return;
+        // TENCHU_FIND_WRITER=<vs hash>: log which guest code writes that shader's vertex data.
+        static const uint64_t findWriter = [] {
+            char value[32]{};
+            return GetEnvironmentVariableA("TENCHU_FIND_WRITER", value, sizeof(value)) ? strtoull(value, nullptr, 16) : 0ull;
+        }();
         auto* vs = shader(vsHash, xenos::ShaderType::Vertex);
         auto* ps = edramMode == 4 ? shader(psHash, xenos::ShaderType::Pixel) : nullptr;
         if (!vs || (edramMode == 4 && !ps)) { ++dropped[2]; return; }  // shader
@@ -1100,6 +1113,13 @@ struct XenosBackend::Impl {
             direct = mirrorRange(reg(base) & 0x1FFFFFFC, size);
         }
         if (direct && indexSource == 0) direct = mirrorRange(request.indexBase & 0x1FFFFFFF, count * (wideIndices ? 4 : 2));
+        if (findWriter && vsHash == findWriter && !bindings.empty()) {
+            const uint32_t base = reg::SHADER_CONSTANT_FETCH_00_0 + bindings[0] * 2;
+            const uint32_t address = reg(base) & 0x1FFFFFFC, size = ((reg(base + 1) >> 2) & 0xFFFFFF) * 4;
+            static int logged = 0;
+            if (logged++ < 20) logf("[writer] draw reads %08X size %X", address, size);
+            memory->probeWrites(address >> 12, ((address + (std::max)(size, 4u) - 1) >> 12) - (address >> 12) + 1);
+        }
 
         std::vector<uint32_t>& indices = drawIndices;  // reused across draws
         D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
@@ -1271,9 +1291,9 @@ struct XenosBackend::Impl {
             forgetBoundState();
         }
         if (!bound.sharedValid || std::memcmp(&shared, &bound.shared, sizeof(shared)) != 0) {
-            writeBuffer(sharedConstants, &shared, sizeof(shared));
             bound.shared = shared;
             bound.sharedValid = true;
+            writeConstants(2, &shared, sizeof(shared));
         }
 
         const auto constantsStart = stamp();
@@ -1283,13 +1303,19 @@ struct XenosBackend::Impl {
         static const bool alwaysConstants = traceEnabled("noconstskip");
         // std::atomic<uint32_t> has uint32_t's layout; only this thread writes them.
         const auto* constantRegisters = reinterpret_cast<const uint32_t*>(registers) + reg::SHADER_CONSTANT_000_X;
+        // Titles rewrite constants with the same values between draws: a 4 KB compare
+        // with the last upload is much cheaper than mapping the buffer again.
         if (alwaysConstants || constantsWritten[0].exchange(false, std::memory_order_relaxed)) {
-            writeBuffer(vertexConstants, constantRegisters, 256 * 16);
-            if (flickerLog) std::memcpy(lastVertexConstants, constantRegisters, 256 * 16);
+            if (alwaysConstants || std::memcmp(lastVertexConstants, constantRegisters, 256 * 16) != 0) {
+                std::memcpy(lastVertexConstants, constantRegisters, 256 * 16);
+                writeConstants(0, constantRegisters, 256 * 16);
+            }
         }
         if (ps && (alwaysConstants || constantsWritten[1].exchange(false, std::memory_order_relaxed))) {
-            writeBuffer(pixelConstants, constantRegisters + 1024, 256 * 16);
-            if (flickerLog) std::memcpy(lastPixelConstants, constantRegisters + 1024, 256 * 16);
+            if (alwaysConstants || std::memcmp(lastPixelConstants, constantRegisters + 1024, 256 * 16) != 0) {
+                std::memcpy(lastPixelConstants, constantRegisters + 1024, 256 * 16);
+                writeConstants(1, constantRegisters + 1024, 256 * 16);
+            }
         }
         addTime(hostTime[4], constantsStart);
 
@@ -1764,6 +1790,16 @@ struct XenosBackend::Impl {
     // ---- Swap ---------------------------------------------------------------------
     void swap(uint32_t frontBuffer) {
         forgetBoundState();  // present and dumps use the context too
+        // TENCHU_PROBE_RANGE=<first page hex>,<last page hex>: log the writers of those pages, every frame.
+        static const std::pair<uint32_t, uint32_t> probeRange = [] {
+            char value[64]{};
+            if (!GetEnvironmentVariableA("TENCHU_PROBE_RANGE", value, sizeof(value))) return std::pair<uint32_t, uint32_t>{0, 0};
+            uint32_t first = 0, last = 0;
+            sscanf_s(value, "%x,%x", &first, &last);
+            return std::pair<uint32_t, uint32_t>{first, last};
+        }();
+        if (probeRange.second > probeRange.first)
+            memory->probeWrites(probeRange.first, probeRange.second - probeRange.first + 1);
         auto it = resolved.find(frontBuffer & 0x1FFFFFFF);
         if (it == resolved.end()) it = resolved.find(Memory::physicalAddress(frontBuffer));
         if (dumpFrame()) {
@@ -1787,8 +1823,10 @@ struct XenosBackend::Impl {
         if (traceEnabled("hosttime")) {
             auto ms = [](std::chrono::steady_clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
             logf("[hosttime] draws %.1f ms (textures %.1f, constants %.1f, Draw %.1f), resolves %.1f, present %.1f, "
-                 "uploads %.1f MB, mirrored %.1f MB", ms(hostTime[1]), ms(hostTime[0]), ms(hostTime[4]), ms(hostTime[5]),
-                 ms(hostTime[2]), ms(hostTime[3]), uploadedBytes / 1048576.0, mirroredBytes / 1048576.0);
+                 "uploads %.1f MB, mirrored %.1f MB, buffer writes %u/%u/%u, draws %llu", ms(hostTime[1]), ms(hostTime[0]),
+                 ms(hostTime[4]), ms(hostTime[5]), ms(hostTime[2]), ms(hostTime[3]), uploadedBytes / 1048576.0,
+                 mirroredBytes / 1048576.0, bufferWrites[0], bufferWrites[1], bufferWrites[2], (unsigned long long)draws);
+            std::fill(std::begin(bufferWrites), std::end(bufferWrites), 0u);
         }
         if (traceEnabled("vbstats") && !vertexStats.empty()) {
             uint64_t unique = 0;
