@@ -175,6 +175,11 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   822A24B8, hideout 822A3920. Their animations count frames: overrides note front-end
   frames and host::activeFrameRateLimit() holds presents to 30 meanwhile
   (TENCHU_FRONTEND_UNCAPPED=1 disables). Control command 'list' walks such lists.
+- Grapple (works; LT is the Aid/guard button, not the hook): RS click aims, LB fires. The
+  verdict sub_82363860 needs the look direction >14.5 deg up, a 1400-unit ray hit
+  (823DC650) without attribute bits 0x44, and the hit within 1100 of bone 24; it stores the
+  hook point at player+4416/+5200 (player = *0x82B58A58). Lit reticle tint 0xFFFFFFFF, dim
+  0xFFA0A0A0. States: 34 throw, 35 zip, 15 fall (hook points mid-wall end in a fall).
 - Resolved textures are allocated padded (resolve widths round up): fetches scale UVs by
   fetch size / host size (g_textureScale), or blur chains drift (lantern bloom offset).
 - Saved profile settings once had all volumes at 0 from button-mashing tests: if the
