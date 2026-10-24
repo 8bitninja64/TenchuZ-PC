@@ -53,6 +53,7 @@ struct SharedConstants {
     float positionScale[4];
     float positionOffset[4];
     float alphaTest[4];
+    float textureScale[16][2];
     uint32_t draw[4];
 };
 
@@ -982,8 +983,12 @@ struct XenosBackend::Impl {
             states[slot] = textures.sampler(fetch, info.textures[slot].filters);
             auto it = resolved.find(fetch.baseAddress() & 0x1FFFFFFF);
             if (it != resolved.end() && it->second.view) {
-                if (traceFrame()) logf("[draw]   texture %u uses resolved %08X", uint32_t(slot), it->first);
+                if (traceFrame())
+                    logf("[draw]   texture %u uses resolved %08X (%ux%u; fetch %ux%u)", uint32_t(slot), it->first,
+                         it->second.width, it->second.height, fetch.width(), fetch.height());
                 views[slot] = it->second.view;
+                shared.textureScale[slot][0] = float(fetch.width()) / float((std::max)(1u, it->second.width));
+                shared.textureScale[slot][1] = float(fetch.height()) / float((std::max)(1u, it->second.height));
                 continue;
             }
             if (traceFrame())
@@ -1068,6 +1073,12 @@ struct XenosBackend::Impl {
         const uint32_t count = request.initiator >> 16;
         if (!count) { ++dropped[1]; return; }  // count
 
+        // TENCHU_SKIP_VS=<hash>: drop that vertex shader's draws (finding which draw is which).
+        static const uint64_t skipVertexShader = [] {
+            char value[32]{};
+            return GetEnvironmentVariableA("TENCHU_SKIP_VS", value, sizeof(value)) ? strtoull(value, nullptr, 16) : 0ull;
+        }();
+        if (skipVertexShader && vsHash == skipVertexShader) return;
         auto* vs = shader(vsHash, xenos::ShaderType::Vertex);
         auto* ps = edramMode == 4 ? shader(psHash, xenos::ShaderType::Pixel) : nullptr;
         if (!vs || (edramMode == 4 && !ps)) { ++dropped[2]; return; }  // shader
@@ -1244,6 +1255,7 @@ struct XenosBackend::Impl {
         shared.alphaTest[1] = asFloat(reg(reg::RB_ALPHA_REF));
         for (int i = 0; i < 16; ++i) {
             shared.textureSize[i][0] = shared.textureSize[i][1] = shared.textureSize[i][2] = 1.0f;
+            shared.textureScale[i][0] = shared.textureScale[i][1] = 1.0f;
             shared.textureSwizzle[i] = 0 | 1 << 3 | 2 << 6 | 3 << 9;
         }
         ID3D11ShaderResourceView* pixelViews[16]{};
@@ -1424,16 +1436,22 @@ struct XenosBackend::Impl {
             if (!bindings.empty()) {
                 const uint32_t base = reg::SHADER_CONSTANT_FETCH_00_0 + bindings[0] * 2;
                 const uint32_t address = reg(base) & ~3u, endian = reg(base + 1) & 3;
-                for (uint32_t v = 0; v < 2 && !indices.empty(); ++v) {
+                // TENCHU_PROBE_VERTICES=<n>: first n vertices of binding 0, in its own stride.
+                static const uint32_t probeCount = [] {
+                    char value[16]{};
+                    return GetEnvironmentVariableA("TENCHU_PROBE_VERTICES", value, sizeof(value)) ? uint32_t(atoi(value)) : 2u;
+                }();
+                const uint32_t stride = vs->info.vertexStreams.empty() ? 10 : (std::max)(1u, vs->info.vertexStreams[0].maxStride);
+                for (uint32_t v = 0; v < probeCount; ++v) {
                     std::string words;
                     char cell[16];
-                    for (uint32_t k = 0; k < 10; ++k) {
+                    for (uint32_t k = 0; k < stride && k < 16; ++k) {
                         uint32_t raw;
-                        std::memcpy(&raw, memory->host(Memory::fromPhysical(address + (indices[v] * 10 + k) * 4)), 4);
+                        std::memcpy(&raw, memory->host(Memory::fromPhysical(address + (v * stride + k) * 4)), 4);
                         snprintf(cell, sizeof(cell), " %08X", gpuSwap(raw, endian));
                         words += cell;
                     }
-                    logf("[probe]   vertex %u:%s", indices[v], words.c_str());
+                    logf("[probe]   vertex %u:%s", v, words.c_str());
                 }
             }
         }

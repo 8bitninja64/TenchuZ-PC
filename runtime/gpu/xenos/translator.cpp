@@ -20,6 +20,7 @@ cbuffer SharedConstants : register(b1) {
     float4 g_positionScale;    // guest clip space -> host clip space: xyz scale
     float4 g_positionOffset;   // xyz offset, multiplied by w
     float4 g_alphaTest;        // x: function (0 never .. 7 always), y: reference
+    float4 g_textureScale[8];  // per texture binding (xy even, zw odd): fetch size / host texture size
     uint4 g_draw;              // x: index list byte offset (0xFFFFFFFF: auto), y: index offset,
                                // z: bit 0 guest indices in guestMemory, bit 1 32-bit, bits 2-3 endian
 };
@@ -564,6 +565,13 @@ struct Emitter {
                                                          : "float3(" + offsets[0] + ", " + offsets[1] + ", " + offsets[2] + ")";
                 line("uv += " + offset + " / " + size + sizeComponents + ";");
             }
+            // Resolved render targets can be larger than the texture the title samples
+            // (resolve rectangles are padded): keep its normalized coordinates on the
+            // fetch's own extent.
+            if (count == 2)
+                line("uv *= g_textureScale[" + std::to_string(slot / 2) + "]." + (slot % 2 ? "zw" : "xy") + ";");
+            else if (count == 1)
+                line("uv *= g_textureScale[" + std::to_string(slot / 2) + "]." + (slot % 2 ? "z" : "x") + ";");
         }
         const std::string coordinate = dimension == 4 ? "direction" : "uv";
         if (pixel && !fetch.useRegisterLod())
