@@ -1,0 +1,28 @@
+# Translated game functions the runtime replaces (TZ_OVERRIDE in runtime/): the game
+# module forwards calls to these to the runtime. One address per line.
+
+# runtime/kernel/native_overrides.cpp
+823D4440  # zone iterator (native version)
+822929D0  # frame timer: carried 30 Hz ticks and whole milliseconds
+822A5CB8  # front end per-frame callbacks (30 fps hold): title screen
+822A2370
+822A2CC0  # "Load game?"
+822A55B8  # main menu
+822A24B8
+
+# runtime/kernel/diagnostics.cpp
+82413CB0
+8241BDE0  # Present: presentation interval
+824262B8
+8241BD50
+82425D88
+824318A8
+8241BF50
+8241D770
+8241E768
+82426498
+8242AC58
+8242ED10
+
+# runtime/movie/movie_player.cpp
+82296FF8

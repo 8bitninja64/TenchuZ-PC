@@ -41,7 +41,9 @@ void startHostProfiler(const char* name) {
             std::this_thread::sleep_for(std::chrono::seconds(startSeconds));
         }
         std::map<DWORD64, uint32_t> samples, callers;
+        // Our code: the runtime and the game module.
         const DWORD64 exeBase = reinterpret_cast<DWORD64>(GetModuleHandleW(nullptr));
+        const DWORD64 moduleBase = reinterpret_cast<DWORD64>(GetModuleHandleW(L"tenchu_game.dll"));
         const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(durationSeconds);
         uint32_t total = 0;
         while (std::chrono::steady_clock::now() < end) {
@@ -51,13 +53,13 @@ void startHostProfiler(const char* name) {
                 if (GetThreadContext(target, &context)) {
                     ++samples[context.Rip];
                     ++total;
-                    // Also attribute the sample to the first caller inside the executable.
+                    // Also attribute the sample to the first caller inside our code.
                     DWORD64 caller = 0;
                     CONTEXT frame = context;
                     for (int depth = 0; depth < 32; ++depth) {
                         DWORD64 imageBase = 0;
                         auto* function = RtlLookupFunctionEntry(frame.Rip, &imageBase, nullptr);
-                        if (imageBase == exeBase && depth > 0) {
+                        if ((imageBase == exeBase || imageBase == moduleBase) && depth > 0) {
                             caller = frame.Rip;
                             break;
                         }

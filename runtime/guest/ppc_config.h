@@ -1,0 +1,19 @@
+#pragma once
+#ifndef PPC_CONFIG_H_INCLUDED
+#define PPC_CONFIG_H_INCLUDED
+
+#define PPC_CONFIG_CTR_AS_LOCAL
+#define PPC_CONFIG_XER_AS_LOCAL
+#define PPC_CONFIG_RESERVED_AS_LOCAL
+#define PPC_CONFIG_CR_AS_LOCAL
+
+#define PPC_IMAGE_BASE 0x82000000ull
+#define PPC_IMAGE_SIZE 0x1440000ull
+#define PPC_CODE_BASE 0x82270000ull
+#define PPC_CODE_SIZE 0x5B9DB8ull
+
+#ifdef PPC_INCLUDE_DETAIL
+#include "ppc_detail.h"
+#endif
+
+#endif

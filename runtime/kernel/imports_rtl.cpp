@@ -1,6 +1,6 @@
 // Runtime library imports: critical sections, strings, time, exceptions, printf.
 #include "kernel.h"
-#include "ppc_recomp_shared.h"
+#include "guest/host.h"
 #include <array>
 
 using namespace tz;
@@ -35,7 +35,7 @@ bool tryEnter(uint32_t section, uint32_t self) {
 }
 }  // namespace
 
-PPC_FUNC(__imp__RtlInitializeCriticalSection) {
+TZ_IMPORT(RtlInitializeCriticalSection) {
     const uint32_t section = ctx.r3.u32;
     std::memset(memory->host(section), 0, 28);
     *memory->host(section) = kSynchronizationEvent;
@@ -45,21 +45,21 @@ PPC_FUNC(__imp__RtlInitializeCriticalSection) {
     store32(section + 0x10, 0xFFFFFFFF);
 }
 
-PPC_FUNC(__imp__RtlEnterCriticalSection) {
+TZ_IMPORT(RtlEnterCriticalSection) {
     const uint32_t section = ctx.r3.u32, self = owner();
     auto& stripe = stripeFor(section);
     std::unique_lock lock(stripe.mutex);
     stripe.condition.wait(lock, [&] { return tryEnter(section, self); });
 }
 
-PPC_FUNC(__imp__RtlTryEnterCriticalSection) {
+TZ_IMPORT(RtlTryEnterCriticalSection) {
     const uint32_t section = ctx.r3.u32, self = owner();
     auto& stripe = stripeFor(section);
     std::lock_guard lock(stripe.mutex);
     ctx.r3.u64 = tryEnter(section, self);
 }
 
-PPC_FUNC(__imp__RtlLeaveCriticalSection) {
+TZ_IMPORT(RtlLeaveCriticalSection) {
     const uint32_t section = ctx.r3.u32;
     auto& stripe = stripeFor(section);
     bool released = false;
@@ -79,7 +79,7 @@ PPC_FUNC(__imp__RtlLeaveCriticalSection) {
 
 // ---- Strings and memory ---------------------------------------------------------
 
-PPC_FUNC(__imp__RtlInitAnsiString) {
+TZ_IMPORT(RtlInitAnsiString) {
     const uint32_t target = ctx.r3.u32, source = ctx.r4.u32;
     const uint16_t length = uint16_t(source ? loadString(source, 0xFFFE).size() : 0);
     store16(target, length);
@@ -87,7 +87,7 @@ PPC_FUNC(__imp__RtlInitAnsiString) {
     store32(target + 4, source);
 }
 
-PPC_FUNC(__imp__RtlMultiByteToUnicodeN) {
+TZ_IMPORT(RtlMultiByteToUnicodeN) {
     // (unicode, maxBytes, bytesWritten*, multiByte, multiByteBytes)
     const uint32_t count = (std::min)(ctx.r4.u32 / 2, ctx.r7.u32);
     for (uint32_t i = 0; i < count; ++i) store16(ctx.r3.u32 + i * 2, *memory->host(ctx.r6.u32 + i));
@@ -95,7 +95,7 @@ PPC_FUNC(__imp__RtlMultiByteToUnicodeN) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__RtlUnicodeToMultiByteN) {
+TZ_IMPORT(RtlUnicodeToMultiByteN) {
     // (multiByte, maxBytes, bytesWritten*, unicode, unicodeBytes)
     const uint32_t count = (std::min)(ctx.r4.u32, ctx.r7.u32 / 2);
     for (uint32_t i = 0; i < count; ++i) {
@@ -106,7 +106,7 @@ PPC_FUNC(__imp__RtlUnicodeToMultiByteN) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__RtlCompareMemoryUlong) {
+TZ_IMPORT(RtlCompareMemoryUlong) {
     // (source, length, pattern) -> number of matching bytes
     uint32_t matched = 0;
     for (uint32_t offset = 0; offset + 4 <= ctx.r4.u32; offset += 4, matched += 4)
@@ -114,11 +114,11 @@ PPC_FUNC(__imp__RtlCompareMemoryUlong) {
     ctx.r3.u64 = matched;
 }
 
-PPC_FUNC(__imp__RtlFillMemoryUlong) {
+TZ_IMPORT(RtlFillMemoryUlong) {
     for (uint32_t offset = 0; offset + 4 <= ctx.r4.u32; offset += 4) store32(ctx.r3.u32 + offset, ctx.r5.u32);
 }
 
-PPC_FUNC(__imp__RtlNtStatusToDosError) {
+TZ_IMPORT(RtlNtStatusToDosError) {
     switch (ctx.r3.u32) {
     case kStatusSuccess: ctx.r3.u64 = kErrorSuccess; break;
     case kStatusNoSuchFile:
@@ -140,7 +140,7 @@ PPC_FUNC(__imp__RtlNtStatusToDosError) {
 // ---- Time --------------------------------------------------------------------------
 // TIME_FIELDS: year, month, day, hour, minute, second, milliseconds, weekday (u16).
 
-PPC_FUNC(__imp__RtlTimeToTimeFields) {
+TZ_IMPORT(RtlTimeToTimeFields) {
     const uint64_t time = load64(ctx.r3.u32);
     FILETIME file{uint32_t(time), uint32_t(time >> 32)};
     SYSTEMTIME system{};
@@ -156,7 +156,7 @@ PPC_FUNC(__imp__RtlTimeToTimeFields) {
     store16(fields + 14, system.wDayOfWeek);
 }
 
-PPC_FUNC(__imp__RtlTimeFieldsToTime) {
+TZ_IMPORT(RtlTimeFieldsToTime) {
     const uint32_t fields = ctx.r3.u32;
     SYSTEMTIME system{};
     system.wYear = load16(fields + 0);
@@ -174,7 +174,7 @@ PPC_FUNC(__imp__RtlTimeFieldsToTime) {
 
 // ---- Executable --------------------------------------------------------------------
 
-PPC_FUNC(__imp__RtlImageXexHeaderField) {
+TZ_IMPORT(RtlImageXexHeaderField) {
     // (xexHeader, key) -> inline value or pointer to the field data
     const uint32_t header = ctx.r3.u32, key = ctx.r4.u32;
     const uint32_t count = load32(header + 20);
@@ -187,9 +187,9 @@ PPC_FUNC(__imp__RtlImageXexHeaderField) {
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__XexCheckExecutablePrivilege) { ctx.r3.u64 = 0; }
+TZ_IMPORT(XexCheckExecutablePrivilege) { ctx.r3.u64 = 0; }
 
-PPC_FUNC(__imp__XexGetModuleHandle) {
+TZ_IMPORT(XexGetModuleHandle) {
     // (name, handle*). Only the system modules are known.
     const std::string name = loadString(ctx.r3.u32);
     TZ_TRACE("xex", "[xex] XexGetModuleHandle(%s)", name.c_str());
@@ -202,7 +202,7 @@ PPC_FUNC(__imp__XexGetModuleHandle) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__XexGetProcedureAddress) {
+TZ_IMPORT(XexGetProcedureAddress) {
     // (module, ordinal, address*). Dynamic lookups are not supported.
     logf("[xex] XexGetProcedureAddress(module %08X, ordinal %u) unavailable", ctx.r3.u32, ctx.r4.u32);
     store32(ctx.r5.u32, 0);
@@ -211,7 +211,7 @@ PPC_FUNC(__imp__XexGetProcedureAddress) {
 
 // ---- Exceptions --------------------------------------------------------------------
 
-PPC_FUNC(__imp__RtlRaiseException) {
+TZ_IMPORT(RtlRaiseException) {
     // EXCEPTION_RECORD: code +0, flags +4, record +8, address +0xC,
     // parameter count +0x10, parameters +0x14.
     const uint32_t record = ctx.r3.u32;
@@ -227,9 +227,9 @@ PPC_FUNC(__imp__RtlRaiseException) {
     fatal("RtlRaiseException code 0x%08X from 0x%08X", code, uint32_t(ctx.lr));
 }
 
-PPC_FUNC(__imp__RtlCaptureContext) { std::memset(memory->host(ctx.r3.u32), 0, 0x100); }
-PPC_FUNC(__imp__RtlUnwind) { fatal("RtlUnwind: guest structured exception unwinding is not supported"); }
-PPC_FUNC(__imp____C_specific_handler) { fatal("__C_specific_handler reached"); }
+TZ_IMPORT(RtlCaptureContext) { std::memset(memory->host(ctx.r3.u32), 0, 0x100); }
+TZ_IMPORT(RtlUnwind) { fatal("RtlUnwind: guest structured exception unwinding is not supported"); }
+TZ_IMPORT(__C_specific_handler) { fatal("__C_specific_handler reached"); }
 
 // ---- printf --------------------------------------------------------------------------
 
@@ -242,14 +242,14 @@ void writeBounded(uint32_t buffer, uint32_t capacity, const std::string& text, b
 }
 }  // namespace
 
-PPC_FUNC(__imp__sprintf) {
+TZ_IMPORT(sprintf) {
     auto args = GuestArgs::fromRegisters(ctx, 5);
     const std::string text = formatGuest(loadString(ctx.r4.u32), args);
     std::memcpy(memory->host(ctx.r3.u32), text.c_str(), text.size() + 1);
     ctx.r3.u64 = uint32_t(text.size());
 }
 
-PPC_FUNC(__imp___snprintf) {
+TZ_IMPORT(_snprintf) {
     // (buffer, count, format, ...). Returns -1 on truncation (MSVC semantics).
     auto args = GuestArgs::fromRegisters(ctx, 6);
     const std::string text = formatGuest(loadString(ctx.r5.u32), args);
@@ -257,7 +257,7 @@ PPC_FUNC(__imp___snprintf) {
     ctx.r3.u64 = text.size() > ctx.r4.u32 ? uint64_t(-1) : text.size();
 }
 
-PPC_FUNC(__imp___vsnprintf) {
+TZ_IMPORT(_vsnprintf) {
     // (buffer, count, format, va_list)
     auto args = GuestArgs::fromVaList(ctx.r6.u32);
     const std::string text = formatGuest(loadString(ctx.r5.u32), args);
@@ -265,7 +265,7 @@ PPC_FUNC(__imp___vsnprintf) {
     ctx.r3.u64 = text.size() > ctx.r4.u32 ? uint64_t(-1) : text.size();
 }
 
-PPC_FUNC(__imp__DbgPrint) {
+TZ_IMPORT(DbgPrint) {
     auto args = GuestArgs::fromRegisters(ctx, 4);
     std::string text = formatGuest(loadString(ctx.r3.u32), args);
     while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();

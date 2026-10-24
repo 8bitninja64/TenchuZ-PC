@@ -6,7 +6,7 @@
 #include "audio/xma.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
-#include "ppc_recomp_shared.h"
+#include "guest/host.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -427,7 +427,7 @@ void writeRegisterValue(uint32_t address, uint32_t value) {
 
 }  // namespace
 
-PPC_FUNC(__imp__XMACreateContext) {
+TZ_IMPORT(XMACreateContext) {
     // (context*) -> status
     auto& d = decoder();
     std::lock_guard lock(d.mutex);
@@ -449,7 +449,7 @@ PPC_FUNC(__imp__XMACreateContext) {
     ctx.r3.u64 = 0x8007000E;  // E_OUTOFMEMORY
 }
 
-PPC_FUNC(__imp__XMAReleaseContext) {
+TZ_IMPORT(XMAReleaseContext) {
     auto& d = decoder();
     const uint32_t index = (ctx.r3.u32 - d.arrayAddress) / kContextSize;
     if (d.arrayAddress && ctx.r3.u32 >= d.arrayAddress && index < kContextCount) {

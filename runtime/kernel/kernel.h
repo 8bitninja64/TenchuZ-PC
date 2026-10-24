@@ -11,7 +11,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include "ppc_context.h"
+#include "guest/ppc_context.template.h"
 #include "memory.h"
 
 namespace tz {

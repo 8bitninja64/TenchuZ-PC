@@ -5,15 +5,14 @@
 // exist, so movies play as on the console. TENCHU_SKIP_MOVIES=1 skips them at
 // the game's blocking play routine, which saves time in automated runs.
 #include "kernel/kernel.h"
-#include "ppc_recomp_shared.h"
+#include "guest/host.h"
 
 using namespace tz;
 
-extern "C" PPC_FUNC(__imp__sub_82296FF8);
 
 // int PlayMovie(const char* path, ...): returns 1 when playback completed and
 // 0 when the movie could not be opened.
-PPC_FUNC(sub_82296FF8) {
+TZ_OVERRIDE(82296FF8) {
     static const bool skip = [] {
         char value[8]{};
         return GetEnvironmentVariableA("TENCHU_SKIP_MOVIES", value, sizeof(value)) && value[0] == '1';

@@ -5,7 +5,7 @@
 // TENCHU_AUDIO_DUMP=<file.wav> also records the submitted frames.
 #include "kernel/kernel.h"
 #include "host/settings.h"
-#include "ppc_recomp_shared.h"
+#include "guest/host.h"
 #include <windows.h>
 #include <xaudio2.h>
 #include <array>
@@ -174,7 +174,7 @@ void setOutputVolume(float volume) {
 }
 }  // namespace tz::audio
 
-PPC_FUNC(__imp__XAudioRegisterRenderDriverClient) {
+TZ_IMPORT(XAudioRegisterRenderDriverClient) {
     // (callback* = {function, context}, driver*)
     for (uint32_t i = 0; i < 8; ++i) {
         if (clients[i].active) continue;
@@ -189,12 +189,12 @@ PPC_FUNC(__imp__XAudioRegisterRenderDriverClient) {
     ctx.r3.u64 = 0x80070057;  // E_INVALIDARG
 }
 
-PPC_FUNC(__imp__XAudioUnregisterRenderDriverClient) {
+TZ_IMPORT(XAudioUnregisterRenderDriverClient) {
     clients[ctx.r3.u32 & 7].active = false;
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__XAudioSubmitRenderDriverFrame) {
+TZ_IMPORT(XAudioSubmitRenderDriverFrame) {
     // (driver, samples*)
     static std::atomic<uint64_t> submitted{0};
     if (submitted++ % 2000 == 0)
@@ -203,12 +203,12 @@ PPC_FUNC(__imp__XAudioSubmitRenderDriverFrame) {
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__XAudioGetVoiceCategoryVolumeChangeMask) {
+TZ_IMPORT(XAudioGetVoiceCategoryVolumeChangeMask) {
     store32(ctx.r4.u32, 0);
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__XAudioGetVoiceCategoryVolume) {
+TZ_IMPORT(XAudioGetVoiceCategoryVolume) {
     const float volume = 1.0f;
     uint32_t bits;
     std::memcpy(&bits, &volume, 4);
@@ -216,4 +216,4 @@ PPC_FUNC(__imp__XAudioGetVoiceCategoryVolume) {
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__Refresh) { ctx.r3.u64 = 0; }
+TZ_IMPORT(Refresh) { ctx.r3.u64 = 0; }

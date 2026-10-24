@@ -1,7 +1,7 @@
 // File system imports. Guest device roots map onto host directories.
 #include "kernel.h"
 #include "filesystem.h"
-#include "ppc_recomp_shared.h"
+#include "guest/host.h"
 #include <algorithm>
 #include <map>
 #include <shared_mutex>
@@ -202,19 +202,19 @@ bool resolveGuestPath(const std::string& guestPath, std::filesystem::path& hostP
 
 }  // namespace tz
 
-PPC_FUNC(__imp__NtCreateFile) {
+TZ_IMPORT(NtCreateFile) {
     // (handle*, access, attributes*, ioStatus*, allocationSize*, fileAttributes,
     //  shareAccess, disposition, options [stack])
     const uint32_t options = load32(ctx.r1.u32 + 0x54);
     ctx.r3.u64 = openFile(ctx, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r10.u32, options);
 }
 
-PPC_FUNC(__imp__NtOpenFile) {
+TZ_IMPORT(NtOpenFile) {
     // (handle*, access, attributes*, ioStatus*, shareAccess, options)
     ctx.r3.u64 = openFile(ctx, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, 1, ctx.r8.u32);
 }
 
-PPC_FUNC(__imp__NtReadFile) {
+TZ_IMPORT(NtReadFile) {
     // (handle, event, apcRoutine, apcContext, ioStatus*, buffer, length, offset*)
     auto file = lookupHandleAs<FileObject>(ctx.r3.u32);
     if (!file || file->directory) { ctx.r3.u64 = kStatusInvalidHandle; return; }
@@ -240,7 +240,7 @@ PPC_FUNC(__imp__NtReadFile) {
     ctx.r3.u64 = status;
 }
 
-PPC_FUNC(__imp__NtWriteFile) {
+TZ_IMPORT(NtWriteFile) {
     // (handle, event, apcRoutine, apcContext, ioStatus*, buffer, length, offset*)
     auto file = lookupHandleAs<FileObject>(ctx.r3.u32);
     if (!file || file->directory) { ctx.r3.u64 = kStatusInvalidHandle; return; }
@@ -262,14 +262,14 @@ PPC_FUNC(__imp__NtWriteFile) {
     ctx.r3.u64 = status;
 }
 
-PPC_FUNC(__imp__NtFlushBuffersFile) {
+TZ_IMPORT(NtFlushBuffersFile) {
     auto file = lookupHandleAs<FileObject>(ctx.r3.u32);
     if (file && !file->directory) FlushFileBuffers(file->handle);
     completeIo(ctx.r4.u32, kStatusSuccess, 0);
     ctx.r3.u64 = file ? kStatusSuccess : kStatusInvalidHandle;
 }
 
-PPC_FUNC(__imp__NtQueryInformationFile) {
+TZ_IMPORT(NtQueryInformationFile) {
     // (handle, ioStatus*, info, length, class)
     auto file = lookupHandleAs<FileObject>(ctx.r3.u32);
     if (!file) { ctx.r3.u64 = kStatusInvalidHandle; return; }
@@ -311,7 +311,7 @@ PPC_FUNC(__imp__NtQueryInformationFile) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__NtSetInformationFile) {
+TZ_IMPORT(NtSetInformationFile) {
     // (handle, ioStatus*, info, length, class)
     auto file = lookupHandleAs<FileObject>(ctx.r3.u32);
     if (!file) { ctx.r3.u64 = kStatusInvalidHandle; return; }
@@ -344,7 +344,7 @@ PPC_FUNC(__imp__NtSetInformationFile) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__NtQueryFullAttributesFile) {
+TZ_IMPORT(NtQueryFullAttributesFile) {
     // (attributes*, FILE_NETWORK_OPEN_INFORMATION*)
     std::filesystem::path path;
     std::string guestName;
@@ -359,7 +359,7 @@ PPC_FUNC(__imp__NtQueryFullAttributesFile) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__NtQueryVolumeInformationFile) {
+TZ_IMPORT(NtQueryVolumeInformationFile) {
     // (handle, ioStatus*, info, length, class)
     const uint32_t ioStatus = ctx.r4.u32, info = ctx.r5.u32, infoClass = ctx.r7.u32;
     uint32_t written = 0;

@@ -6,7 +6,7 @@
 #include "host/overlay.h"
 #include "host/input.h"
 #include "filesystem.h"
-#include "ppc_recomp_shared.h"
+#include "guest/host.h"
 #include <chrono>
 #include <fstream>
 #include <xinput.h>
@@ -120,26 +120,26 @@ bool defaultSetting(uint32_t id, uint32_t& value) {
 
 // ---- Memory -------------------------------------------------------------------------
 
-PPC_FUNC(__imp__XamAlloc) {
+TZ_IMPORT(XamAlloc) {
     // (flags, size, address*)
     const uint32_t address = memory->allocateVirtual((std::max)(ctx.r4.u32, 1u), 0x1000);
     store32(ctx.r5.u32, address);
     ctx.r3.u64 = address ? 0 : 0x8007000E;  // E_OUTOFMEMORY
 }
-PPC_FUNC(__imp__XamFree) { memory->free(ctx.r3.u32); ctx.r3.u64 = 0; }
+TZ_IMPORT(XamFree) { memory->free(ctx.r3.u32); ctx.r3.u64 = 0; }
 
 // ---- Users --------------------------------------------------------------------------
 
-PPC_FUNC(__imp__XamUserGetSigninState) { ctx.r3.u64 = ctx.r3.u32 == 0 ? 1 : 0; }  // signed in locally
+TZ_IMPORT(XamUserGetSigninState) { ctx.r3.u64 = ctx.r3.u32 == 0 ? 1 : 0; }  // signed in locally
 
-PPC_FUNC(__imp__XamUserGetXUID) {
+TZ_IMPORT(XamUserGetXUID) {
     // (user, typeMask, xuid*)
     if (ctx.r3.u32 != 0) { ctx.r3.u64 = kErrorNoSuchUser; return; }
     store64(ctx.r5.u32, kXuid);
     ctx.r3.u64 = kErrorSuccess;
 }
 
-PPC_FUNC(__imp__XamUserGetName) {
+TZ_IMPORT(XamUserGetName) {
     // (user, buffer, length)
     if (ctx.r3.u32 != 0) { ctx.r3.u64 = kErrorNoSuchUser; return; }
     const char name[] = "Player";
@@ -149,24 +149,24 @@ PPC_FUNC(__imp__XamUserGetName) {
     ctx.r3.u64 = kErrorSuccess;
 }
 
-PPC_FUNC(__imp__XamUserCheckPrivilege) {
+TZ_IMPORT(XamUserCheckPrivilege) {
     // (user, privilege, result*). Online privileges are not available.
     store32(ctx.r5.u32, 0);
     ctx.r3.u64 = ctx.r3.u32 == 0 ? kErrorSuccess : kErrorNoSuchUser;
 }
 
-PPC_FUNC(__imp__XamUserAreUsersFriends) {
+TZ_IMPORT(XamUserAreUsersFriends) {
     // (user, xuids*, count, result*, overlapped)
     if (ctx.r6.u32) store32(ctx.r6.u32, 0);
     ctx.r3.u64 = complete(ctx.r7.u32, kErrorSuccess);
 }
 
-PPC_FUNC(__imp__XamUserCreateStatsEnumerator) {
+TZ_IMPORT(XamUserCreateStatsEnumerator) {
     // Leaderboards need Xbox Live.
     ctx.r3.u64 = kErrorFunctionFailed;
 }
 
-PPC_FUNC(__imp__XamUserReadProfileSettings) {
+TZ_IMPORT(XamUserReadProfileSettings) {
     // (titleId, user, xuidCount, xuids*, settingCount, settingIds*, bufferSize*, buffer, overlapped)
     const uint32_t user = ctx.r4.u32, count = ctx.r7.u32, ids = ctx.r8.u32;
     const uint32_t sizePtr = ctx.r9.u32, buffer = ctx.r10.u32, overlapped = stackArgument(ctx, 8);
@@ -221,7 +221,7 @@ PPC_FUNC(__imp__XamUserReadProfileSettings) {
     ctx.r3.u64 = complete(overlapped, kErrorSuccess);
 }
 
-PPC_FUNC(__imp__XamUserWriteProfileSettings) {
+TZ_IMPORT(XamUserWriteProfileSettings) {
     // (titleId, user, settingCount, settings*, overlapped)
     const uint32_t count = ctx.r5.u32, settings = ctx.r6.u32, overlapped = ctx.r7.u32;
     std::filesystem::create_directories(userDirectory() / "profile");
@@ -239,7 +239,7 @@ PPC_FUNC(__imp__XamUserWriteProfileSettings) {
 
 // ---- Content --------------------------------------------------------------------------
 
-PPC_FUNC(__imp__XamContentCreate) {
+TZ_IMPORT(XamContentCreate) {
     // (user, rootName, contentData*, flags, disposition*, license*, overlapped)
     const std::string root = loadString(ctx.r4.u32);
     const uint32_t contentData = ctx.r5.u32, flags = ctx.r6.u32;
@@ -264,13 +264,13 @@ PPC_FUNC(__imp__XamContentCreate) {
     ctx.r3.u64 = complete(overlapped, result);
 }
 
-PPC_FUNC(__imp__XamContentClose) {
+TZ_IMPORT(XamContentClose) {
     // (rootName, overlapped)
     unmountDevice(loadString(ctx.r3.u32));
     ctx.r3.u64 = complete(ctx.r4.u32, kErrorSuccess);
 }
 
-PPC_FUNC(__imp__XamContentCreateEnumerator) {
+TZ_IMPORT(XamContentCreateEnumerator) {
     // (user, deviceId, contentType, flags, maxItems, bufferSize*, handle*)
     const uint32_t deviceId = ctx.r4.u32, contentType = ctx.r5.u32, maxItems = ctx.r7.u32;
     TZ_TRACE("xam", "[xam] XamContentCreateEnumerator device %08X type %08X flags %08X max %u", deviceId, contentType,
@@ -299,7 +299,7 @@ PPC_FUNC(__imp__XamContentCreateEnumerator) {
     ctx.r3.u64 = kErrorSuccess;
 }
 
-PPC_FUNC(__imp__XamEnumerate) {
+TZ_IMPORT(XamEnumerate) {
     // (handle, flags, buffer, bufferSize, itemsReturned*, overlapped)
     auto enumerator = lookupHandleAs<EnumeratorObject>(ctx.r3.u32);
     if (!enumerator) { ctx.r3.u64 = kErrorInvalidParameter; return; }
@@ -317,7 +317,7 @@ PPC_FUNC(__imp__XamEnumerate) {
     ctx.r3.u64 = complete(ctx.r8.u32, result, returned);
 }
 
-PPC_FUNC(__imp__XamContentGetCreator) {
+TZ_IMPORT(XamContentGetCreator) {
     // (user, contentData*, isCreator*, xuid*, overlapped). Games use this to test
     // whether a package exists, so missing content must fail.
     const uint32_t contentData = ctx.r4.u32;
@@ -332,7 +332,7 @@ PPC_FUNC(__imp__XamContentGetCreator) {
     ctx.r3.u64 = complete(ctx.r7.u32, kErrorSuccess);
 }
 
-PPC_FUNC(__imp__XamContentGetDeviceData) {
+TZ_IMPORT(XamContentGetDeviceData) {
     // (deviceId, XDEVICE_DATA*): id, type, total u64, free u64, name[28]
     TZ_TRACE("xam", "[xam] XamContentGetDeviceData %08X", ctx.r3.u32);
     if (ctx.r3.u32 != kHardDrive) { ctx.r3.u64 = kErrorDeviceNotConnected; return; }
@@ -346,7 +346,7 @@ PPC_FUNC(__imp__XamContentGetDeviceData) {
     ctx.r3.u64 = kErrorSuccess;
 }
 
-PPC_FUNC(__imp__XamContentGetDeviceState) {
+TZ_IMPORT(XamContentGetDeviceState) {
     // (deviceId, overlapped)
     const uint32_t result = ctx.r3.u32 == kHardDrive ? kErrorSuccess : kErrorDeviceNotConnected;
     TZ_TRACE("xam", "[xam] XamContentGetDeviceState %08X -> %u", ctx.r3.u32, result);
@@ -354,19 +354,19 @@ PPC_FUNC(__imp__XamContentGetDeviceState) {
 }
 
 // (userIndex, XCONTENT_DATA*, image, imageSize, overlapped); the thumbnail is not kept.
-PPC_FUNC(__imp__XamContentSetThumbnail) { ctx.r3.u64 = complete(ctx.r7.u32, kErrorSuccess); }
+TZ_IMPORT(XamContentSetThumbnail) { ctx.r3.u64 = complete(ctx.r7.u32, kErrorSuccess); }
 
 // ---- System UI: answered immediately --------------------------------------------------
 
-PPC_FUNC(__imp__XamShowDeviceSelectorUI) {
+TZ_IMPORT(XamShowDeviceSelectorUI) {
     // (user, contentType, flags, totalRequested u64, deviceId*, overlapped)
     TZ_TRACE("xam", "[xam] XamShowDeviceSelectorUI user %u type %08X flags %08X", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     store32(ctx.r7.u32, kHardDrive);
     ctx.r3.u64 = complete(ctx.r8.u32, kErrorSuccess);
 }
 
-PPC_FUNC(__imp__XamShowSigninUI) { ctx.r3.u64 = kErrorSuccess; }
-PPC_FUNC(__imp__XamShowGamerCardUIForXUID) { ctx.r3.u64 = complete(ctx.r5.u32, kErrorSuccess); }
+TZ_IMPORT(XamShowSigninUI) { ctx.r3.u64 = kErrorSuccess; }
+TZ_IMPORT(XamShowGamerCardUIForXUID) { ctx.r3.u64 = complete(ctx.r5.u32, kErrorSuccess); }
 
 namespace {
 void answerMessageBox(PPCContext& ctx, uint32_t overlapped) {
@@ -379,21 +379,21 @@ void answerMessageBox(PPCContext& ctx, uint32_t overlapped) {
 }
 }  // namespace
 
-PPC_FUNC(__imp__XamShowMessageBoxUI) { answerMessageBox(ctx, stackArgument(ctx, 8)); }
-PPC_FUNC(__imp__XamShowMessageBoxUIEx) { answerMessageBox(ctx, stackArgument(ctx, 8)); }
+TZ_IMPORT(XamShowMessageBoxUI) { answerMessageBox(ctx, stackArgument(ctx, 8)); }
+TZ_IMPORT(XamShowMessageBoxUIEx) { answerMessageBox(ctx, stackArgument(ctx, 8)); }
 
-PPC_FUNC(__imp__XamShowKeyboardUI) {
+TZ_IMPORT(XamShowKeyboardUI) {
     // (user, flags, defaultText, title, description, buffer, length, overlapped)
     const auto text = loadWideString(ctx.r5.u32);
     writeWide(ctx.r8.u32, text, (std::max)(ctx.r9.u32, 1u));
     ctx.r3.u64 = complete(ctx.r10.u32, kErrorSuccess);
 }
 
-PPC_FUNC(__imp__XamShowDirtyDiscErrorUI) { fatal("The game reported a disc read error (missing or damaged data files)"); }
+TZ_IMPORT(XamShowDirtyDiscErrorUI) { fatal("The game reported a disc read error (missing or damaged data files)"); }
 
 // ---- Notifications ---------------------------------------------------------------------
 
-PPC_FUNC(__imp__XamNotifyCreateListener) {
+TZ_IMPORT(XamNotifyCreateListener) {
     // (areas u64) -> handle
     auto listener = std::make_shared<ListenerObject>();
     listener->areas = ctx.r3.u64;
@@ -407,7 +407,7 @@ PPC_FUNC(__imp__XamNotifyCreateListener) {
     ctx.r3.u64 = createHandle(listener);
 }
 
-PPC_FUNC(__imp__XNotifyGetNext) {
+TZ_IMPORT(XNotifyGetNext) {
     // (handle, matchId, id*, parameter*)
     auto listener = lookupHandleAs<ListenerObject>(ctx.r3.u32);
     if (!listener) { ctx.r3.u64 = 0; return; }
@@ -490,7 +490,7 @@ uint16_t scriptedButtons() {
 }
 }  // namespace
 
-PPC_FUNC(__imp__XamInputGetState) {
+TZ_IMPORT(XamInputGetState) {
     // (user, flags, state*)
     XINPUT_STATE state{};
     TZ_TRACE("input", "[input] XamInputGetState user %u flags %X lr %08X", ctx.r3.u32, ctx.r4.u32, uint32_t(ctx.lr));
@@ -581,7 +581,7 @@ PPC_FUNC(__imp__XamInputGetState) {
     ctx.r3.u64 = kErrorSuccess;
 }
 
-PPC_FUNC(__imp__XamInputSetState) {
+TZ_IMPORT(XamInputSetState) {
     // (user, flags, vibration*) where vibration = { left u16, right u16 }
     // Player 1's vibration goes to every connected controller.
     bool any = false;
@@ -593,7 +593,7 @@ PPC_FUNC(__imp__XamInputSetState) {
 
 // ---- Title and system ---------------------------------------------------------------------
 
-PPC_FUNC(__imp__XamGetExecutionId) {
+TZ_IMPORT(XamGetExecutionId) {
     // (info**): pointer to the XEX execution id header field
     const uint32_t header = xexHeaderAddress();
     const uint32_t count = load32(header + 20);
@@ -606,23 +606,23 @@ PPC_FUNC(__imp__XamGetExecutionId) {
     ctx.r3.u64 = kStatusNotSupported;
 }
 
-PPC_FUNC(__imp__XamGetSystemVersion) { ctx.r3.u64 = 0x20044B00; }
-PPC_FUNC(__imp__XamEnableInactivityProcessing) { ctx.r3.u64 = kErrorSuccess; }
-PPC_FUNC(__imp__XamResetInactivity) { ctx.r3.u64 = kErrorSuccess; }
-PPC_FUNC(__imp__XamLoaderLaunchTitle) {
+TZ_IMPORT(XamGetSystemVersion) { ctx.r3.u64 = 0x20044B00; }
+TZ_IMPORT(XamEnableInactivityProcessing) { ctx.r3.u64 = kErrorSuccess; }
+TZ_IMPORT(XamResetInactivity) { ctx.r3.u64 = kErrorSuccess; }
+TZ_IMPORT(XamLoaderLaunchTitle) {
     logf("[xam] XamLoaderLaunchTitle(%s): exiting", loadString(ctx.r3.u32).c_str());
     ExitProcess(0);
 }
-PPC_FUNC(__imp__XamLoaderTerminateTitle) {
+TZ_IMPORT(XamLoaderTerminateTitle) {
     logf("[xam] XamLoaderTerminateTitle: exiting");
     ExitProcess(0);
 }
 
-PPC_FUNC(__imp__XGetAVPack) { ctx.r3.u64 = 6; }        // HDMI
-PPC_FUNC(__imp__XGetGameRegion) { ctx.r3.u64 = 0xFF; }  // North America
-PPC_FUNC(__imp__XGetLanguage) { ctx.r3.u64 = 1; }       // English
+TZ_IMPORT(XGetAVPack) { ctx.r3.u64 = 6; }        // HDMI
+TZ_IMPORT(XGetGameRegion) { ctx.r3.u64 = 0xFF; }  // North America
+TZ_IMPORT(XGetLanguage) { ctx.r3.u64 = 1; }       // English
 
-PPC_FUNC(__imp__ExGetXConfigSetting) {
+TZ_IMPORT(ExGetXConfigSetting) {
     // (category, setting, buffer, bufferSize, requiredSize*)
     const uint16_t category = uint16_t(ctx.r3.u32), setting = uint16_t(ctx.r4.u32);
     const uint32_t buffer = ctx.r5.u32, bufferSize = ctx.r6.u32, requiredPtr = ctx.r7.u32;
@@ -648,39 +648,39 @@ struct SessionObject : KernelObject {
 };
 }  // namespace
 
-PPC_FUNC(__imp__XamSessionCreateHandle) {
+TZ_IMPORT(XamSessionCreateHandle) {
     auto session = std::make_shared<SessionObject>();
     session->dispatcher = createDispatcherObject(kNotificationEvent, 16, 0);
     store32(ctx.r3.u32, createHandle(session));
     ctx.r3.u64 = kErrorSuccess;
 }
 
-PPC_FUNC(__imp__XamSessionRefObjByHandle) {
+TZ_IMPORT(XamSessionRefObjByHandle) {
     auto session = lookupHandle(ctx.r3.u32);
     if (!session) { ctx.r3.u64 = kErrorInvalidParameter; return; }
     store32(ctx.r4.u32, session->dispatcher);
     ctx.r3.u64 = kErrorSuccess;
 }
 
-PPC_FUNC(__imp__XamVoiceCreate) { ctx.r3.u64 = kErrorDeviceNotConnected; }
-PPC_FUNC(__imp__XamVoiceClose) { ctx.r3.u64 = kErrorSuccess; }
-PPC_FUNC(__imp__XamVoiceHeadsetPresent) { ctx.r3.u64 = 0; }
-PPC_FUNC(__imp__XamVoiceSubmitPacket) { ctx.r3.u64 = kErrorDeviceNotConnected; }
+TZ_IMPORT(XamVoiceCreate) { ctx.r3.u64 = kErrorDeviceNotConnected; }
+TZ_IMPORT(XamVoiceClose) { ctx.r3.u64 = kErrorSuccess; }
+TZ_IMPORT(XamVoiceHeadsetPresent) { ctx.r3.u64 = 0; }
+TZ_IMPORT(XamVoiceSubmitPacket) { ctx.r3.u64 = kErrorDeviceNotConnected; }
 
-PPC_FUNC(__imp__XMsgStartIORequest) {
+TZ_IMPORT(XMsgStartIORequest) {
     // (app, message, overlapped, buffer, size)
     TZ_TRACE("xam", "[xam] XMsgStartIORequest app %08X message %08X", ctx.r3.u32, ctx.r4.u32);
     ctx.r3.u64 = complete(ctx.r5.u32, kErrorFunctionFailed);
 }
 
-PPC_FUNC(__imp__XMsgStartIORequestEx) {
+TZ_IMPORT(XMsgStartIORequestEx) {
     TZ_TRACE("xam", "[xam] XMsgStartIORequestEx app %08X message %08X", ctx.r3.u32, ctx.r4.u32);
     ctx.r3.u64 = complete(ctx.r5.u32, kErrorFunctionFailed);
 }
 
-PPC_FUNC(__imp__XMsgInProcessCall) {
+TZ_IMPORT(XMsgInProcessCall) {
     TZ_TRACE("xam", "[xam] XMsgInProcessCall app %08X message %08X", ctx.r3.u32, ctx.r4.u32);
     ctx.r3.u64 = kErrorFunctionFailed;
 }
 
-PPC_FUNC(__imp__XMsgCancelIORequest) { ctx.r3.u64 = kStatusSuccess; }
+TZ_IMPORT(XMsgCancelIORequest) { ctx.r3.u64 = kStatusSuccess; }

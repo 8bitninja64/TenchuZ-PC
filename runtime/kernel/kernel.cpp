@@ -1,6 +1,7 @@
 #include "kernel.h"
 #include "xex.h"
-#include "ppc_recomp_shared.h"
+#include "guest/host.h"
+#include "module_loader.h"
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
@@ -614,8 +615,10 @@ void initializeKernel(const std::filesystem::path& directory) {
 
     memory = new Memory();
     installMmioFaultHandler();
+    const GameModule* module = gameModule();
+    if (!module) throw std::runtime_error("No game module is loaded");
     const XexImage xex = loadXex(gameDir / "default.xex");
-    if (xex.loadAddress != PPC_IMAGE_BASE || xex.image.size() > PPC_IMAGE_SIZE)
+    if (xex.loadAddress != PPC_IMAGE_BASE || xex.image.size() > PPC_IMAGE_SIZE || xex.entryPoint != module->entryPoint)
         throw std::runtime_error("default.xex does not match the translated executable");
     entryPoint = xex.entryPoint;
     if (!memory->commit(uint32_t(PPC_IMAGE_BASE), uint32_t(PPC_IMAGE_SIZE)))
@@ -641,7 +644,7 @@ void initializeKernel(const std::filesystem::path& directory) {
     if (!memory->commit(table, uint32_t(PPC_CODE_SIZE * 2)))
         throw std::runtime_error("Cannot map the function table");
     size_t functions = 0;
-    for (auto* mapping = PPCFuncMappings; mapping->host; ++mapping, ++functions)
+    for (auto* mapping = module->functions; mapping->host; ++mapping, ++functions)
         PPC_LOOKUP_FUNC(memory->base(), mapping->guest) = mapping->host;
 
     installDataImports(xex);
@@ -699,24 +702,30 @@ LONG CALLBACK onWatchedWrite(EXCEPTION_POINTERS* info) {
 }
 }  // namespace
 
-extern "C" uint32_t* volatile PPCEntryCounts = nullptr;
-
 namespace {
 constexpr uint32_t kCountedCode = 0x00A00000;  // 0x82000000-0x82A00000
 uint32_t* entryCounts = nullptr;
 }  // namespace
 
+// The module's counter pointer: null in modules built without TENCHU_ENTRY_COUNTS.
+uint32_t* volatile* moduleCounts() {
+    const GameModule* module = gameModule();
+    return module ? module->entryCounts : nullptr;
+}
+
 void startEntryCounts() {
-#ifndef TENCHU_ENTRY_COUNTS
-    logf("[count] not available: configure with -DTENCHU_ENTRY_COUNTS=ON");
-#endif
+    if (!moduleCounts()) {
+        logf("[count] not available: configure with -DTENCHU_ENTRY_COUNTS=ON");
+        return;
+    }
     if (!entryCounts) entryCounts = new uint32_t[kCountedCode / 4];
     std::memset(entryCounts, 0, kCountedCode);
-    PPCEntryCounts = entryCounts;
+    *moduleCounts() = entryCounts;
 }
 
 void stopEntryCounts(const std::string& path) {
-    PPCEntryCounts = nullptr;
+    if (!moduleCounts()) return;
+    *moduleCounts() = nullptr;
     if (!entryCounts) return;
     std::this_thread::sleep_for(std::chrono::milliseconds(5));  // let in-flight increments land
     FILE* file = fopen(path.c_str(), "w");

@@ -4,7 +4,7 @@
 #include "kernel.h"
 #include "kernel/memory.h"
 #include "host/settings.h"
-#include "ppc_recomp_shared.h"
+#include "guest/host.h"
 
 #include <algorithm>
 #include <atomic>
@@ -31,8 +31,7 @@ bool verifyNative() {
 // signed) is greater than the cursor at 0x833B1ED4, and advances the cursor to it
 // (-1 and null when there is none). Callers walk every record of a key one call at
 // a time, so the original scan from the start dominated the frame thread (~1/3).
-extern "C" PPC_FUNC(__imp__sub_823D4440);
-PPC_FUNC(sub_823D4440) {
+TZ_OVERRIDE(823D4440) {
     if (!nativeEnabled()) return __imp__sub_823D4440(ctx, base);
     constexpr uint32_t kTable = 0x833B1DD8, kCursor = 0x833B1ED4;
     const uint32_t records = load32(kTable + 4);
@@ -89,8 +88,7 @@ namespace {
 std::atomic<float> g_quantizedStep{0.0f};
 std::atomic<float> g_ticks30{0.0f};
 }
-extern "C" PPC_FUNC(__imp__sub_822929D0);
-PPC_FUNC(sub_822929D0) {
+TZ_OVERRIDE(822929D0) {
     __imp__sub_822929D0(ctx, base);
     static double carry = 0.0;
     uint32_t bits = load32(0x82B57824);
@@ -114,12 +112,14 @@ void FrameTicks30MidAsmHook(PPCRegister& f0) {
     static const bool off = traceEnabled("noquantstep");
     if (!off) f0.f64 = g_ticks30.load(std::memory_order_relaxed) + 0.25;
 }
+TZ_MIDASM_HOOK1(FrameTicks30MidAsmHook);
 
 // After loads of the frame time that are truncated to whole milliseconds.
 void QuantizedFrameStepMidAsmHook(PPCRegister& f0) {
     static const bool off = traceEnabled("noquantstep");
     if (!off) f0.f64 = g_quantizedStep.load(std::memory_order_relaxed);
 }
+TZ_MIDASM_HOOK1(QuantizedFrameStepMidAsmHook);
 
 // HUD indicator (sub_822BE208). Its fade rates are computed once from the tick count
 // (64 or 32 per tick) and then applied every frame; with ticks they would latch 0 on
@@ -137,16 +137,19 @@ float frameMilliseconds() {
 void IndicatorFadeInRateMidAsmHook(PPCRegister& r11) {
     r11.u64 = uint64_t((std::max)(1, int(64.0f * frameMilliseconds() * 0.03f + 0.5f)));
 }
+TZ_MIDASM_HOOK1(IndicatorFadeInRateMidAsmHook);
 
 void IndicatorFadeOutRateMidAsmHook(PPCRegister& r9) {
     r9.u64 = uint64_t((std::max)(1, int(32.0f * frameMilliseconds() * 0.03f + 0.5f)));
 }
+TZ_MIDASM_HOOK1(IndicatorFadeOutRateMidAsmHook);
 
 // The display timer (+288) is pinned at 150 while the indicator fades out; a frame that
 // adds no tick must not drop back to the "not expired" branch (which restores alpha).
 void IndicatorHoldMidAsmHook(PPCRegister& r11, PPCRegister& r29) {
     if (r29.s32 == 0 && r11.s32 == 150) r11.s64 = 151;
 }
+TZ_MIDASM_HOOK2(IndicatorHoldMidAsmHook);
 
 // Wave water (sub_823C30E8, type 1): each wave's phase advances by a constant per
 // frame (the type 2 water beside it uses the frame time). Scaled to the real frame
@@ -154,12 +157,17 @@ void IndicatorHoldMidAsmHook(PPCRegister& r11, PPCRegister& r29) {
 void WavePhaseStepMidAsmHook(PPCRegister& f0) {
     f0.f64 *= frameMilliseconds() * 0.03;
 }
+TZ_MIDASM_HOOK1(WavePhaseStepMidAsmHook);
 
 // Front end (title screen, load prompt, main menu): the game mode's per-frame
 // callbacks (task at the head of the scheduler, +24/+28). Their animations (the
 // flashing "Press Start", the burning Z) advance per frame, so presents are held to
 // 30 fps while they run (host::activeFrameRateLimit).
-#define TZ_FRONT_END(address)                              extern "C" PPC_FUNC(__imp__sub_##address);             PPC_FUNC(sub_##address) {                                  host::noteFrontEndFrame();                             __imp__sub_##address(ctx, base);                   }
+#define TZ_FRONT_END(address) \
+    TZ_OVERRIDE(address) { \
+        host::noteFrontEndFrame(); \
+        __imp__sub_##address(ctx, base); \
+    }
 TZ_FRONT_END(822A5CB8)  // title screen
 TZ_FRONT_END(822A2370)
 TZ_FRONT_END(822A2CC0)  // "Load game?"

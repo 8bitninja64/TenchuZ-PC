@@ -1,7 +1,7 @@
 // Kernel variables the title imports by address.
 #include "kernel.h"
 #include "xex.h"
-#include "tenchu_data_imports.h"
+#include "module_loader.h"
 #include <chrono>
 #include <cstring>
 #include <string_view>
@@ -57,8 +57,10 @@ void startTimeStampBundle(uint32_t bundle) {
 }
 
 void installDataImports(const XexImage& xex) {
-    for (const auto& [slot, name] : kDataImports) {
-        const std::string_view id = name;
+    const GameModule* module = gameModule();
+    for (uint32_t i = 0; i < module->dataImportCount; ++i) {
+        const uint32_t slot = module->dataImports[i].slot;
+        const std::string_view id = module->dataImports[i].name;
         uint32_t value = 0;
         if (id == "XboxKrnlVersion") {
             value = memory->allocateKernel(8, 4);
@@ -86,7 +88,7 @@ void installDataImports(const XexImage& xex) {
         } else if (id == "ExThreadObjectType") {
             value = memory->allocateKernel(0x40, 16);
         } else {
-            fatal("Unhandled kernel data import %s", name);
+            fatal("Unhandled kernel data import %s", module->dataImports[i].name);
         }
         store32(slot, value);
     }

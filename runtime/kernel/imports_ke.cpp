@@ -1,7 +1,7 @@
 // Kernel executive imports: threads, synchronization, TLS, memory, time.
 #include "kernel.h"
 #include <intrin.h>
-#include "ppc_recomp_shared.h"
+#include "guest/host.h"
 #include <thread>
 
 using namespace tz;
@@ -21,7 +21,7 @@ std::atomic<uint32_t> tlsBitmap[2];
 // ---- Threads ----------------------------------------------------------------
 
 // ExCreateThread(handle*, stackSize, threadId*, xapiStartup, start, context, flags)
-PPC_FUNC(__imp__ExCreateThread) {
+TZ_IMPORT(ExCreateThread) {
     const uint32_t handleOut = ctx.r3.u32, stackSize = ctx.r4.u32, idOut = ctx.r5.u32;
     const uint32_t startup = ctx.r6.u32, entry = ctx.r7.u32, argument = ctx.r8.u32, flags = ctx.r9.u32;
     uint32_t id = 0;
@@ -39,15 +39,15 @@ PPC_FUNC(__imp__ExCreateThread) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__ExTerminateThread) { throw ThreadExit{ctx.r3.u32}; }
+TZ_IMPORT(ExTerminateThread) { throw ThreadExit{ctx.r3.u32}; }
 
-PPC_FUNC(__imp__KeResumeThread) {
+TZ_IMPORT(KeResumeThread) {
     auto thread = threadByKthread(ctx.r3.u32);
     TZ_TRACE("thread", "[thread] KeResumeThread %08X -> %s", ctx.r3.u32, thread ? thread->name.c_str() : "unknown");
     ctx.r3.u64 = thread ? ResumeThread(thread->host) : 0;
 }
 
-PPC_FUNC(__imp__NtResumeThread) {
+TZ_IMPORT(NtResumeThread) {
     auto object = lookupHandleAs<ThreadObject>(ctx.r3.u32);
     TZ_TRACE("thread", "[thread] NtResumeThread %08X -> %s", ctx.r3.u32, object ? object->thread->name.c_str() : "unknown");
     if (!object) { ctx.r3.u64 = kStatusInvalidHandle; return; }
@@ -56,7 +56,7 @@ PPC_FUNC(__imp__NtResumeThread) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__NtSuspendThread) {
+TZ_IMPORT(NtSuspendThread) {
     auto object = lookupHandleAs<ThreadObject>(ctx.r3.u32);
     if (!object) { ctx.r3.u64 = kStatusInvalidHandle; return; }
     const DWORD previous = SuspendThread(object->thread->host);
@@ -64,7 +64,7 @@ PPC_FUNC(__imp__NtSuspendThread) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__KeSetAffinityThread) {
+TZ_IMPORT(KeSetAffinityThread) {
     // (kthread, affinity, previous*). Host scheduling is left to Windows, but the
     // thread's processor number moves to the lowest allowed one: titles index
     // per-processor data with it (the audio workers' barrier needs distinct slots).
@@ -86,36 +86,36 @@ PPC_FUNC(__imp__KeSetAffinityThread) {
     ctx.r3.u64 = previous;
 }
 
-PPC_FUNC(__imp__KeSetBasePriorityThread) { ctx.r3.u64 = 0; }
+TZ_IMPORT(KeSetBasePriorityThread) { ctx.r3.u64 = 0; }
 
-PPC_FUNC(__imp__KeDelayExecutionThread) {
+TZ_IMPORT(KeDelayExecutionThread) {
     // (mode, alertable, interval*)
     const int64_t interval = ctx.r5.u32 ? int64_t(load64(ctx.r5.u32)) : 0;
     ctx.r3.u64 = delayExecution(ctx.r4.u32 != 0, interval);
 }
 
-PPC_FUNC(__imp__KeGetCurrentProcessType) { ctx.r3.u64 = 1; }  // title process
-PPC_FUNC(__imp__KeEnableFpuExceptions) {}
-PPC_FUNC(__imp__KeEnterCriticalRegion) {}
-PPC_FUNC(__imp__KeLeaveCriticalRegion) {}
-PPC_FUNC(__imp__KiApcNormalRoutineNop) {}
-PPC_FUNC(__imp__KeLockL2) { ctx.r3.u64 = 0; }
-PPC_FUNC(__imp__KeUnlockL2) {}
+TZ_IMPORT(KeGetCurrentProcessType) { ctx.r3.u64 = 1; }  // title process
+TZ_IMPORT(KeEnableFpuExceptions) {}
+TZ_IMPORT(KeEnterCriticalRegion) {}
+TZ_IMPORT(KeLeaveCriticalRegion) {}
+TZ_IMPORT(KiApcNormalRoutineNop) {}
+TZ_IMPORT(KeLockL2) { ctx.r3.u64 = 0; }
+TZ_IMPORT(KeUnlockL2) {}
 
 // ---- Dispatcher objects -----------------------------------------------------------
 
-PPC_FUNC(__imp__KeSetEvent) {
+TZ_IMPORT(KeSetEvent) {
     TZ_TRACE("evt", "[evt] %-20s KeSetEvent %08X type %u state %d lr %08X", currentThread()->name.c_str(), ctx.r3.u32,
              *memory->host(ctx.r3.u32), int32_t(load32(ctx.r3.u32 + 4)), uint32_t(ctx.lr));
     ctx.r3.u64 = uint32_t(setEvent(ctx.r3.u32));
 }
-PPC_FUNC(__imp__KeResetEvent) {
+TZ_IMPORT(KeResetEvent) {
     TZ_TRACE("evt", "[evt] %-20s KeResetEvent %08X state %d lr %08X", currentThread()->name.c_str(), ctx.r3.u32,
              int32_t(load32(ctx.r3.u32 + 4)), uint32_t(ctx.lr));
     ctx.r3.u64 = uint32_t(resetEvent(ctx.r3.u32));
 }
 
-PPC_FUNC(__imp__KeInitializeSemaphore) {
+TZ_IMPORT(KeInitializeSemaphore) {
     // (semaphore, count, limit): header type 5 plus limit at +0x10.
     const uint32_t semaphore = ctx.r3.u32;
     *memory->host(semaphore) = kSemaphore;
@@ -127,7 +127,7 @@ PPC_FUNC(__imp__KeInitializeSemaphore) {
     wakeWaiters();
 }
 
-PPC_FUNC(__imp__KeReleaseSemaphore) {
+TZ_IMPORT(KeReleaseSemaphore) {
     // (semaphore, increment, adjustment, wait) -> previous count
     int32_t previous = 0;
     if (releaseSemaphore(ctx.r3.u32, int32_t(ctx.r5.u32), previous) != kStatusSuccess)
@@ -135,7 +135,7 @@ PPC_FUNC(__imp__KeReleaseSemaphore) {
     ctx.r3.u64 = uint32_t(previous);
 }
 
-PPC_FUNC(__imp__KeWaitForSingleObject) {
+TZ_IMPORT(KeWaitForSingleObject) {
     // (object, reason, mode, alertable, timeout*)
     int64_t storage;
     const int64_t* timeout = readTimeout(ctx.r7.u32, storage);
@@ -147,7 +147,7 @@ PPC_FUNC(__imp__KeWaitForSingleObject) {
     TZ_TRACE("evt", "[evt] %-20s   woke %08X status %X", currentThread()->name.c_str(), object, ctx.r3.u32);
 }
 
-PPC_FUNC(__imp__KeWaitForMultipleObjects) {
+TZ_IMPORT(KeWaitForMultipleObjects) {
     // (count, objects*, waitType, reason, mode, alertable, timeout*, waitBlocks)
     std::vector<uint32_t> objects(ctx.r3.u32);
     for (uint32_t i = 0; i < objects.size(); ++i) objects[i] = load32(ctx.r4.u32 + i * 4);
@@ -176,7 +176,7 @@ uint32_t dispatcherForHandle(uint32_t handle) {
 }
 }  // namespace
 
-PPC_FUNC(__imp__NtCreateEvent) {
+TZ_IMPORT(NtCreateEvent) {
     // (handle*, attributes*, type, initialState). Type 0 = notification.
     auto object = std::make_shared<EventObject>();
     object->dispatcher = createDispatcherObject(ctx.r5.u32 ? kSynchronizationEvent : kNotificationEvent, 16,
@@ -185,7 +185,7 @@ PPC_FUNC(__imp__NtCreateEvent) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__NtSetEvent) {
+TZ_IMPORT(NtSetEvent) {
     const uint32_t dispatcher = dispatcherForHandle(ctx.r3.u32);
     if (!dispatcher) { ctx.r3.u64 = kStatusInvalidHandle; return; }
     const int32_t previous = setEvent(dispatcher);
@@ -193,14 +193,14 @@ PPC_FUNC(__imp__NtSetEvent) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__NtClearEvent) {
+TZ_IMPORT(NtClearEvent) {
     const uint32_t dispatcher = dispatcherForHandle(ctx.r3.u32);
     if (!dispatcher) { ctx.r3.u64 = kStatusInvalidHandle; return; }
     resetEvent(dispatcher);
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__NtWaitForSingleObjectEx) {
+TZ_IMPORT(NtWaitForSingleObjectEx) {
     // (handle, mode, alertable, timeout*)
     const uint32_t dispatcher = dispatcherForHandle(ctx.r3.u32);
     if (!dispatcher) { ctx.r3.u64 = kStatusInvalidHandle; return; }
@@ -209,7 +209,7 @@ PPC_FUNC(__imp__NtWaitForSingleObjectEx) {
     ctx.r3.u64 = waitForObjects({dispatcher}, false, ctx.r5.u32 != 0, timeout);
 }
 
-PPC_FUNC(__imp__NtCreateTimer) {
+TZ_IMPORT(NtCreateTimer) {
     // (handle*, attributes*, type). Type 0 = notification timer.
     auto object = std::make_shared<TimerObject>();
     object->dispatcher = createDispatcherObject(ctx.r5.u32 ? kSynchronizationTimer : kNotificationTimer, 0x28, 0);
@@ -217,7 +217,7 @@ PPC_FUNC(__imp__NtCreateTimer) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__NtSetTimerEx) {
+TZ_IMPORT(NtSetTimerEx) {
     // (handle, dueTime*, apcRoutine, apcMode, apcContext, resume, period(ms), previousState*)
     auto timer = lookupHandleAs<TimerObject>(ctx.r3.u32);
     if (!timer) { ctx.r3.u64 = kStatusInvalidHandle; return; }
@@ -254,7 +254,7 @@ PPC_FUNC(__imp__NtSetTimerEx) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__NtCancelTimer) {
+TZ_IMPORT(NtCancelTimer) {
     auto timer = lookupHandleAs<TimerObject>(ctx.r3.u32);
     if (!timer) { ctx.r3.u64 = kStatusInvalidHandle; return; }
     {
@@ -265,9 +265,9 @@ PPC_FUNC(__imp__NtCancelTimer) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__NtClose) { ctx.r3.u64 = closeHandle(ctx.r3.u32) ? kStatusSuccess : kStatusInvalidHandle; }
+TZ_IMPORT(NtClose) { ctx.r3.u64 = closeHandle(ctx.r3.u32) ? kStatusSuccess : kStatusInvalidHandle; }
 
-PPC_FUNC(__imp__NtDuplicateObject) {
+TZ_IMPORT(NtDuplicateObject) {
     // (source, target*, options)
     const uint32_t handle = duplicateHandle(ctx.r3.u32);
     if (!handle) { ctx.r3.u64 = kStatusInvalidHandle; return; }
@@ -276,7 +276,7 @@ PPC_FUNC(__imp__NtDuplicateObject) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__ObReferenceObjectByHandle) {
+TZ_IMPORT(ObReferenceObjectByHandle) {
     // (handle, objectType, object*) -> guest body of the object
     auto object = lookupHandle(ctx.r3.u32);
     if (!object) { ctx.r3.u64 = kStatusInvalidHandle; return; }
@@ -286,7 +286,7 @@ PPC_FUNC(__imp__ObReferenceObjectByHandle) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__ObDereferenceObject) {}
+TZ_IMPORT(ObDereferenceObject) {}
 
 // ---- Spin locks and IRQL ----------------------------------------------------------
 
@@ -299,17 +299,17 @@ void spinAcquire(uint32_t lock) {
 void spinRelease(uint32_t lock) { _InterlockedExchange(memory->host<volatile long>(lock), 0); }
 }  // namespace
 
-PPC_FUNC(__imp__KfAcquireSpinLock) { spinAcquire(ctx.r3.u32); ctx.r3.u64 = 0; }
-PPC_FUNC(__imp__KfReleaseSpinLock) { spinRelease(ctx.r3.u32); }
-PPC_FUNC(__imp__KeAcquireSpinLockAtRaisedIrql) { spinAcquire(ctx.r3.u32); }
-PPC_FUNC(__imp__KeReleaseSpinLockFromRaisedIrql) { spinRelease(ctx.r3.u32); }
-PPC_FUNC(__imp__KeRaiseIrqlToDpcLevel) { ctx.r3.u64 = 0; }
-PPC_FUNC(__imp__KfLowerIrql) {}
+TZ_IMPORT(KfAcquireSpinLock) { spinAcquire(ctx.r3.u32); ctx.r3.u64 = 0; }
+TZ_IMPORT(KfReleaseSpinLock) { spinRelease(ctx.r3.u32); }
+TZ_IMPORT(KeAcquireSpinLockAtRaisedIrql) { spinAcquire(ctx.r3.u32); }
+TZ_IMPORT(KeReleaseSpinLockFromRaisedIrql) { spinRelease(ctx.r3.u32); }
+TZ_IMPORT(KeRaiseIrqlToDpcLevel) { ctx.r3.u64 = 0; }
+TZ_IMPORT(KfLowerIrql) {}
 
 // ---- Thread local storage -----------------------------------------------------------
 // Dynamic slots follow the static TLS block of each thread.
 
-PPC_FUNC(__imp__KeTlsAlloc) {
+TZ_IMPORT(KeTlsAlloc) {
     for (uint32_t index = 0; index < 64; ++index) {
         auto& word = tlsBitmap[index / 32];
         const uint32_t bit = 1u << (index % 32);
@@ -320,18 +320,18 @@ PPC_FUNC(__imp__KeTlsAlloc) {
     ctx.r3.u64 = 0xFFFFFFFF;
 }
 
-PPC_FUNC(__imp__KeTlsFree) {
+TZ_IMPORT(KeTlsFree) {
     const uint32_t index = ctx.r3.u32;
     if (index < 64) tlsBitmap[index / 32].fetch_and(~(1u << (index % 32)));
     ctx.r3.u64 = index < 64;
 }
 
-PPC_FUNC(__imp__KeTlsGetValue) {
+TZ_IMPORT(KeTlsGetValue) {
     const uint32_t index = ctx.r3.u32;
     ctx.r3.u64 = index < 64 ? load32(currentThread()->tls + staticTlsSize() + index * 4) : 0;
 }
 
-PPC_FUNC(__imp__KeTlsSetValue) {
+TZ_IMPORT(KeTlsSetValue) {
     const uint32_t index = ctx.r3.u32;
     if (index < 64) store32(currentThread()->tls + staticTlsSize() + index * 4, ctx.r4.u32);
     ctx.r3.u64 = index < 64;
@@ -339,7 +339,7 @@ PPC_FUNC(__imp__KeTlsSetValue) {
 
 // ---- Memory -------------------------------------------------------------------------
 
-PPC_FUNC(__imp__NtAllocateVirtualMemory) {
+TZ_IMPORT(NtAllocateVirtualMemory) {
     // (base*, size*, allocationType, protect, zeroBits). MEM_RESERVE 0x2000,
     // MEM_COMMIT 0x1000; the high bits select page sizes and are ignored.
     const uint32_t basePtr = ctx.r3.u32, sizePtr = ctx.r4.u32, type = ctx.r5.u32;
@@ -371,7 +371,7 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__NtFreeVirtualMemory) {
+TZ_IMPORT(NtFreeVirtualMemory) {
     // (base*, size*, freeType). MEM_DECOMMIT 0x4000, MEM_RELEASE 0x8000.
     const uint32_t address = load32(ctx.r3.u32);
     const uint32_t size = ctx.r4.u32 ? load32(ctx.r4.u32) : 0;
@@ -389,7 +389,7 @@ PPC_FUNC(__imp__NtFreeVirtualMemory) {
     ctx.r3.u64 = kStatusInvalidParameter;
 }
 
-PPC_FUNC(__imp__NtQueryVirtualMemory) {
+TZ_IMPORT(NtQueryVirtualMemory) {
     // (address, MEMORY_BASIC_INFORMATION*)
     const uint32_t info = ctx.r4.u32;
     const auto region = memory->queryVirtual(ctx.r3.u32);
@@ -404,7 +404,7 @@ PPC_FUNC(__imp__NtQueryVirtualMemory) {
     ctx.r3.u64 = kStatusSuccess;
 }
 
-PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx) {
+TZ_IMPORT(MmAllocatePhysicalMemoryEx) {
     // (flags, size, protect, minAddress, maxAddress, alignment)
     const uint32_t size = ctx.r4.u32, protect = ctx.r5.u32;
     const uint32_t alias = protect & 0x20000000 ? 0xA0000000 : protect & 0x80000000 ? 0xC0000000 : 0xE0000000;
@@ -418,14 +418,14 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx) {
     ctx.r3.u64 = address;
 }
 
-PPC_FUNC(__imp__MmFreePhysicalMemory) { memory->free(ctx.r4.u32); }
-PPC_FUNC(__imp__MmGetPhysicalAddress) {
+TZ_IMPORT(MmFreePhysicalMemory) { memory->free(ctx.r4.u32); }
+TZ_IMPORT(MmGetPhysicalAddress) {
     const uint32_t address = ctx.r3.u32;
     ctx.r3.u64 = address >= 0xA0000000 ? Memory::physicalAddress(address) : address;
 }
-PPC_FUNC(__imp__MmQueryAddressProtect) { ctx.r3.u64 = 4; }  // PAGE_READWRITE
+TZ_IMPORT(MmQueryAddressProtect) { ctx.r3.u64 = 4; }  // PAGE_READWRITE
 
-PPC_FUNC(__imp__MmQueryStatistics) {
+TZ_IMPORT(MmQueryStatistics) {
     // MM_STATISTICS: u32 length first; page counts follow.
     const uint32_t stats = ctx.r3.u32;
     const uint32_t length = load32(stats);
@@ -442,9 +442,9 @@ PPC_FUNC(__imp__MmQueryStatistics) {
 
 // ---- Time -----------------------------------------------------------------------------
 
-PPC_FUNC(__imp__KeQueryPerformanceFrequency) { ctx.r3.u64 = 49875000; }
+TZ_IMPORT(KeQueryPerformanceFrequency) { ctx.r3.u64 = 49875000; }
 
-PPC_FUNC(__imp__KeQuerySystemTime) {
+TZ_IMPORT(KeQuerySystemTime) {
     FILETIME now;
     GetSystemTimeAsFileTime(&now);
     store64(ctx.r3.u32, uint64_t(now.dwHighDateTime) << 32 | now.dwLowDateTime);
@@ -452,13 +452,13 @@ PPC_FUNC(__imp__KeQuerySystemTime) {
 
 // ---- Failure paths ----------------------------------------------------------------------
 
-PPC_FUNC(__imp__KeBugCheck) { fatal("KeBugCheck 0x%08X", ctx.r3.u32); }
-PPC_FUNC(__imp__KeBugCheckEx) {
+TZ_IMPORT(KeBugCheck) { fatal("KeBugCheck 0x%08X", ctx.r3.u32); }
+TZ_IMPORT(KeBugCheckEx) {
     fatal("KeBugCheckEx 0x%08X (%08X %08X %08X %08X)", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32);
 }
-PPC_FUNC(__imp__DbgBreakPoint) { logf("[kernel] DbgBreakPoint from 0x%08X ignored", uint32_t(ctx.lr)); }
-PPC_FUNC(__imp__HalReturnToFirmware) {
+TZ_IMPORT(DbgBreakPoint) { logf("[kernel] DbgBreakPoint from 0x%08X ignored", uint32_t(ctx.lr)); }
+TZ_IMPORT(HalReturnToFirmware) {
     logf("[kernel] HalReturnToFirmware(%u): title requested shutdown", ctx.r3.u32);
     ExitProcess(0);
 }
-PPC_FUNC(__imp__ExRegisterTitleTerminateNotification) {}
+TZ_IMPORT(ExRegisterTitleTerminateNotification) {}

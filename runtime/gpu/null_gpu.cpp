@@ -9,7 +9,7 @@
 #include "gpu/d3d11/xenos_backend.h"
 #include <map>
 #include <unordered_map>
-#include "ppc_recomp_shared.h"
+#include "guest/host.h"
 #include <array>
 #include <filesystem>
 #include <set>
@@ -803,7 +803,7 @@ void PPCMmioWrite32(uint32_t address, uint32_t value) {
 
 // ---- Video imports ------------------------------------------------------------------
 
-PPC_FUNC(__imp__VdInitializeRingBuffer) {
+TZ_IMPORT(VdInitializeRingBuffer) {
     // (physical address, log2 of size in quadwords)
     {
         std::lock_guard lock(gs.mutex);
@@ -816,31 +816,31 @@ PPC_FUNC(__imp__VdInitializeRingBuffer) {
     startGpu();
 }
 
-PPC_FUNC(__imp__VdEnableRingBufferRPtrWriteBack) {
+TZ_IMPORT(VdEnableRingBufferRPtrWriteBack) {
     // (physical address, log2 block size)
     logf("[gpu] read pointer writeback %08X", ctx.r3.u32);
     std::lock_guard lock(gs.mutex);
     gs.rptrWriteback = ctx.r3.u32;
 }
 
-PPC_FUNC(__imp__VdSetGraphicsInterruptCallback) {
+TZ_IMPORT(VdSetGraphicsInterruptCallback) {
     logf("[gpu] interrupt callback %08X data %08X", ctx.r3.u32, ctx.r4.u32);
     gs.interruptData = ctx.r4.u32;
     gs.interruptCallback = ctx.r3.u32;
     startGpu();
 }
 
-PPC_FUNC(__imp__VdGetSystemCommandBuffer) {
+TZ_IMPORT(VdGetSystemCommandBuffer) {
     std::memset(memory->host(ctx.r3.u32), 0, 0x94);
     store32(ctx.r3.u32, 0xBEEF0000);
     store32(ctx.r4.u32, 0xBEEF0001);
 }
 
-PPC_FUNC(__imp__VdSetSystemCommandBufferGpuIdentifierAddress) {
+TZ_IMPORT(VdSetSystemCommandBufferGpuIdentifierAddress) {
     logf("[gpu] GPU identifier address %08X", ctx.r3.u32);
 }
 
-PPC_FUNC(__imp__VdInitializeScalerCommandBuffer) {
+TZ_IMPORT(VdInitializeScalerCommandBuffer) {
     // Nine arguments; the destination is the ninth. Fill it with filler packets.
     const uint32_t destination = load32(ctx.r1.u32 + 0x54);
     constexpr uint32_t kDwords = 0x1CC / 4;
@@ -849,7 +849,7 @@ PPC_FUNC(__imp__VdInitializeScalerCommandBuffer) {
     ctx.r3.u64 = kDwords;
 }
 
-PPC_FUNC(__imp__VdSwap) {
+TZ_IMPORT(VdSwap) {
     // (commandBuffer*, fetchConstant*, ..., frontBuffer, colorFormat, colorSpace, ...)
     if (traceEnabled("swapargs")) {
         logf("[gpu] VdSwap r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X s9=%08X s10=%08X",
@@ -913,11 +913,11 @@ PPC_FUNC(__imp__VdSwap) {
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__VdQueryVideoMode) { writeVideoMode(ctx.r3.u32); }
-PPC_FUNC(__imp__XGetVideoMode) { writeVideoMode(ctx.r3.u32); }
-PPC_FUNC(__imp__VdQueryVideoFlags) { ctx.r3.u64 = 3; }  // widescreen, 720p capable
+TZ_IMPORT(VdQueryVideoMode) { writeVideoMode(ctx.r3.u32); }
+TZ_IMPORT(XGetVideoMode) { writeVideoMode(ctx.r3.u32); }
+TZ_IMPORT(VdQueryVideoFlags) { ctx.r3.u64 = 3; }  // widescreen, 720p capable
 
-PPC_FUNC(__imp__VdGetCurrentDisplayInformation) {
+TZ_IMPORT(VdGetCurrentDisplayInformation) {
     const uint32_t info = ctx.r3.u32;
     std::memset(memory->host(info), 0, 0x58);
     store16(info + 0x00, 1280);
@@ -931,7 +931,7 @@ PPC_FUNC(__imp__VdGetCurrentDisplayInformation) {
     store16(info + 0x56, 1280);
 }
 
-PPC_FUNC(__imp__VdGetCurrentDisplayGamma) {
+TZ_IMPORT(VdGetCurrentDisplayGamma) {
     store32(ctx.r3.u32, 1);
     const float power = 2.22222233f;
     uint32_t bits;
@@ -939,12 +939,12 @@ PPC_FUNC(__imp__VdGetCurrentDisplayGamma) {
     store32(ctx.r4.u32, bits);
 }
 
-PPC_FUNC(__imp__VdInitializeEngines) { ctx.r3.u64 = 1; }
-PPC_FUNC(__imp__VdShutdownEngines) {}
-PPC_FUNC(__imp__VdSetDisplayMode) { ctx.r3.u64 = 0; }
-PPC_FUNC(__imp__VdPersistDisplay) { ctx.r3.u64 = 0; }
-PPC_FUNC(__imp__VdIsHSIOTrainingSucceeded) { ctx.r3.u64 = 1; }
-PPC_FUNC(__imp__VdRetrainEDRAM) { ctx.r3.u64 = 0; }
-PPC_FUNC(__imp__VdRetrainEDRAMWorker) {}
-PPC_FUNC(__imp__VdEnableDisableClockGating) {}
-PPC_FUNC(__imp__VdCallGraphicsNotificationRoutines) { ctx.r3.u64 = 0; }
+TZ_IMPORT(VdInitializeEngines) { ctx.r3.u64 = 1; }
+TZ_IMPORT(VdShutdownEngines) {}
+TZ_IMPORT(VdSetDisplayMode) { ctx.r3.u64 = 0; }
+TZ_IMPORT(VdPersistDisplay) { ctx.r3.u64 = 0; }
+TZ_IMPORT(VdIsHSIOTrainingSucceeded) { ctx.r3.u64 = 1; }
+TZ_IMPORT(VdRetrainEDRAM) { ctx.r3.u64 = 0; }
+TZ_IMPORT(VdRetrainEDRAMWorker) {}
+TZ_IMPORT(VdEnableDisableClockGating) {}
+TZ_IMPORT(VdCallGraphicsNotificationRoutines) { ctx.r3.u64 = 0; }

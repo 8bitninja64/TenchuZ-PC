@@ -1,6 +1,7 @@
 // Tenchu Z Recomp entry point.
 #include "kernel/kernel.h"
 #include "kernel/filesystem.h"
+#include "kernel/module_loader.h"
 #include "gpu/d3d11/renderer.h"
 #include "host/input.h"
 #include "host/settings.h"
@@ -8,6 +9,7 @@
 #include <thread>
 #include <cstdio>
 #include <exception>
+#include <stdexcept>
 
 namespace {
 std::filesystem::path findGameDirectory(int argc, wchar_t** argv) {
@@ -21,6 +23,15 @@ std::filesystem::path findGameDirectory(int argc, wchar_t** argv) {
         if (directory == directory.parent_path()) break;
     }
     return L"game";
+}
+
+// The game module: TENCHU_MODULE, or tenchu_game.dll next to the executable.
+std::filesystem::path findGameModule() {
+    wchar_t value[MAX_PATH]{};
+    if (GetEnvironmentVariableW(L"TENCHU_MODULE", value, MAX_PATH)) return value;
+    wchar_t executable[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, executable, MAX_PATH);
+    return std::filesystem::path(executable).parent_path() / L"tenchu_game.dll";
 }
 
 // Borderless fullscreen on the window's monitor, or back to the saved window.
@@ -140,6 +151,8 @@ int wmain(int argc, wchar_t** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     try {
         const auto gameDirectory = findGameDirectory(argc, argv);
+        std::string moduleError;
+        if (!tz::loadGameModule(findGameModule(), moduleError)) throw std::runtime_error(moduleError);
         if (!GetEnvironmentVariableW(L"TENCHU_HEADLESS", nullptr, 0)) startWindowThread();
         tz::initializeKernel(gameDirectory);
         tz::mountDevice("game", tz::gameDirectory());
