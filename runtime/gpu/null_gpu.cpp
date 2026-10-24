@@ -899,6 +899,14 @@ TZ_IMPORT(VdSwap) {
              waitMemNs.exchange(0) / 1e6, interruptNs.exchange(0) / 1e6, memWaits.exchange(0), interrupts.exchange(0));
         last = std::chrono::steady_clock::now();
     }
+    if (traceEnabled("playerpos")) {  // per frame: time, the game's frame ms, player position
+        static auto start = std::chrono::steady_clock::now();
+        const uint32_t player = load32(0x82B58A58);
+        auto f = [](uint32_t a) { const uint32_t v = load32(a); float r; std::memcpy(&r, &v, 4); return r; };
+        if (player)
+            logf("[pp] %llu %.2f ms %.3f pos %.2f %.2f %.2f", (unsigned long long)frame, nanosSince(start) / 1e6,
+                 f(0x82B57824), f(player + 0xD80), f(player + 0xD84), f(player + 0xD88));
+    }
     if (frame == 1 || frame % 600 == 0 || traceEnabled("swap"))
         logf("[gpu] VdSwap frame %llu (%llu draw packets so far)", (unsigned long long)frame,
              (unsigned long long)gs.draws.load());

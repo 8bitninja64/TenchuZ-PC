@@ -80,6 +80,41 @@ TZ_OVERRIDE(823D4440) {
     ctx.r3.u64 = result;
 }
 
+// Frame delta (sub_8228E5C8: QueryPerformanceCounter delta in seconds at 0x82B577BC, which
+// everything that moves reads through sub_8228E5B8). The title's thread wakes at irregular
+// moments relative to the display, so at 120 fps the measured delta swings between 7 and
+// 10 ms around 8.3 and the player's movement per frame by +-15%: it shakes against the
+// smoothly following camera, a double image while running. The game gets a smoothed delta:
+// the display period while it keeps up with the frame-rate limit, else a running average.
+// What it did not get yet is carried, so game time still follows the clock.
+TZ_OVERRIDE(8228E5C8) {
+    __imp__sub_8228E5C8(ctx, base);
+    static const bool raw = traceEnabled("rawdelta");
+    if (raw) return;
+    const uint32_t bits = load32(0x82B577BC);
+    float measured;
+    std::memcpy(&measured, &bits, 4);
+    static double average = 0.0, owed = 0.0;
+    if (!(measured > 0.0f) || measured > 0.1f) {  // the first frame, loads, hitches: as measured
+        if (measured > 0.0f) average = measured;
+        owed = 0.0;
+        return;
+    }
+    average = average > 0.0 ? average + (measured - average) * 0.1 : measured;
+    double step = average;
+    if (const int limit = host::activeFrameRateLimit(); limit > 0) {
+        const double period = 1.0 / limit;
+        if (std::abs(average - period) < period * 0.1) step = period;
+    }
+    owed += measured;
+    const double given = std::clamp(step + (owed - step) * 0.1, step * 0.5, step * 1.5);
+    owed -= given;
+    const float out = float(given);
+    uint32_t outBits;
+    std::memcpy(&outBits, &out, 4);
+    store32(0x82B577BC, outBits);
+}
+
 // Frame time (sub_822929D0 stores milliseconds per frame at 0x82B57824). Effect code
 // rounds it to whole 30 Hz ticks, int(ms * 0.03 + 0.5), which is 0 at 120 fps (water
 // ripples never expired), or to whole milliseconds. The midasm hooks in config/tenchuz.toml

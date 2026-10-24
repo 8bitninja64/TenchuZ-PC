@@ -197,6 +197,16 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   TENCHU_PROF_LINES=<function> (hot source lines; the generated code has /Z7 symbols), control
   commands findf (search guest memory for floats) and watchw (hardware write watchpoint;
   its fn is the last function entered, often a save helper: read the backtrace/lr).
+- Frame delta: sub_8228E5C8 stores the QPC delta in seconds at 0x82B577BC (read through
+  sub_8228E5B8 by everything that moves). Measured on the title's thread it swung 7-10 ms at
+  120 fps (player shook against the camera: "motion blur" while running); the override
+  smooths it (display period while the limit holds, else an average; the rest carried).
+  TENCHU_TRACE=rawdelta disables it; TENCHU_TRACE=playerpos logs ms and position per frame.
+- User clip planes: PA_CL_CLIP_CNTL bits 0-5 + PA_CL_UCP_n (0x2388) become SV_ClipDistance
+  in translated vertex shaders (cbuffer b2). The water reflection pass clips at the water
+  plane with plane 0; without it submerged legs showed upside down. TENCHU_TRACE=noucp.
+- Shader debugging: TENCHU_DUMP_SHADERS=<dir> writes every translated shader's HLSL;
+  traceframe also logs resolves in order ([draw] resolve ... -> dest).
 - Wave water (sub_823C30E8, type 1 Gerstner waves, table 0x833AF5E0): the phase advanced
   a constant per frame; WavePhaseStepMidAsmHook scales it by the frame time.
 - Shader exports: with export_data set, the scalar op also writes the vector destination;
