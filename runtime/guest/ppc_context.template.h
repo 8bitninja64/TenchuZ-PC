@@ -91,27 +91,47 @@ inline bool PPCIsDynamicMmio(uint32_t address) {
 // GPU/APU register access, owned by the runtime's device emulation.
 uint32_t PPCMmioRead32(uint32_t address);
 void PPCMmioWrite32(uint32_t address, uint32_t value);
-inline bool PPCIsInvalidGuestAddress(uint32_t address) {
-    return address < 0x10000u;
-}
-// Reports loads from the unmapped first 64 KiB (null pointer reads).
-void PPCTraceInvalidGuestLoad(uint32_t address, unsigned width);
-inline uint8_t PPCLoadU8(uint8_t* base, uint32_t address) {
-    if (PPCIsInvalidGuestAddress(address)) { PPCTraceInvalidGuestLoad(address, 1); return 0; }
-    return PPCIsDynamicMmio(address) ? uint8_t(0) : *(volatile uint8_t*)(base + address);
-}
+
+// Guest memory accesses are plain host accesses: the hot path has no checks.
+// - The MMIO ranges are never mapped: an access faults, and the runtime's handler
+//   (kernel/mmio_fault.cpp) decodes the x86 instruction and calls PPCMmioRead32 or
+//   PPCMmioWrite32, a few times per frame.
+// - The first 64 KiB are committed zero memory, so a null pointer read returns 0
+//   (the console does not map it; the title never touches it).
+// Stores followed by eieio and their loads (PPC_MM_*) keep explicit MMIO routing.
+inline uint8_t PPCLoadU8(uint8_t* base, uint32_t address) { return *(volatile uint8_t*)(base + address); }
 inline uint16_t PPCLoadU16(uint8_t* base, uint32_t address) {
-    if (PPCIsInvalidGuestAddress(address)) { PPCTraceInvalidGuestLoad(address, 2); return 0; }
-    return PPCIsDynamicMmio(address) ? uint16_t(0) : __builtin_bswap16(*(volatile uint16_t*)(base + address));
+    return __builtin_bswap16(*(volatile uint16_t*)(base + address));
 }
 inline uint32_t PPCLoadU32(uint8_t* base, uint32_t address) {
-    if (PPCIsInvalidGuestAddress(address)) { PPCTraceInvalidGuestLoad(address, 4); return 0; }
-    return PPCIsDynamicMmio(address) ? PPCMmioRead32(address) : __builtin_bswap32(*(volatile uint32_t*)(base + address));
+    return __builtin_bswap32(*(volatile uint32_t*)(base + address));
 }
 inline uint64_t PPCLoadU64(uint8_t* base, uint32_t address) {
-    if (PPCIsInvalidGuestAddress(address)) { PPCTraceInvalidGuestLoad(address, 8); return 0; }
-    return PPCIsDynamicMmio(address) ? 0ull : __builtin_bswap64(*(volatile uint64_t*)(base + address));
+    return __builtin_bswap64(*(volatile uint64_t*)(base + address));
 }
+inline void PPCStoreU8(uint8_t* base, uint32_t address, uint8_t value) { *(volatile uint8_t*)(base + address) = value; }
+inline void PPCStoreU16(uint8_t* base, uint32_t address, uint16_t value) {
+    *(volatile uint16_t*)(base + address) = __builtin_bswap16(value);
+}
+inline void PPCStoreU32(uint8_t* base, uint32_t address, uint32_t value) {
+    *(volatile uint32_t*)(base + address) = __builtin_bswap32(value);
+}
+inline void PPCStoreU64(uint8_t* base, uint32_t address, uint64_t value) {
+    *(volatile uint64_t*)(base + address) = __builtin_bswap64(value);
+}
+inline uint32_t PPCMmLoadU32(uint8_t* base, uint32_t address) {
+    return PPCIsDynamicMmio(address) ? PPCMmioRead32(address) : PPCLoadU32(base, address);
+}
+inline void PPCMmStoreU32(uint8_t* base, uint32_t address, uint32_t value) {
+    if (PPCIsDynamicMmio(address)) PPCMmioWrite32(address, value);
+    else PPCStoreU32(base, address, value);
+}
+inline uint8_t PPCMmLoadU8(uint8_t* base, uint32_t address) { return PPCIsDynamicMmio(address) ? 0 : PPCLoadU8(base, address); }
+inline uint16_t PPCMmLoadU16(uint8_t* base, uint32_t address) { return PPCIsDynamicMmio(address) ? 0 : PPCLoadU16(base, address); }
+inline uint64_t PPCMmLoadU64(uint8_t* base, uint32_t address) { return PPCIsDynamicMmio(address) ? 0 : PPCLoadU64(base, address); }
+inline void PPCMmStoreU8(uint8_t* base, uint32_t address, uint8_t value) { if (!PPCIsDynamicMmio(address)) PPCStoreU8(base, address, value); }
+inline void PPCMmStoreU16(uint8_t* base, uint32_t address, uint16_t value) { if (!PPCIsDynamicMmio(address)) PPCStoreU16(base, address, value); }
+inline void PPCMmStoreU64(uint8_t* base, uint32_t address, uint64_t value) { if (!PPCIsDynamicMmio(address)) PPCStoreU64(base, address, value); }
 #ifndef PPC_LOAD_U8
 #define PPC_LOAD_U8(x) PPCLoadU8(base, uint32_t(x))
 #endif
@@ -123,44 +143,6 @@ inline uint64_t PPCLoadU64(uint8_t* base, uint32_t address) {
 #endif
 #ifndef PPC_LOAD_U64
 #define PPC_LOAD_U64(x) PPCLoadU64(base, uint32_t(x))
-#endif
-
-inline void PPCStoreU32(uint8_t* base, uint32_t address, uint32_t value) {
-    if (PPCIsDynamicMmio(address)) PPCMmioWrite32(address, value);
-    else if (!PPCIsInvalidGuestAddress(address))
-        *(volatile uint32_t*)(base + address) = __builtin_bswap32(value);
-}
-inline void PPCStoreU64(uint8_t* base, uint32_t address, uint64_t value) {
-    if (!PPCIsInvalidGuestAddress(address) && !PPCIsDynamicMmio(address))
-        *(volatile uint64_t*)(base + address) = __builtin_bswap64(value);
-}
-#ifndef PPC_STORE_U32
-#define PPC_STORE_U32(x, y) PPCStoreU32(base, uint32_t(x), uint32_t(y))
-#endif
-#ifndef PPC_STORE_U64
-#define PPC_STORE_U64(x, y) PPCStoreU64(base, uint32_t(x), uint64_t(y))
-#endif
-// Stores followed by eieio and their loads are emitted as PPC_MM_* accesses.
-// Most target ordinary memory (command buffers); the helpers send real MMIO
-// ranges to the runtime and access memory otherwise.
-inline void PPCStoreU8(uint8_t* base, uint32_t address, uint8_t value) {
-    if (!PPCIsDynamicMmio(address) && !PPCIsInvalidGuestAddress(address)) *(volatile uint8_t*)(base + address) = value;
-}
-inline void PPCStoreU16(uint8_t* base, uint32_t address, uint16_t value) {
-    if (!PPCIsDynamicMmio(address) && !PPCIsInvalidGuestAddress(address))
-        *(volatile uint16_t*)(base + address) = __builtin_bswap16(value);
-}
-#ifndef PPC_MM_LOAD_U8
-#define PPC_MM_LOAD_U8(x)  PPCLoadU8(base, uint32_t(x))
-#endif
-#ifndef PPC_MM_LOAD_U16
-#define PPC_MM_LOAD_U16(x) PPCLoadU16(base, uint32_t(x))
-#endif
-#ifndef PPC_MM_LOAD_U32
-#define PPC_MM_LOAD_U32(x) PPCLoadU32(base, uint32_t(x))
-#endif
-#ifndef PPC_MM_LOAD_U64
-#define PPC_MM_LOAD_U64(x) PPCLoadU64(base, uint32_t(x))
 #endif
 #ifndef PPC_STORE_U8
 #define PPC_STORE_U8(x, y) PPCStoreU8(base, uint32_t(x), uint8_t(y))
@@ -174,17 +156,29 @@ inline void PPCStoreU16(uint8_t* base, uint32_t address, uint16_t value) {
 #ifndef PPC_STORE_U64
 #define PPC_STORE_U64(x, y) PPCStoreU64(base, uint32_t(x), uint64_t(y))
 #endif
+#ifndef PPC_MM_LOAD_U8
+#define PPC_MM_LOAD_U8(x)  PPCMmLoadU8(base, uint32_t(x))
+#endif
+#ifndef PPC_MM_LOAD_U16
+#define PPC_MM_LOAD_U16(x) PPCMmLoadU16(base, uint32_t(x))
+#endif
+#ifndef PPC_MM_LOAD_U32
+#define PPC_MM_LOAD_U32(x) PPCMmLoadU32(base, uint32_t(x))
+#endif
+#ifndef PPC_MM_LOAD_U64
+#define PPC_MM_LOAD_U64(x) PPCMmLoadU64(base, uint32_t(x))
+#endif
 #ifndef PPC_MM_STORE_U8
-#define PPC_MM_STORE_U8(x, y)  PPCStoreU8(base, uint32_t(x), uint8_t(y))
+#define PPC_MM_STORE_U8(x, y)  PPCMmStoreU8(base, uint32_t(x), uint8_t(y))
 #endif
 #ifndef PPC_MM_STORE_U16
-#define PPC_MM_STORE_U16(x, y) PPCStoreU16(base, uint32_t(x), uint16_t(y))
+#define PPC_MM_STORE_U16(x, y) PPCMmStoreU16(base, uint32_t(x), uint16_t(y))
 #endif
 #ifndef PPC_MM_STORE_U32
-#define PPC_MM_STORE_U32(x, y) PPCStoreU32(base, uint32_t(x), uint32_t(y))
+#define PPC_MM_STORE_U32(x, y) PPCMmStoreU32(base, uint32_t(x), uint32_t(y))
 #endif
 #ifndef PPC_MM_STORE_U64
-#define PPC_MM_STORE_U64(x, y) PPCStoreU64(base, uint32_t(x), uint64_t(y))
+#define PPC_MM_STORE_U64(x, y) PPCMmStoreU64(base, uint32_t(x), uint64_t(y))
 #endif
 
 #ifndef PPC_CALL_FUNC

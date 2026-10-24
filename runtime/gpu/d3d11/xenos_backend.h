@@ -13,6 +13,10 @@
 
 namespace tz::gpu {
 
+// Set by the command processor when a vertex (0) or pixel (1) shader constant
+// register is written; draws rebuild their constant buffers only then.
+extern std::atomic<bool> constantsWritten[2];
+
 struct DrawRequest {
     uint32_t initiator = 0;          // VGT_DRAW_INITIATOR
     uint32_t indexBase = 0;          // DMA index buffer (physical)

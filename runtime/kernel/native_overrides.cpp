@@ -6,6 +6,7 @@
 #include "ppc_recomp_shared.h"
 
 #include <cstdlib>
+#include <vector>
 
 using namespace tz;
 
@@ -36,16 +37,28 @@ PPC_FUNC(sub_823D4440) {
     if (!records) {
         writeCursor = false;  // the original returns without touching the cursor
     } else {
+        // An iteration (cursor -1) scans the table once and keeps the key's records
+        // in table order; its next calls pick from them instead of rescanning.
+        struct Match { uint32_t index; int32_t order; };
+        thread_local std::vector<Match> matches;  // per thread, like the guest loop using it
+        thread_local uint32_t cachedKey = 0, cachedRecords = 0, cachedCount = ~0u;
         const uint32_t count = load32(kTable);
         const int32_t after = int32_t(load32(kCursor));
-        const uint32_t key = _byteswap_ulong(ctx.r3.u32);  // compare in guest byte order
-        const uint8_t* record = memory->host(records);
-        for (uint32_t i = 0; i < count; ++i, record += 80) {
-            if (*reinterpret_cast<const uint32_t*>(record) != key) continue;
-            const int32_t order = int32_t(_byteswap_ulong(*reinterpret_cast<const uint32_t*>(record + 4)));
-            if (order > after) {
-                result = records + i * 80;
-                cursor = order;
+        if (after == -1 || ctx.r3.u32 != cachedKey || records != cachedRecords || count != cachedCount) {
+            matches.clear();
+            const uint32_t key = _byteswap_ulong(ctx.r3.u32);  // compare in guest byte order
+            const uint8_t* record = memory->host(records);
+            for (uint32_t i = 0; i < count; ++i, record += 80)
+                if (*reinterpret_cast<const uint32_t*>(record) == key)
+                    matches.push_back({i, int32_t(_byteswap_ulong(*reinterpret_cast<const uint32_t*>(record + 4)))});
+            cachedKey = ctx.r3.u32;
+            cachedRecords = records;
+            cachedCount = count;
+        }
+        for (const auto& match : matches) {
+            if (match.order > after) {
+                result = records + match.index * 80;
+                cursor = match.order;
                 break;
             }
         }

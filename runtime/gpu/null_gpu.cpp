@@ -156,6 +156,9 @@ void limitFrameRate() {
     next += period;
 }
 
+// Per frame packet statistics (trace 'cpstats').
+struct CpStats { uint64_t dwords, registerWrites, constantDwords, imLoads, imWatched, imCompared, imNew, ibs, draws; } cpStats{};
+uint64_t statsFrames = 0;
 void presentFrame(uint32_t frontBuffer) {
     {
         std::lock_guard lock(gs.presentMutex);
@@ -172,6 +175,14 @@ void presentFrame(uint32_t frontBuffer) {
         logf("[predstats] ext %u%s", extentWrites, line.c_str());
     }
     predStats.clear();
+    if (traceEnabled("cpstats") && ++statsFrames % 120 == 0) {
+        const double n = 120.0;
+        logf("[cpstats] per frame: %.0f packet dwords, %.0f register writes, %.0f constant dwords, %.0f draws, %.0f IBs, "
+             "IM_LOAD %.0f (%.0f watched, %.0f compared, %.0f new)", cpStats.dwords / n, cpStats.registerWrites / n,
+             cpStats.constantDwords / n, cpStats.draws / n, cpStats.ibs / n, cpStats.imLoads / n, cpStats.imWatched / n,
+             cpStats.imCompared / n, cpStats.imNew / n);
+        cpStats = {};
+    }
     extentWrites = 0;
     limitFrameRate();
     if (auto* active = activeBackend()) active->swap(frontBuffer);
@@ -184,6 +195,10 @@ thread_local uint32_t ibStack[8] = {};
 
 // Per-frame command processor time accounting (TENCHU_TRACE=gputime).
 std::atomic<int64_t> waitRegMemNs{0}, waitMemNs{0}, interruptNs{0}, idleNs{0};
+std::atomic<uint32_t> memWaits{0}, interrupts{0};  // per frame (trace 'gputime')
+}  // namespace
+std::atomic<bool> tz::gpu::constantsWritten[2] = {true, true};
+namespace {
 int64_t nanosSince(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
 }
@@ -228,6 +243,7 @@ void writeRegister(uint32_t index, uint32_t value) {
     // Relaxed: a plain store; seq_cst would be a locked xchg for each of the tens of
     // thousands of register and constant writes per frame.
     gs.registers[index].store(value, std::memory_order_relaxed);
+    if ((index & 0xF800) == 0x4000) gpu::constantsWritten[(index >> 10) & 1].store(true, std::memory_order_relaxed);
     if (index >= kRegScratch0 && index < kRegScratch0 + 8) {
         const uint32_t slot = index - kRegScratch0;
         if (gs.registers[kRegScratchUmsk] & (1u << slot))
@@ -272,6 +288,34 @@ struct Reader {
 };
 
 void execute(Reader& reader, int depth);
+
+// Type-0 packets carry hundreds of thousands of register writes per frame (mostly
+// shader constants). Runs that touch no register with side effects are copied
+// straight into the register file, byte-swapped in blocks.
+bool plainRegisterRun(uint32_t index, uint32_t count) {
+    const uint32_t end = index + count;
+    auto inside = [&](uint32_t reg) { return reg >= index && reg < end; };
+    return end <= 0x10000 && !inside(kRegScratchUmsk) && !inside(kRegScratchAddr) && !inside(kRegCoherStatusHost) &&
+           !(index < kRegScratch0 + 8 && end > kRegScratch0);
+}
+
+void writeRegisterRun(Reader& reader, uint32_t index, uint32_t count) {
+    // std::atomic<uint32_t> has uint32_t's layout; the command processor is the only
+    // writer of these registers.
+    auto* target = reinterpret_cast<uint32_t*>(gs.registers.data()) + index;
+    // Vertex constants 0x4000-0x43FF, pixel constants 0x4400-0x47FF.
+    if (index < 0x4400 && index + count > 0x4000) gpu::constantsWritten[0].store(true, std::memory_order_relaxed);
+    if (index < 0x4800 && index + count > 0x4400) gpu::constantsWritten[1].store(true, std::memory_order_relaxed);
+    while (count) {
+        // Contiguous dwords before the ring wraps.
+        const uint32_t run = reader.ring ? (std::min)(count, reader.dwords - reader.index) : count;
+        const auto* source = reinterpret_cast<const uint32_t*>(memory->host(reader.base + reader.index * 4));
+        for (uint32_t i = 0; i < run; ++i) target[i] = _byteswap_ulong(source[i]);
+        target += run;
+        count -= run;
+        reader.skip(run);
+    }
+}
 
 void executeType3(Reader& reader, uint32_t header, int depth) {
     const uint32_t opcode = (header >> 8) & 0x7F;
@@ -337,6 +381,7 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         if (depth < 8) ibStack[depth] = address;
         if (depth > 4) fatal("Indirect buffers nested too deeply");
         Reader indirect{Memory::fromPhysical(address), 0, 0, size, false};
+        ++cpStats.ibs;
         execute(indirect, depth + 1);
         break;
     }
@@ -370,6 +415,7 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         }
         const int64_t waited = nanosSince(start);
         (info & 0x10 ? waitMemNs : waitRegMemNs) += waited;
+        if ((info & 0x10) && waited > 2000) ++memWaits;
         if (waited > 5000000)
             TZ_TRACE("slowwait", "[cp] slow wait %.1f ms: %s %08X ref %08X", waited / 1e6, info & 0x10 ? "mem" : "reg",
                      poll, reference);
@@ -429,6 +475,7 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         for (uint32_t cpu = 0; cpu < 6; ++cpu)
             if (cpuMask & (1u << cpu)) dispatchInterrupt(1, cpu);
         interruptNs += nanosSince(start);
+        ++interrupts;
         break;
     }
     case 0x2D:    // SET_CONSTANT
@@ -443,6 +490,7 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
             index = offset & 0xFFFF;
         }
         for (uint32_t i = 1; i < count; ++i) writeRegister(index + i - 1, reader.read());
+        cpStats.constantDwords += count - 1;
         break;
     }
     case 0x27: {  // IM_LOAD: microcode at a physical address
@@ -451,11 +499,23 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         const uint32_t size = startSize & 0xFFFF;
         const uint32_t source = Memory::fromPhysical(addressType & ~3u);
         // Shaders are reloaded from the same addresses every draw: reuse the hash of
-        // identical microcode (compared directly, it is small) instead of rehashing.
+        // microcode whose pages were not written since it was read (write watching),
+        // or that compares equal, instead of rehashing.
         static std::unordered_map<uint64_t, std::pair<std::vector<uint32_t>, uint64_t>> loaded;
         auto& known = loaded[(uint64_t(source) << 16) | size];
         const uint8_t* bytes = memory->host(source);
+        const uint32_t firstPage = (addressType & 0x1FFFFFFCu) >> 12;
+        const uint32_t lastPage = ((addressType & 0x1FFFFFFCu) + (std::max)(size, 1u) * 4 - 1) >> 12;
+        ++cpStats.imLoads;
+        if (known.first.size() == size && size && memory->rangeWatched(Memory::kWatchShaders, firstPage, lastPage)) {
+            ++cpStats.imWatched;
+            std::lock_guard lock(shaders.mutex);
+            shaders.current[addressType & 1] = known.second;
+            break;
+        }
+        if (size) memory->watchPages(Memory::kWatchShaders, firstPage, lastPage - firstPage + 1);
         if (known.first.size() == size && std::memcmp(known.first.data(), bytes, size_t(size) * 4) == 0) {
+            ++cpStats.imCompared;
             std::lock_guard lock(shaders.mutex);
             shaders.current[addressType & 1] = known.second;
             break;
@@ -464,6 +524,7 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
         for (size_t i = 0; i < words.size(); ++i) words[i] = load32(source + uint32_t(i) * 4);
         known.first.assign(reinterpret_cast<const uint32_t*>(bytes), reinterpret_cast<const uint32_t*>(bytes) + size);
         known.second = hashWords(words);
+        ++cpStats.imNew;
         captureShader(addressType & 3, std::move(words));
         break;
     }
@@ -485,6 +546,7 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
     case 0x22:  // DRAW_INDX
     case 0x36: {  // DRAW_INDX_2
         const uint64_t draw = ++gs.draws;
+        ++cpStats.draws;
         // TENCHU_REGDUMP=<first>,<count> prints register state at those draws.
         static const std::pair<uint64_t, uint64_t> dumpRange = [] {
             char value[64]{};
@@ -547,10 +609,16 @@ void execute(Reader& reader, int depth) {
         packetAddress = reader.base + reader.index * 4;
         packetDepth = depth;
         const uint32_t header = reader.read();
+        cpStats.dwords += 1 + ((header >> 30) == 3 ? ((header >> 16) & 0x3FFF) + 1 : 0);
         switch (header >> 30) {
         case 0: {  // register writes
             const uint32_t index = header & 0x7FFF, count = ((header >> 16) & 0x3FFF) + 1;
+            cpStats.registerWrites += count;
             const bool single = (header >> 15) & 1;
+            if (!single && plainRegisterRun(index, count)) {
+                writeRegisterRun(reader, index, count);
+                break;
+            }
             for (uint32_t i = 0; i < count; ++i) writeRegister(single ? index : index + i, reader.read());
             break;
         }
@@ -602,10 +670,12 @@ void vblankMain() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     // TENCHU_VBLANK_US overrides the 60 Hz interval (diagnostics only).
     char value[32]{};
-    // Unlocked frame rates use a fine 240 Hz vblank so frames are not held to
-    // 60 Hz steps (the title's vblank logic only paces presents).
+    // Unlocked frame rates use a 1 kHz vblank: Present parks the GPU until the next
+    // vblank, so a coarse tick rounds every frame up to whole ticks (at 240 Hz, 8.5 ms
+    // of work became a 12.5 ms frame). The title's vblank logic only paces presents;
+    // display pacing comes from Present's vsync or limitFrameRate.
     const int limit = host::settings().frameRateLimit;
-    const int64_t defaultInterval = limit == 30 ? 16667 : limit > 240 ? 1000000 / limit : 4167;
+    const int64_t defaultInterval = limit == 30 ? 16667 : 1000;
     const int64_t interval =
         GetEnvironmentVariableA("TENCHU_VBLANK_US", value, sizeof(value)) ? atoll(value) : defaultInterval;
     gs.vblankIntervalUs = interval;
@@ -618,7 +688,8 @@ void vblankMain() {
         next += std::chrono::microseconds(interval);
         const auto now = std::chrono::steady_clock::now();
         if (next < now - std::chrono::milliseconds(100)) next = now;  // resync after a stall
-        const auto early = next - std::chrono::microseconds(500);
+        // Even ticks matter at 60 Hz (30 fps pacing); fine ticks need no spinning.
+        const auto early = next - std::chrono::microseconds(interval >= 4000 ? 500 : 0);
         if (timer && early > now) {
             LARGE_INTEGER due;
             due.QuadPart = -std::chrono::duration_cast<std::chrono::nanoseconds>(early - now).count() / 100;
@@ -812,9 +883,10 @@ PPC_FUNC(__imp__VdSwap) {
     }
     if (traceEnabled("gputime")) {
         static auto last = std::chrono::steady_clock::now();
-        logf("[gputime] frame %llu: %.1f ms total, cp idle %.1f, reg waits %.1f, mem waits %.1f, interrupts %.1f",
+        logf("[gputime] frame %llu: %.1f ms total, cp idle %.1f, reg waits %.1f, mem waits %.1f, interrupts %.1f "
+             "(%u waits over 2 us, %u interrupts)",
              (unsigned long long)frame, nanosSince(last) / 1e6, idleNs.exchange(0) / 1e6, waitRegMemNs.exchange(0) / 1e6,
-             waitMemNs.exchange(0) / 1e6, interruptNs.exchange(0) / 1e6);
+             waitMemNs.exchange(0) / 1e6, interruptNs.exchange(0) / 1e6, memWaits.exchange(0), interrupts.exchange(0));
         last = std::chrono::steady_clock::now();
     }
     if (frame == 1 || frame % 600 == 0 || traceEnabled("swap"))

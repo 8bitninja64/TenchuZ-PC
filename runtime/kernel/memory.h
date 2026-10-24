@@ -84,7 +84,7 @@ public:
     // unprotects the page and clears it for every client. Writes made by the OS on our
     // behalf do not fault, so callers announce them (prepareHostWrite).
     static constexpr uint32_t kPhysicalPages = kPhysicalSize >> 12;
-    enum WatchClient : uint32_t { kWatchMirror, kWatchTextures, kWatchClients };
+    enum WatchClient : uint32_t { kWatchMirror, kWatchTextures, kWatchShaders, kWatchClients };
     void watchPages(WatchClient client, uint32_t firstPage, uint32_t count);
     bool pageWatched(WatchClient client, uint32_t page) const {
         return (valid_[client][page >> 6].load(std::memory_order_acquire) >> (page & 63)) & 1;
@@ -101,6 +101,7 @@ private:
         return (protected_[page >> 6].load(std::memory_order_acquire) >> (page & 63)) & 1;
     }
     std::unique_ptr<std::atomic<uint64_t>[]> valid_[kWatchClients] = {
+        std::unique_ptr<std::atomic<uint64_t>[]>(new std::atomic<uint64_t>[kPhysicalPages / 64]()),
         std::unique_ptr<std::atomic<uint64_t>[]>(new std::atomic<uint64_t>[kPhysicalPages / 64]()),
         std::unique_ptr<std::atomic<uint64_t>[]>(new std::atomic<uint64_t>[kPhysicalPages / 64]())};
     std::unique_ptr<std::atomic<uint64_t>[]> protected_{new std::atomic<uint64_t>[kPhysicalPages / 64]()};

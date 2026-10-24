@@ -39,6 +39,8 @@ public:
     void invalidate(uint32_t physicalAddress);
     // Uploads are revalidated against guest memory at most once per frame.
     void beginFrame() { ++frame_; }
+    // Counts uploads that drew with their own pipeline state (mip generation).
+    uint64_t pipelineChanges() const { return pipelineChanges_; }
 
 private:
     ID3D11ShaderResourceView* withMips(ID3D11Texture2D* base, ID3D11ShaderResourceView* baseView, uint32_t levels);
@@ -58,9 +60,18 @@ private:
     };
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;
-    std::map<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>, Entry> entries_;
+    using Key = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
+    std::map<Key, Entry> entries_;
+    // Most binds repeat within a frame: a small direct-mapped cache in front of the
+    // map (entries never move; invalidate clears it).
+    struct Recent {
+        Key key{};
+        Entry* entry = nullptr;
+    };
+    Recent recent_[256];
     std::map<uint32_t, ID3D11SamplerState*> samplers_;
     uint64_t frame_ = 1;
+    uint64_t pipelineChanges_ = 0;
 };
 
 }  // namespace tz::gpu

@@ -76,6 +76,8 @@ enum : uint8_t {
 };
 
 uint32_t load32(uint32_t address);
+// Guest MMIO and null reads through faults (kernel/mmio_fault.cpp).
+void installMmioFaultHandler();
 void store32(uint32_t address, uint32_t value);
 uint16_t load16(uint32_t address);
 void store16(uint32_t address, uint16_t value);

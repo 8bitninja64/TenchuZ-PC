@@ -7,6 +7,7 @@
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <memory>
 #include <thread>
@@ -728,7 +729,7 @@ struct XenosBackend::Impl {
     }
 
     // ---- State objects ---------------------------------------------------------------
-    std::map<std::vector<uint32_t>, ID3D11BlendState*> blendStates;
+    std::map<std::array<uint32_t, 5>, ID3D11BlendState*> blendStates;
     std::map<std::pair<uint32_t, uint32_t>, ID3D11DepthStencilState*> depthStates;
     std::map<uint32_t, ID3D11RasterizerState*> rasterStates;
     std::map<uint32_t, ID3D11SamplerState*> samplers;
@@ -737,8 +738,7 @@ struct XenosBackend::Impl {
     ID3D11ShaderResourceView* whiteView = nullptr;
 
     ID3D11BlendState* blendState(const uint32_t control[4], uint32_t colorMask) {
-        std::vector<uint32_t> key(control, control + 4);
-        key.push_back(colorMask);
+        const std::array<uint32_t, 5> key{control[0], control[1], control[2], control[3], colorMask};
         auto& state = blendStates[key];
         if (state) return state;
         D3D11_BLEND_DESC desc{};
@@ -964,11 +964,15 @@ struct XenosBackend::Impl {
     }
 
     // Views, samplers, sizes and swizzles for a shader's texture bindings.
-    void bindTextures(const xenos::ShaderInfo& info, SharedConstants& shared, std::vector<ID3D11ShaderResourceView*>& views,
-                      std::vector<ID3D11SamplerState*>& states) {
-        views.assign(info.textures.size(), whiteView);
-        states.assign(info.textures.size(), defaultSampler());
-        for (size_t slot = 0; slot < info.textures.size() && slot < 16; ++slot) {
+    // Returns the number of bindings written to views/states (at most 16).
+    UINT bindTextures(const xenos::ShaderInfo& info, SharedConstants& shared, ID3D11ShaderResourceView** views,
+                      ID3D11SamplerState** states) {
+        const UINT count = UINT((std::min)(info.textures.size(), size_t(16)));
+        for (UINT slot = 0; slot < count; ++slot) {
+            views[slot] = whiteView;
+            states[slot] = defaultSampler();
+        }
+        for (size_t slot = 0; slot < count; ++slot) {
             TextureFetch fetch;
             for (int i = 0; i < 6; ++i)
                 fetch.words[i] = reg(reg::SHADER_CONSTANT_FETCH_00_0 + info.textures[slot].fetchConstant * 6 + i);
@@ -992,6 +996,7 @@ struct XenosBackend::Impl {
                      fetch.type(), fetch.dimension(), fetch.format(), info.textures[slot].dimension);
             addTime(hostTime[0], textureStart);
         }
+        return count;
     }
 
     // ---- Draw ----------------------------------------------------------------------
@@ -1007,6 +1012,44 @@ struct XenosBackend::Impl {
     }
     static void addTime(std::chrono::steady_clock::duration& total, std::chrono::steady_clock::time_point start) {
         if (hostTiming()) total += std::chrono::steady_clock::now() - start;
+    }
+    // Pipeline state last set on the context: draws only call D3D for changes.
+    // Everything else that binds state (resolves, present, mip generation) makes
+    // the next draw set all of it again (forgetBoundState).
+    struct BoundState {
+        bool valid = false;
+        ID3D11RenderTargetView* colors[4]{};
+        ID3D11DepthStencilView* depth = nullptr;
+        D3D11_VIEWPORT viewport{};
+        D3D11_RECT scissor{};
+        ID3D11RasterizerState* raster = nullptr;
+        ID3D11BlendState* blend = nullptr;
+        float blendColor[4]{};
+        ID3D11DepthStencilState* depthStencil = nullptr;
+        UINT stencilRef = 0;
+        D3D11_PRIMITIVE_TOPOLOGY topology{};
+        ID3D11VertexShader* vertex = nullptr;
+        ID3D11GeometryShader* geometry = nullptr;
+        ID3D11PixelShader* pixel = nullptr;
+        bool texturesValid = false;  // D3D unbinds views that alias new render targets
+        ID3D11ShaderResourceView* vertexViews[16]{};
+        ID3D11SamplerState* vertexSamplers[16]{};
+        ID3D11ShaderResourceView* pixelViews[16]{};
+        ID3D11SamplerState* pixelSamplers[16]{};
+        SharedConstants shared{};
+        bool sharedValid = false;
+    } bound;
+    uint64_t texturePipelineChanges = 0;
+    void forgetTextureBindings() {
+        bound.texturesValid = false;
+        std::memset(bound.vertexViews, 0, sizeof(bound.vertexViews));
+        std::memset(bound.vertexSamplers, 0, sizeof(bound.vertexSamplers));
+        std::memset(bound.pixelViews, 0, sizeof(bound.pixelViews));
+        std::memset(bound.pixelSamplers, 0, sizeof(bound.pixelSamplers));
+    }
+    void forgetBoundState() {
+        bound.valid = false;
+        forgetTextureBindings();
     }
     struct ScopedTime {
         std::chrono::steady_clock::duration& total;
@@ -1203,35 +1246,60 @@ struct XenosBackend::Impl {
             shared.textureSize[i][0] = shared.textureSize[i][1] = shared.textureSize[i][2] = 1.0f;
             shared.textureSwizzle[i] = 0 | 1 << 3 | 2 << 6 | 3 << 9;
         }
-        std::vector<ID3D11ShaderResourceView*> pixelViews, vertexViews;
-        std::vector<ID3D11SamplerState*> pixelSamplers, vertexSamplers;
+        ID3D11ShaderResourceView* pixelViews[16]{};
+        ID3D11ShaderResourceView* vertexViews[16]{};
+        ID3D11SamplerState* pixelSamplers[16]{};
+        ID3D11SamplerState* vertexSamplers[16]{};
         // Vertex and pixel shaders share SharedConstants; pixel bindings win on overlap.
-        bindTextures(vs->info, shared, vertexViews, vertexSamplers);
-        if (ps) bindTextures(ps->info, shared, pixelViews, pixelSamplers);
-        writeBuffer(sharedConstants, &shared, sizeof(shared));
+        const UINT vertexViewCount = bindTextures(vs->info, shared, vertexViews, vertexSamplers);
+        const UINT pixelViewCount = ps ? bindTextures(ps->info, shared, pixelViews, pixelSamplers) : 0;
+        // Uploading or mipmapping a texture draws with its own pipeline state.
+        if (textures.pipelineChanges() != texturePipelineChanges) {
+            texturePipelineChanges = textures.pipelineChanges();
+            forgetBoundState();
+        }
+        if (!bound.sharedValid || std::memcmp(&shared, &bound.shared, sizeof(shared)) != 0) {
+            writeBuffer(sharedConstants, &shared, sizeof(shared));
+            bound.shared = shared;
+            bound.sharedValid = true;
+        }
 
         const auto constantsStart = stamp();
         // Constant buffers are rewritten only when the registers changed.
-        float constants[256 * 4];
-        for (int i = 0; i < 256 * 4; ++i) constants[i] = asFloat(reg(reg::SHADER_CONSTANT_000_X + i));
+        // The command processor flags constant register writes (constantsWritten);
+        // the registers hold the floats in buffer layout, so they are copied as is.
         static const bool alwaysConstants = traceEnabled("noconstskip");
-        if (alwaysConstants || std::memcmp(constants, lastVertexConstants, sizeof(constants)) != 0) {
-            writeBuffer(vertexConstants, constants, sizeof(constants));
-            std::memcpy(lastVertexConstants, constants, sizeof(constants));
+        // std::atomic<uint32_t> has uint32_t's layout; only this thread writes them.
+        const auto* constantRegisters = reinterpret_cast<const uint32_t*>(registers) + reg::SHADER_CONSTANT_000_X;
+        if (alwaysConstants || constantsWritten[0].exchange(false, std::memory_order_relaxed)) {
+            writeBuffer(vertexConstants, constantRegisters, 256 * 16);
+            if (flickerLog) std::memcpy(lastVertexConstants, constantRegisters, 256 * 16);
         }
-        if (ps) {
-            for (int i = 0; i < 256 * 4; ++i) constants[i] = asFloat(reg(reg::SHADER_CONSTANT_000_X + 1024 + i));
-            if (alwaysConstants || std::memcmp(constants, lastPixelConstants, sizeof(constants)) != 0) {
-                writeBuffer(pixelConstants, constants, sizeof(constants));
-                std::memcpy(lastPixelConstants, constants, sizeof(constants));
-            }
+        if (ps && (alwaysConstants || constantsWritten[1].exchange(false, std::memory_order_relaxed))) {
+            writeBuffer(pixelConstants, constantRegisters + 1024, 256 * 16);
+            if (flickerLog) std::memcpy(lastPixelConstants, constantRegisters + 1024, 256 * 16);
         }
         addTime(hostTime[4], constantsStart);
 
-        // Pipeline.
-        context->OMSetRenderTargets(4, colorViews, depthView);
+        // Pipeline (only what changed since the last draw).
+        if (!bound.valid) {
+            context->IASetInputLayout(nullptr);
+            ID3D11Buffer* vsBuffers[2] = {vertexConstants, sharedConstants};
+            context->VSSetConstantBuffers(0, 2, vsBuffers);
+            ID3D11Buffer* psBuffers[2] = {pixelConstants, sharedConstants};
+            context->PSSetConstantBuffers(0, 2, psBuffers);
+        }
+        if (!bound.valid || std::memcmp(colorViews, bound.colors, sizeof(colorViews)) != 0 || depthView != bound.depth) {
+            context->OMSetRenderTargets(4, colorViews, depthView);
+            std::memcpy(bound.colors, colorViews, sizeof(colorViews));
+            bound.depth = depthView;
+            forgetTextureBindings();
+        }
         const D3D11_VIEWPORT viewport{0, 0, width * renderScale, height * renderScale, 0, 1};
-        context->RSSetViewports(1, &viewport);
+        if (!bound.valid || std::memcmp(&viewport, &bound.viewport, sizeof(viewport)) != 0) {
+            context->RSSetViewports(1, &viewport);
+            bound.viewport = viewport;
+        }
         const uint32_t scissorTl = reg(reg::PA_SC_WINDOW_SCISSOR_TL), scissorBr = reg(reg::PA_SC_WINDOW_SCISSOR_BR);
         D3D11_RECT scissor{LONG(scissorTl & 0x7FFF), LONG((scissorTl >> 16) & 0x7FFF),
                            LONG(scissorBr & 0x7FFF), LONG((scissorBr >> 16) & 0x7FFF)};
@@ -1245,13 +1313,25 @@ struct XenosBackend::Impl {
             scissor.bottom = (std::max)(0L, scissor.bottom + dy);
         }
         const D3D11_RECT hostScissor = scaled(scissor);
-        context->RSSetScissorRects(1, &hostScissor);
-        context->RSSetState(rasterState(reg(reg::PA_SU_SC_MODE_CNTL), (reg(reg::PA_CL_CLIP_CNTL) >> 16) & 1));
+        if (!bound.valid || std::memcmp(&hostScissor, &bound.scissor, sizeof(hostScissor)) != 0) {
+            context->RSSetScissorRects(1, &hostScissor);
+            bound.scissor = hostScissor;
+        }
+        auto* raster = rasterState(reg(reg::PA_SU_SC_MODE_CNTL), (reg(reg::PA_CL_CLIP_CNTL) >> 16) & 1);
+        if (!bound.valid || raster != bound.raster) {
+            context->RSSetState(raster);
+            bound.raster = raster;
+        }
         const uint32_t blendControl[4] = {reg(reg::RB_BLENDCONTROL0), reg(reg::RB_BLENDCONTROL1),
                                           reg(reg::RB_BLENDCONTROL2), reg(reg::RB_BLENDCONTROL3)};
         const float blendColor[4] = {asFloat(reg(reg::RB_BLEND_RED)), asFloat(reg(reg::RB_BLEND_RED + 1)),
                                      asFloat(reg(reg::RB_BLEND_RED + 2)), asFloat(reg(reg::RB_BLEND_RED + 3))};
-        context->OMSetBlendState(blendState(blendControl, colorMask), blendColor, 0xFFFFFFFF);
+        auto* blend = blendState(blendControl, colorMask);
+        if (!bound.valid || blend != bound.blend || std::memcmp(blendColor, bound.blendColor, sizeof(blendColor)) != 0) {
+            context->OMSetBlendState(blend, blendColor, 0xFFFFFFFF);
+            bound.blend = blend;
+            std::memcpy(bound.blendColor, blendColor, sizeof(blendColor));
+        }
         const uint32_t stencil = reg(reg::RB_STENCILREFMASK);
         static const bool noDepth = traceEnabled("nodepth");
         // TENCHU_NODEPTH_PS=<hash>: depth test off for one pixel shader (debugging).
@@ -1260,20 +1340,37 @@ struct XenosBackend::Impl {
             return GetEnvironmentVariableA("TENCHU_NODEPTH_PS", value, sizeof(value)) ? strtoull(value, nullptr, 16) : 0ull;
         }();
         const bool skipDepth = noDepth || (noDepthShader && psHash == noDepthShader);
-        context->OMSetDepthStencilState(depthState(skipDepth ? 0 : depthControl, stencil), stencil & 0xFF);
-
-        context->IASetInputLayout(nullptr);
-        context->IASetPrimitiveTopology(topology);
-        context->VSSetShader(vs->vertex, nullptr, 0);
-        ID3D11Buffer* vsBuffers[2] = {vertexConstants, sharedConstants};
-        context->VSSetConstantBuffers(0, 2, vsBuffers);
-        ID3D11ShaderResourceView* vertexData[2] = {ringView, mirrorView};
-        context->VSSetShaderResources(0, mirrorView ? 2 : 1, vertexData);
-        if (!vertexViews.empty()) {
-            context->VSSetShaderResources(8, UINT(vertexViews.size()), vertexViews.data());
-            context->VSSetSamplers(0, UINT(vertexSamplers.size()), vertexSamplers.data());
+        auto* depthStencil = depthState(skipDepth ? 0 : depthControl, stencil);
+        if (!bound.valid || depthStencil != bound.depthStencil || (stencil & 0xFF) != bound.stencilRef) {
+            context->OMSetDepthStencilState(depthStencil, stencil & 0xFF);
+            bound.depthStencil = depthStencil;
+            bound.stencilRef = stencil & 0xFF;
         }
-        context->GSSetShader(rectangles ? rectangleShader : nullptr, nullptr, 0);
+        if (!bound.valid || topology != bound.topology) {
+            context->IASetPrimitiveTopology(topology);
+            bound.topology = topology;
+        }
+        if (!bound.valid || vs->vertex != bound.vertex) {
+            context->VSSetShader(vs->vertex, nullptr, 0);
+            bound.vertex = vs->vertex;
+        }
+        if (!bound.texturesValid) {
+            ID3D11ShaderResourceView* vertexData[2] = {ringView, mirrorView};
+            context->VSSetShaderResources(0, mirrorView ? 2 : 1, vertexData);
+        }
+        if (vertexViewCount &&
+            (std::memcmp(vertexViews, bound.vertexViews, vertexViewCount * sizeof(vertexViews[0])) != 0 ||
+             std::memcmp(vertexSamplers, bound.vertexSamplers, vertexViewCount * sizeof(vertexSamplers[0])) != 0)) {
+            context->VSSetShaderResources(8, vertexViewCount, vertexViews);
+            context->VSSetSamplers(0, vertexViewCount, vertexSamplers);
+            std::memcpy(bound.vertexViews, vertexViews, sizeof(vertexViews));
+            std::memcpy(bound.vertexSamplers, vertexSamplers, sizeof(vertexSamplers));
+        }
+        ID3D11GeometryShader* geometry = rectangles ? rectangleShader : nullptr;
+        if (!bound.valid || geometry != bound.geometry) {
+            context->GSSetShader(geometry, nullptr, 0);
+            bound.geometry = geometry;
+        }
         if (ps) {
             // TENCHU_FLAT_PRIM=<type> limits the magenta override to one primitive type.
             static const int flatPrimitive = [] {
@@ -1282,16 +1379,25 @@ struct XenosBackend::Impl {
             }();
             static const bool flatAll = traceEnabled("flat");
             const bool flat = flatAll || int(primitive) == flatPrimitive;
-            context->PSSetShader(flat ? flatShader : ps->pixel, nullptr, 0);
-            ID3D11Buffer* psBuffers[2] = {pixelConstants, sharedConstants};
-            context->PSSetConstantBuffers(0, 2, psBuffers);
-            if (!pixelViews.empty()) {
-                context->PSSetShaderResources(0, UINT(pixelViews.size()), pixelViews.data());
-                context->PSSetSamplers(0, UINT(pixelSamplers.size()), pixelSamplers.data());
+            ID3D11PixelShader* pixel = flat ? flatShader : ps->pixel;
+            if (!bound.valid || pixel != bound.pixel) {
+                context->PSSetShader(pixel, nullptr, 0);
+                bound.pixel = pixel;
             }
-        } else {
+            if (pixelViewCount &&
+                (std::memcmp(pixelViews, bound.pixelViews, pixelViewCount * sizeof(pixelViews[0])) != 0 ||
+                 std::memcmp(pixelSamplers, bound.pixelSamplers, pixelViewCount * sizeof(pixelSamplers[0])) != 0)) {
+                context->PSSetShaderResources(0, pixelViewCount, pixelViews);
+                context->PSSetSamplers(0, pixelViewCount, pixelSamplers);
+                std::memcpy(bound.pixelViews, pixelViews, sizeof(pixelViews));
+                std::memcpy(bound.pixelSamplers, pixelSamplers, sizeof(pixelSamplers));
+            }
+        } else if (!bound.valid || bound.pixel) {
             context->PSSetShader(nullptr, nullptr, 0);
+            bound.pixel = nullptr;
         }
+        bound.texturesValid = true;  // the vertex data views (t0, t1) are bound
+        bound.valid = true;
         if (traceFrame()) {
             logf("[draw] prim %u count %u -> %zu vs %016llX ps %016llX rt %08X/%08X depth %08X ctl %08X mask %X "
                  "mode %X clip %X vte %X scale %.3f %.3f %.3f off %.3f %.3f %.3f scissor %ld,%ld-%ld,%ld target %ux%u",
@@ -1379,6 +1485,7 @@ struct XenosBackend::Impl {
             context->GSSetShader(previous, nullptr, 0);
             release(previous);
             context->IASetPrimitiveTopology(topologyBefore);
+            forgetBoundState();
             context->CopyResource(staging, target);
             D3D11_MAPPED_SUBRESOURCE mapped{};
             if (SUCCEEDED(context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
@@ -1426,6 +1533,7 @@ struct XenosBackend::Impl {
 
     // ---- Resolve -------------------------------------------------------------------
     void resolve() {
+        forgetBoundState();  // resolves draw with their own pipeline state
         ScopedTime timed{hostTime[2]};
         ++resolves;
         if (flickerLog) {
@@ -1637,6 +1745,7 @@ struct XenosBackend::Impl {
 
     // ---- Swap ---------------------------------------------------------------------
     void swap(uint32_t frontBuffer) {
+        forgetBoundState();  // present and dumps use the context too
         auto it = resolved.find(frontBuffer & 0x1FFFFFFF);
         if (it == resolved.end()) it = resolved.find(Memory::physicalAddress(frontBuffer));
         if (dumpFrame()) {

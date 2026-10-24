@@ -188,6 +188,7 @@ ID3D11ShaderResourceView* TextureCache::withMips(ID3D11Texture2D* base, ID3D11Sh
         }
         // Draw state is rebuilt for every guest draw, so it can be overwritten here.
         const D3D11_VIEWPORT viewport{0, 0, float(desc.Width), float(desc.Height), 0, 1};
+        ++pipelineChanges_;
         context_->OMSetRenderTargets(1, &target, nullptr);
         context_->RSSetViewports(1, &viewport);
         context_->RSSetState(nullptr);
@@ -214,6 +215,7 @@ ID3D11ShaderResourceView* TextureCache::withMips(ID3D11Texture2D* base, ID3D11Sh
 }
 
 void TextureCache::invalidate(uint32_t physicalAddress) {
+    for (auto& recent : recent_) recent = {};
     // Keys start with the address: its entries are adjacent.
     auto it = entries_.lower_bound(std::make_tuple(physicalAddress, 0u, 0u, 0u, 0u));
     while (it != entries_.end() && std::get<0>(it->first) == physicalAddress) {
@@ -242,7 +244,9 @@ ID3D11ShaderResourceView* TextureCache::view(const TextureFetch& fetch) {
     if (!address || guestSize > (64u << 20)) return nullptr;
 
     const auto key = std::make_tuple(address, fetch.format(), width, height, fetch.words[0] & 0xFFC00000u);
-    auto& entry = entries_[key];
+    auto& recent = recent_[(address >> 12 ^ fetch.format() * 31 ^ width * 7 ^ height * 13 ^ (fetch.words[0] >> 22)) & 255];
+    if (!recent.entry || recent.key != key) recent = {key, &entries_[key]};
+    auto& entry = *recent.entry;
     const uint32_t firstPage = address >> 12, lastPage = uint32_t((address + guestSize - 1) >> 12);
     static const bool watch = !traceEnabled("nowatchtex");
     if (entry.view && watch && !entry.volatileData) {
