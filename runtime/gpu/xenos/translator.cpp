@@ -848,7 +848,12 @@ struct Emitter {
         }
         hlsl += "struct Interpolators {\n    float4 position : SV_Position;\n    float4 t[16] : TEXCOORD0;\n};\n";
         if (!pixel) {
-            hlsl += "Interpolators main(uint vertexId : SV_VertexID) {\n";
+            // User clip planes (PA_CL_UCP; the reflection passes clip at the water plane). After
+            // the interpolators, so pixel shaders declaring only those still match.
+            hlsl += "cbuffer ClipConstants : register(b2) { float4 g_clipPlanes[6]; uint4 g_clip; };  // x: enabled planes\n"
+                    "struct VertexOutput {\n    float4 position : SV_Position;\n    float4 t[16] : TEXCOORD0;\n"
+                    "    float4 clip0 : SV_ClipDistance0;\n    float2 clip1 : SV_ClipDistance1;\n};\n";
+            hlsl += "VertexOutput main(uint vertexId : SV_VertexID) {\n";
             hlsl += "    float4 r[64];\n    [unroll] for (int i = 0; i < 64; ++i) r[i] = 0.0;\n";
             hlsl += "    uint vertexIndex = g_draw.x == 0xFFFFFFFFu ? vertexId\n"
                     "                     : (g_draw.z & 1) ? MirrorIndex(vertexId) : guestData.Load(g_draw.x + vertexId * 4);\n";
@@ -868,8 +873,13 @@ struct Emitter {
         hlsl += "    float ps = 0.0;\n    bool p = false;\n    int a0 = 0;\n    int aL = 0;\n";
         hlsl += body;
         if (!pixel) {
-            hlsl += "    Interpolators output;\n";
+            hlsl += "    VertexOutput output;\n";
             hlsl += "    output.position = float4(oPos.xyz * g_positionScale.xyz + g_positionOffset.xyz * oPos.w, oPos.w);\n";
+            // The planes apply to the guest clip-space position, before the viewport mapping.
+            hlsl += "    float clip[6];\n"
+                    "    [unroll] for (uint u = 0; u < 6; ++u) clip[u] = (g_clip.x >> u) & 1 ? dot(oPos, g_clipPlanes[u]) : 1.0;\n"
+                    "    output.clip0 = float4(clip[0], clip[1], clip[2], clip[3]);\n"
+                    "    output.clip1 = float2(clip[4], clip[5]);\n";
             hlsl += "    output.t = o;\n    return output;\n}\n";
         } else {
             hlsl += "    // Fixed-function alpha test: 0 never, 1 <, 2 ==, 3 <=, 4 >, 5 !=, 6 >=, 7 always.\n";

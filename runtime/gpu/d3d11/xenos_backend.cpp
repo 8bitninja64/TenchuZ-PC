@@ -57,6 +57,12 @@ struct SharedConstants {
     uint32_t draw[4];
 };
 
+// Layout of cbuffer ClipConstants in the translated vertex shaders (user clip planes).
+struct ClipConstants {
+    float planes[6][4];
+    uint32_t enabled[4];  // [0]: plane mask
+};
+
 // TENCHU_TRACE=flat: every pixel shader becomes flat magenta (geometry debugging).
 const char* kFlatPixelShader = R"(
 struct Interpolators { float4 position : SV_Position; float4 t[16] : TEXCOORD0; };
@@ -113,7 +119,12 @@ float4 ps(float4 position : SV_Position) : SV_Target {
 // Expands Xenos rectangle lists: three corners in, the fourth extrapolated opposite
 // the right-angle corner.
 const char* kRectangleGeometryShader = R"(
-struct Interpolators { float4 position : SV_Position; float4 t[16] : TEXCOORD0; };
+struct Interpolators {
+    float4 position : SV_Position;
+    float4 t[16] : TEXCOORD0;
+    float4 clip0 : SV_ClipDistance0;
+    float2 clip1 : SV_ClipDistance1;
+};
 [maxvertexcount(4)]
 void main(triangle Interpolators v[3], inout TriangleStream<Interpolators> stream) {
     float2 p0 = v[0].position.xy / v[0].position.w;
@@ -129,6 +140,8 @@ void main(triangle Interpolators v[3], inout TriangleStream<Interpolators> strea
     Interpolators fourth;
     fourth.position = b.position + c.position - a.position;
     [unroll] for (int i = 0; i < 16; ++i) fourth.t[i] = b.t[i] + c.t[i] - a.t[i];
+    fourth.clip0 = b.clip0 + c.clip0 - a.clip0;
+    fourth.clip1 = b.clip1 + c.clip1 - a.clip1;
     stream.Append(a);
     stream.Append(b);
     stream.Append(c);
@@ -383,6 +396,7 @@ struct XenosBackend::Impl {
     std::vector<uint32_t> indexScratch, drawIndices;
     ID3D11Buffer* pixelConstants = nullptr;
     ID3D11Buffer* sharedConstants = nullptr;
+    ID3D11Buffer* clipConstants = nullptr;
 
     ID3D11Buffer* createConstantBuffer(UINT size) {
         D3D11_BUFFER_DESC desc{};
@@ -523,6 +537,19 @@ struct XenosBackend::Impl {
         }
         if (!translated.error.empty())
             logf("[d3d11] shader %016llX: %s (translated anyway)", (unsigned long long)hash, translated.error.c_str());
+        // TENCHU_DUMP_SHADERS=<dir>: writes each translated shader as <dir>/<hash>.vs/.ps.hlsl.
+        static const std::wstring dumpDirectory = [] {
+            wchar_t value[MAX_PATH]{};
+            return GetEnvironmentVariableW(L"TENCHU_DUMP_SHADERS", value, MAX_PATH) ? std::wstring(value) : std::wstring();
+        }();
+        if (!dumpDirectory.empty()) {
+            wchar_t name[40];
+            swprintf(name, 40, L"\\%016llX.%ls.hlsl", (unsigned long long)hash, type == xenos::ShaderType::Pixel ? L"ps" : L"vs");
+            if (std::FILE* file = _wfopen((dumpDirectory + name).c_str(), L"wb")) {
+                std::fwrite(translated.hlsl.data(), 1, translated.hlsl.size(), file);
+                std::fclose(file);
+            }
+        }
         ID3DBlob* code = nullptr;
         ID3DBlob* errors = nullptr;
         const bool pixel = type == xenos::ShaderType::Pixel;
@@ -846,6 +873,7 @@ struct XenosBackend::Impl {
         vertexConstants = createConstantBuffer(256 * 16);
         pixelConstants = createConstantBuffer(256 * 16);
         sharedConstants = createConstantBuffer((sizeof(SharedConstants) + 15) & ~15u);
+        clipConstants = createConstantBuffer(sizeof(ClipConstants));
 
         ID3DBlob* code = nullptr;
         ID3DBlob* errors = nullptr;
@@ -1051,6 +1079,8 @@ struct XenosBackend::Impl {
         ID3D11SamplerState* pixelSamplers[16]{};
         SharedConstants shared{};
         bool sharedValid = false;
+        ClipConstants clip{};
+        bool clipValid = false;
     } bound;
     uint64_t texturePipelineChanges = 0;
     void forgetTextureBindings() {
@@ -1295,6 +1325,20 @@ struct XenosBackend::Impl {
             bound.sharedValid = true;
             writeConstants(2, &shared, sizeof(shared));
         }
+        // User clip planes: PA_CL_CLIP_CNTL enables them unless clipping is disabled.
+        // UCP_CULL_ONLY (bit 17, whole primitives culled) is approximated by clipping.
+        static const bool noUserClip = traceEnabled("noucp");
+        ClipConstants clip{};
+        const uint32_t clipControl = reg(reg::PA_CL_CLIP_CNTL);
+        clip.enabled[0] = (clipControl >> 16) & 1 || noUserClip ? 0 : clipControl & 63;
+        for (int plane = 0; plane < 6; ++plane)
+            if ((clip.enabled[0] >> plane) & 1)
+                for (int lane = 0; lane < 4; ++lane) clip.planes[plane][lane] = asFloat(reg(reg::PA_CL_UCP_0_X + plane * 4 + lane));
+        if (!bound.clipValid || std::memcmp(&clip, &bound.clip, sizeof(clip)) != 0) {
+            bound.clip = clip;
+            bound.clipValid = true;
+            writeBuffer(clipConstants, &clip, sizeof(clip));
+        }
 
         const auto constantsStart = stamp();
         // Constant buffers are rewritten only when the registers changed.
@@ -1322,8 +1366,8 @@ struct XenosBackend::Impl {
         // Pipeline (only what changed since the last draw).
         if (!bound.valid) {
             context->IASetInputLayout(nullptr);
-            ID3D11Buffer* vsBuffers[2] = {vertexConstants, sharedConstants};
-            context->VSSetConstantBuffers(0, 2, vsBuffers);
+            ID3D11Buffer* vsBuffers[3] = {vertexConstants, sharedConstants, clipConstants};
+            context->VSSetConstantBuffers(0, 3, vsBuffers);
             ID3D11Buffer* psBuffers[2] = {pixelConstants, sharedConstants};
             context->PSSetConstantBuffers(0, 2, psBuffers);
         }
@@ -1632,6 +1676,9 @@ struct XenosBackend::Impl {
         TZ_TRACE("resolve", "[d3d11] resolve src %u rect %ld,%ld-%ld,%ld -> %08X pitch %08X info %08X cmd %u clear %d%d",
                  sourceSelect, rect.left, rect.top, rect.right, rect.bottom, reg(reg::RB_COPY_DEST_BASE),
                  reg(reg::RB_COPY_DEST_PITCH), reg(reg::RB_COPY_DEST_INFO), command, clearColor, clearDepth);
+        if (traceFrame())
+            logf("[draw] resolve src %u rect %ld,%ld-%ld,%ld -> %08X cmd %u clear %d%d", sourceSelect, rect.left, rect.top,
+                 rect.right, rect.bottom, reg(reg::RB_COPY_DEST_BASE), command, clearColor, clearDepth);
 
         if (source && command != 3 && rect.right > rect.left && rect.bottom > rect.top) {
             rect.right = (std::min)(LONG(source->width), rect.right);

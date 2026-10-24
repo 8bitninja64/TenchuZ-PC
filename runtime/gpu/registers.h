@@ -30,6 +30,8 @@ constexpr uint32_t RB_STENCILREFMASK = 0x210D;       // ref 0-7, mask 8-15, writ
 constexpr uint32_t RB_ALPHA_REF = 0x210E;            // float
 constexpr uint32_t PA_CL_VPORT_XSCALE = 0x210F;      // then XOFFSET, YSCALE, YOFFSET, ZSCALE, ZOFFSET
 
+constexpr uint32_t PA_CL_UCP_0_X = 0x2388;           // six user clip planes, xyzw floats each
+
 // Sequencer
 constexpr uint32_t SQ_PROGRAM_CNTL = 0x2180;
 constexpr uint32_t SQ_CONTEXT_MISC = 0x2181;
@@ -38,7 +40,7 @@ constexpr uint32_t SQ_INTERPOLATOR_CNTL = 0x2182;
 constexpr uint32_t RB_DEPTHCONTROL = 0x2200;
 constexpr uint32_t RB_BLENDCONTROL0 = 0x2201;
 constexpr uint32_t RB_COLORCONTROL = 0x2202;         // alpha func 0-2, alpha test enable 3
-constexpr uint32_t PA_CL_CLIP_CNTL = 0x2204;
+constexpr uint32_t PA_CL_CLIP_CNTL = 0x2204;         // user planes 0-5, clip disable 16, UCP cull only 17
 constexpr uint32_t PA_SU_SC_MODE_CNTL = 0x2205;      // cull front 0, cull back 1, face 2, window offset enable 16
 constexpr uint32_t PA_CL_VTE_CNTL = 0x2206;
 constexpr uint32_t RB_MODECONTROL = 0x2208;          // edram mode 0-2: 4 color+depth, 5 depth only, 6 copy
