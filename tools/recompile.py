@@ -201,7 +201,10 @@ def main() -> int:
         raise RuntimeError(f"Generator wrote no translation units; see {log_path}")
     if args.strict and any(counts[key] for key in counts if key not in ("translation_units", "record_form_warnings")):
         raise RuntimeError(f"Generator reported problems {counts}; see {log_path}")
-    if (out / "ppc_config.h").read_bytes() != RUNTIME_CONFIG.read_bytes():
+    lines = lambda path: path.read_bytes().replace(b"
+", b"
+")  # checkouts may convert line endings
+    if lines(out / "ppc_config.h") != lines(RUNTIME_CONFIG):
         raise RuntimeError(f"{out / 'ppc_config.h'} differs from {RUNTIME_CONFIG}: update the runtime's copy")
     count = int(units[-1])
     for stale in out.glob("ppc_recomp.*.cpp"):
