@@ -15,7 +15,7 @@ hideout and missions with D3D11 rendering at the original 30 fps.
 
 | Stage | State |
 | --- | --- |
-| Disc extraction (XDVDFS / XGD2) | done: `tools/extract_iso.py` |
+| Disc images (XDVDFS / XGD2) | read in place; `tools/extract_iso.py` extracts |
 | XEX decode (AES + basic compression) | done: `tools/xex_image.py` |
 | AOT translation | complete: 15,666 functions, 62 units |
 | Kernel / XAM runtime | threads, sync, files, saves (XAM content), profile settings |
@@ -33,68 +33,60 @@ Tenchu Z (USA, Europe) (En,Fr,De,Es,It), disc `default.xex`
 SHA-256 `c727debeaad474dfcf8517202eebc388f9e51705ce3b01499486fa5ff47f9f06`.
 The executable is built with XDK 2.0.4552 and imports `xboxkrnl.exe` and `xam.xex`.
 
-## Setup
+## Playing on Windows
 
-Requirements: Python 3.11+, Git, CMake, Visual Studio 2022 (Build Tools is
-enough) with the C++ and Clang (ClangCL) components.
+1. Download `TenchuZ-windows-x64.zip` from the releases and unzip it anywhere you can
+   write to (not Program Files).
+2. Install [Python 3.11 or newer](https://www.python.org/downloads/) (tick *Add python.exe
+   to PATH*) and [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+   with *Desktop development with C++* and *C++ Clang tools for Windows*. They are needed
+   once: on its first start the game compiles itself from your disc.
+3. Run `TenchuZ.exe` and pick your `Tenchu Z (USA, Europe)` disc image (`.iso`) when asked.
+   Confirm the compile: a console window shows the progress (about 2 minutes on an
+   8-core PC, longer with fewer cores), then the game starts. Later starts are instant.
 
-1. Extract the disc image into `game/`:
+The disc image is read in place (nothing is extracted) and remembered in `TenchuZ.ini`.
+The compiled game code (`tenchu_game.dll`), saves and profile settings live in
+`%APPDATA%\TenchuZRecomp`. To update, unzip a newer release over the old one: the game
+code is recompiled automatically when the new release needs it. The release contains no
+game code or data; never share the `tenchu_game.dll` built from your disc.
 
-   ```bash
-   python tools/extract_iso.py "Tenchu Z (USA, Europe) (En,Fr,De,Es,It).iso" game
-   ```
+Windows 10/11 64-bit with a Direct3D 11 graphics card. The Visual C++ runtime is included.
 
-2. Fetch and patch the generator into the shared `../_Tools/XenonRecomp`, then build it:
+## Building from source
 
-   ```bash
-   python tools/setup_generator.py
-   ```
+Requirements: Git, Python 3.11+, Visual Studio 2022 (Build Tools are enough) with C++
+and its Clang compiler, and [MSYS2](https://www.msys2.org) with
+`pacman -S mingw-w64-x86_64-gcc make` (FFmpeg is built from pinned source; it looks in
+`TENCHU_MSYS2`, `../_Tools/msys64` and `C:\msys64`). Then one command does everything:
+the generator (XenonRecomp, fetched into `../_Tools` and patched), `default.xex` read from
+your disc and translated, FFmpeg/SDL3/Dear ImGui, the game module and the runtime.
 
-   ```bash
-   cmake -S ../_Tools/XenonRecomp -B ../_Tools/XenonRecomp/build -G "Visual Studio 17 2022" -A x64
-   ```
+```bash
+powershell -ExecutionPolicy Bypass -File tools/build.ps1 -Iso "path/to/Tenchu Z (USA, Europe) (En,Fr,De,Es,It).iso"
+```
 
-   ```bash
-   cmake --build ../_Tools/XenonRecomp/build --config Release --target XenonRecomp XenonAnalyse
-   ```
+Run `build/windows-clang/TenchuZ.exe` (pick the disc on the first start, or pass the
+`.iso` or an extracted folder as the first argument). Later builds are incremental; pass
+`-Configure` to reconfigure. `-SkipRecomp` builds the runtime alone (no disc needed).
 
-3. Translate the executable into `build/generated/`:
+```bash
+powershell -ExecutionPolicy Bypass -File tools/package.ps1 -Zip
+```
 
-   ```bash
-   python tools/recompile.py
-   ```
+makes the release (`dist/TenchuZ-windows-x64.zip`, about 4 MB): the runtime, its DLLs and
+the kit the first start compiles the game module with. It refuses to package anything
+derived from the game. `tools/make_module.ps1 -Xex <default.xex>` builds only the module,
+as a release's first start does.
 
-4. Build FFmpeg (XMA audio and WMV decoders). This needs MSYS2 with
-   `mingw-w64-x86_64-gcc` and `make` in `../_Tools/msys64`:
-
-   ```bash
-   python tools/build_xma_codec.py
-   ```
-
-   Then fetch SDL3 (game controllers) and Dear ImGui (the F1 menu):
-
-   ```bash
-   python tools/fetch_sdl.py
-   python tools/fetch_imgui.py
-   ```
-
-5. Build the port:
-
-   ```bash
-   cmake -S . -B build/native -G "Visual Studio 17 2022" -A x64 -T ClangCL
-   ```
-
-   ```bash
-   cmake --build build/native --config Release
-   ```
-
-6. Run `build/native/Release/TenchuZ.exe` (it finds `game/` in a parent
-   directory, or pass the game directory as the first argument).
+The game code is a separate module, `tenchu_game.dll`, translated from your
+`default.xex`; `TenchuZ.exe` contains none of it (`runtime/guest/module_abi.h`, modeled
+on the NFL Blitz 2003 port).
 
 ## Playing
 
 Settings live in `TenchuZ.ini` next to the executable, written with comments
-on first run: fullscreen, window size, vsync, `resolution_scale` (1 = 720p,
+on first run: the disc image, fullscreen, window size, vsync, `resolution_scale` (1 = 720p,
 2 = 1440p, 3 = 4K), `frame_rate_limit`, mouse sensitivity and every keyboard
 binding.
 
@@ -132,13 +124,16 @@ RTX 3070 laptop; menus and the hideout run far higher.
 | `runtime/host/` | settings, keyboard and mouse |
 | `app/` | window and entry point |
 | `tools/patches/` | generator patch series (Darkness fixes + Tenchu Z additions) |
-| `game/` | your extracted disc (ignored by Git) |
+| `game/` | optional extracted disc for development (ignored by Git) |
+| `tools/build.ps1`, `make_module.ps1`, `package.ps1` | one-command build, module build, release |
 
 ## License and credits
 
 GPLv3 (see `COPYING`). The generator patches, the XEX decoder and the AOT
 pipeline design come from The Darkness Recomp by portingpete (GPLv3), built on
-hedge-dev's XenonRecomp (GPLv3).
+hedge-dev's XenonRecomp (MIT); the release ships the patched generator with its
+patches (`tools/patches`) and pinned upstream commit (`tools/setup_generator.py`).
+The first-start module build follows the NFL Blitz 2003 port.
 Audio and movie decoding use FFmpeg (LGPL 2.1+), built from pinned source with
 a small opt-in patch to its XMA decoder; `tools/build_xma_codec.py` keeps the
 patch, provenance and license files beside the DLLs.
