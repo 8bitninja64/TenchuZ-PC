@@ -7,6 +7,8 @@
 #include "host/input.h"
 #include "host/settings.h"
 #include "host/overlay.h"
+#include <dbghelp.h>
+#include <cstring>
 #include <thread>
 #include <cstdio>
 #include <exception>
@@ -99,9 +101,73 @@ void startWindowThread() {
     }).detach();
 }
 
+// A C++ exception (MSVC x64 EH records): the thrown type and, for std::exception, what().
+void describeCxxException(const EXCEPTION_RECORD* record) {
+    if (record->NumberParameters < 4 || record->ExceptionInformation[0] != 0x19930520) return;
+    struct ThrowInfo { uint32_t attributes; int32_t unwind, forwardCompat, catchableTypes; };
+    struct CatchableType { uint32_t properties; int32_t type, mdisp, pdisp, vdisp, size, copy; };
+    const auto object = record->ExceptionInformation[1];
+    const auto* info = reinterpret_cast<const ThrowInfo*>(record->ExceptionInformation[2]);
+    const auto image = record->ExceptionInformation[3];
+    if (!info || !image) return;
+    const auto* types = reinterpret_cast<const int32_t*>(image + info->catchableTypes);
+    const char* thrown = nullptr;
+    const std::exception* standard = nullptr;
+    for (int32_t i = 0; i < types[0]; ++i) {
+        const auto* type = reinterpret_cast<const CatchableType*>(image + types[1 + i]);
+        const char* name = reinterpret_cast<const char*>(image + type->type + 16);  // TypeDescriptor::name
+        if (!thrown) thrown = name;
+        if (!std::strcmp(name, ".?AVexception@std@@") && type->pdisp < 0)
+            standard = reinterpret_cast<const std::exception*>(object + type->mdisp);
+    }
+    fprintf(stderr, "C++ exception %s", thrown ? thrown : "?");
+    if (standard) fprintf(stderr, ": %s", standard->what());
+    fputc('\n', stderr);
+}
+
+// The host call stack at the exception, with symbols where PDBs are present.
+void printHostStack(const CONTEXT* exceptionContext) {
+    HANDLE process = GetCurrentProcess();
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_LOAD_LINES | SYMOPT_DEFERRED_LOADS);
+    SymInitialize(process, nullptr, TRUE);
+    CONTEXT context = *exceptionContext;
+    STACKFRAME64 frame{};
+    frame.AddrPC = {context.Rip, 0, AddrModeFlat};
+    frame.AddrFrame = {context.Rbp, 0, AddrModeFlat};
+    frame.AddrStack = {context.Rsp, 0, AddrModeFlat};
+    fprintf(stderr, "host stack:\n");
+    for (int depth = 0; depth < 32; ++depth) {
+        if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, GetCurrentThread(), &frame, &context, nullptr,
+                         SymFunctionTableAccess64, SymGetModuleBase64, nullptr) || !frame.AddrPC.Offset)
+            break;
+        alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 256]{};
+        auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        symbol->MaxNameLen = 255;
+        DWORD64 displacement = 0;
+        IMAGEHLP_MODULE64 module{sizeof(module)};
+        const char* moduleName = SymGetModuleInfo64(process, frame.AddrPC.Offset, &module) ? module.ModuleName : "?";
+        if (SymFromAddr(process, frame.AddrPC.Offset, &displacement, symbol)) {
+            IMAGEHLP_LINE64 line{sizeof(line)};
+            DWORD column = 0;
+            if (SymGetLineFromAddr64(process, frame.AddrPC.Offset, &column, &line))
+                fprintf(stderr, "  %s!%s+0x%llX (%s:%lu)\n", moduleName, symbol->Name, (unsigned long long)displacement,
+                        line.FileName, line.LineNumber);
+            else
+                fprintf(stderr, "  %s!%s+0x%llX\n", moduleName, symbol->Name, (unsigned long long)displacement);
+        } else {
+            fprintf(stderr, "  %s!0x%llX\n", moduleName, (unsigned long long)frame.AddrPC.Offset);
+        }
+    }
+}
+
 LONG WINAPI crashFilter(EXCEPTION_POINTERS* exception) {
     const auto* record = exception->ExceptionRecord;
     fprintf(stderr, "[FATAL] host exception 0x%08lX at %p", record->ExceptionCode, record->ExceptionAddress);
+    if (record->ExceptionCode == 0xE06D7363) {
+        fputc('\n', stderr);
+        describeCxxException(record);
+    }
     if (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && record->NumberParameters >= 2 && tz::memory) {
         const uintptr_t address = record->ExceptionInformation[1];
         const uintptr_t base = uintptr_t(tz::memory->base());
@@ -118,6 +184,7 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS* exception) {
         for (uint32_t i = 0; i < count; ++i) fprintf(stderr, " %08X", ctx.trace[(ctx.traceIndex - count + i) & 63]);
         fputc('\n', stderr);
     }
+    printHostStack(exception->ContextRecord);
     fflush(stderr);
     return EXCEPTION_EXECUTE_HANDLER;
 }

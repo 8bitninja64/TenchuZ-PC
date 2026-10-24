@@ -30,8 +30,10 @@ namespace tz::host::overlay {
 namespace {
 
 // ImGui is driven from two threads: the window thread feeds it messages, the
-// command processor thread builds and draws frames. This lock serializes them.
-std::mutex g_mutex;
+// command processor thread builds and draws frames. This lock serializes them. It is
+// recursive: ImGui's message handler re-enters the window procedure (ReleaseCapture on a
+// mouse button release sends WM_CAPTURECHANGED), which locked it twice and threw.
+std::recursive_mutex g_mutex;
 std::atomic<bool> g_open{false};
 std::atomic<bool> g_holdInput{false};  // after closing: pads stay away from the game until released
 std::atomic<bool> g_initialized{false};
@@ -429,7 +431,9 @@ void drawMenu() {
 
     const float footer = ImGui::GetFrameHeightWithSpacing() * 1.6f;
     bool changed = false;
-    ImGui::BeginChild("##sections", ImVec2(size.x * 0.22f, -footer), ImGuiChildFlags_None);
+    // Both panes take part in the window's navigation, so a pad or the arrow keys also
+    // reach the Resume and Quit buttons below them.
+    ImGui::BeginChild("##sections", ImVec2(size.x * 0.22f, -footer), ImGuiChildFlags_NavFlattened);
     ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.1f, 0.5f));
     for (int i = 0; i < kSectionCount; ++i) {
         const bool selected = g_section == i;
@@ -447,7 +451,8 @@ void drawMenu() {
     ImGui::PopStyleVar();
     ImGui::EndChild();
     ImGui::SameLine();
-    ImGui::BeginChild("##content", ImVec2(0, -footer), ImGuiChildFlags_AlwaysUseWindowPadding);
+    ImGui::BeginChild("##content", ImVec2(0, -footer),
+                      ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
     ImGui::PushFont(g_fontTitle);
     ImGui::TextColored(kGold, "%s", kSectionNames[g_section]);
     ImGui::PopFont();
