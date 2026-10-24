@@ -19,6 +19,7 @@ struct Settings {
     bool showFps = false;         // frame rate counter in the top left corner
     // Game
     std::string disc;             // the disc image chosen on the first start (UTF-8)
+    bool updateCheck = true;      // look for a newer release on GitHub at startup (F1 > Update)
     // Audio
     int volume = 100;             // master volume, percent
     bool mute = false;

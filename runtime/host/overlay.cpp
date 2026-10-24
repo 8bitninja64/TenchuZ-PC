@@ -3,6 +3,7 @@
 #include "host/gamepad.h"
 #include "host/input.h"
 #include "host/settings.h"
+#include "host/update_check.h"
 #include "kernel/kernel.h"
 #include "kernel/control.h"
 
@@ -49,8 +50,8 @@ bool g_padCaptureArmed = false;
 ULONGLONG g_padCaptureSince = 0;
 std::atomic<bool> g_popupOpen{false};
 
-enum Section { kDisplay, kAudio, kControls, kMissions, kAbout, kSectionCount };
-const char* kSectionNames[kSectionCount] = {"Display", "Audio", "Controls", "Missions", "About"};
+enum Section { kDisplay, kAudio, kControls, kMissions, kUpdate, kAbout, kSectionCount };
+const char* kSectionNames[kSectionCount] = {"Display", "Audio", "Controls", "Missions", "Update", "About"};
 int g_section = 0;
 // Two panes: choosing a section moves the highlight into its options; B
 // (Backspace) moves it back to the list. Only F1, Esc or Back+Start close the menu.
@@ -498,6 +499,84 @@ void drawMissions() {
     ImGui::TextDisabled("The original save is kept next to it as tenchu.bin.bak.");
 }
 
+// Update: this version, the latest GitHub release, and installing it (update_check.h).
+bool drawUpdate(Settings& st) {
+    namespace update = tz::host::update;
+    bool changed = false;
+    const update::Release release = update::checkStatus();
+    const update::Install install = update::installStatus();
+    const ImVec4 kGreen(0.4f, 0.9f, 0.5f, 1);
+    ImGui::Text("This version: %s", update::version());
+    ImGui::Spacing();
+    switch (release.state) {
+    case update::Release::Idle: ImGui::TextDisabled("Not checked yet."); break;
+    case update::Release::Checking: ImGui::Text("Checking GitHub for a new release..."); break;
+    case update::Release::UpToDate: ImGui::TextColored(kGreen, "Up to date (latest release: %s).", release.latest.c_str()); break;
+    case update::Release::NoReleases: ImGui::TextDisabled("No release has been published yet."); break;
+    case update::Release::Failed: ImGui::TextColored(kCrimson, "Could not check: %s", release.error.c_str()); break;
+    case update::Release::Available: ImGui::TextColored(kGold, "%s is available.", release.latest.c_str()); break;
+    }
+    ImGui::Spacing();
+    const bool busy = install.state == update::Install::Downloading || install.state == update::Install::Verifying ||
+                      install.state == update::Install::Extracting || install.state == update::Install::Installing;
+    const bool done = install.state == update::Install::Done;
+    // One action button whose label follows the state (one ID, so the controller's highlight
+    // stays on it from "Download and install" to "Restart now").
+    // canInstall probes the folder with a file: once per release found, not every frame.
+    static std::string probedFor, why;
+    static bool canInstall = false;
+    const bool available = release.state == update::Release::Available && !done;
+    if (available && probedFor != release.latest) {
+        canInstall = update::canInstall(release, why);
+        probedFor = release.latest;
+    }
+    const bool installable = available && canInstall;
+    if (available && !installable) ImGui::TextWrapped("It cannot be installed here (%s).", why.c_str());
+    const std::string label = done          ? std::string("Restart now")
+                              : installable ? "Download and install " + release.latest
+                              : available   ? std::string("Open the release page")
+                                            : std::string("Check now");
+    const bool disabled = busy || release.state == update::Release::Checking;
+    ImGui::BeginDisabled(disabled);
+    if (!disabled) focusFirstOption();  // a disabled button cannot take the focus: the checkbox does
+    if (ImGui::Button((label + "###update_action").c_str())) {
+        if (done) {
+            if (update::restart()) ExitProcess(0);
+        } else if (installable) {
+            update::installStart(release);
+        } else if (available) {
+            update::openPage(release.page);
+        } else {
+            update::checkStart();
+        }
+    }
+    ImGui::EndDisabled();
+    if (available && !busy) {
+        ImGui::SameLine();
+        if (ImGui::Button("Check again")) update::checkStart();
+    }
+    if (busy) {
+        const char* step = install.state == update::Install::Downloading  ? "Downloading"
+                           : install.state == update::Install::Verifying  ? "Checking the download"
+                           : install.state == update::Install::Extracting ? "Unpacking"
+                                                                          : "Installing";
+        ImGui::Text("%s...", step);
+        ImGui::ProgressBar(install.state == update::Install::Downloading ? install.fraction : 1.0f, ImVec2(-1, 0));
+    }
+    if (install.state == update::Install::Failed) ImGui::TextColored(kCrimson, "The update failed: %s", install.error.c_str());
+    if (done) ImGui::TextColored(kGreen, "%s is installed. Restart to play it.", release.latest.c_str());
+    ImGui::Spacing();
+    ImGui::Separator();
+    focusFirstOption();
+    changed |= ImGui::Checkbox("Check for updates when the game starts", &st.updateCheck);
+    if (!release.notes.empty() && release.state == update::Release::Available) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("Release notes");
+        ImGui::TextWrapped("%s", release.notes.c_str());
+    }
+    return changed;
+}
+
 void drawAbout() {
     ImGui::TextWrapped("Tenchu Z for PC: the Xbox 360 executable from your own disc, statically recompiled to "
                        "native code, with its graphics on Direct3D 11.");
@@ -586,6 +665,7 @@ void drawMenu() {
     case kAudio: changed |= drawAudio(st); break;
     case kControls: changed |= drawControls(st); break;
     case kMissions: drawMissions(); break;
+    case kUpdate: changed |= drawUpdate(st); break;
     case kAbout: drawAbout(); break;
     }
     ImGui::PopItemWidth();

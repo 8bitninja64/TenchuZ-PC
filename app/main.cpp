@@ -7,8 +7,10 @@
 #include "host/input.h"
 #include "host/settings.h"
 #include "host/overlay.h"
+#include "host/update_check.h"
 #include <dbghelp.h>
 #include <cstring>
+#include <chrono>
 #include <thread>
 #include <cstdio>
 #include <exception>
@@ -195,6 +197,28 @@ int wmain(int argc, wchar_t** argv) {
     // Real pixels: fullscreen uses the monitor's native resolution.
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     setvbuf(stdout, nullptr, _IONBF, 0);
+    namespace update = tz::host::update;
+    update::cleanup();  // the files the last update replaced
+    // Automated runs stay offline unless they test the updater (TENCHU_UPDATE_API).
+    const bool testing = GetEnvironmentVariableW(L"TENCHU_CONTROL", nullptr, 0) &&
+                         !GetEnvironmentVariableW(L"TENCHU_UPDATE_API", nullptr, 0);
+    if (tz::host::settings().updateCheck && !testing && !GetEnvironmentVariableW(L"TENCHU_NO_UPDATE_CHECK", nullptr, 0))
+        update::checkStart();
+    // Test hook (with TENCHU_UPDATE_API): install a found update and restart into it, no clicks.
+    if (GetEnvironmentVariableW(L"TENCHU_UPDATE_AUTOINSTALL", nullptr, 0)) {
+        std::thread([] {
+            for (bool started = false;; std::this_thread::sleep_for(std::chrono::milliseconds(200))) {
+                if (!started && update::checkStatus().state == update::Release::Available) {
+                    started = true;
+                    update::installStart(update::checkStatus());
+                }
+                if (update::installStatus().state == update::Install::Done) {
+                    if (update::restart()) ExitProcess(0);
+                    return;
+                }
+            }
+        }).detach();
+    }
     try {
         // The disc and a game module translated from it (built on the first start).
         tz::GameSource game;

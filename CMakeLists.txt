@@ -53,6 +53,7 @@ add_library(TenchuRuntime OBJECT
     runtime/host/input.cpp
     runtime/host/gamepad.cpp
     runtime/host/overlay.cpp
+    runtime/host/update_check.cpp
     runtime/kernel/kernel_data.cpp
     runtime/kernel/format.cpp
     runtime/kernel/imports_ke.cpp
@@ -75,7 +76,14 @@ add_library(TenchuRuntime OBJECT
     runtime/movie/movie_player.cpp)
 target_include_directories(TenchuRuntime PUBLIC "${CMAKE_SOURCE_DIR}/runtime" "${TENCHU_SIMDE_DIR}")
 target_compile_options(TenchuRuntime PRIVATE /clang:-msse4.1 -Wno-unused-parameter /Z7)
-target_link_libraries(TenchuRuntime PUBLIC TenchuXenos bcrypt xinput winmm shell32 ole32 d3d11 dxgi d3dcompiler xaudio2 dbghelp)
+# The version the F1 menu's updater compares with the latest release: the tag for releases.
+set(_tenchu_version "dev")
+if(DEFINED ENV{TENCHU_VERSION} AND NOT "$ENV{TENCHU_VERSION}" STREQUAL "")
+    set(_tenchu_version "$ENV{TENCHU_VERSION}")
+endif()
+set(TENCHU_VERSION "${_tenchu_version}" CACHE STRING "Version of this build (a release tag such as v0.2.0)")
+set_source_files_properties(runtime/host/update_check.cpp PROPERTIES COMPILE_DEFINITIONS "TENCHU_VERSION=\"${TENCHU_VERSION}\"")
+target_link_libraries(TenchuRuntime PUBLIC TenchuXenos winhttp bcrypt xinput winmm shell32 ole32 d3d11 dxgi d3dcompiler xaudio2 dbghelp)
 
 # FFmpeg (XMA and WMV decoding), built by tools/build_xma_codec.py.
 set(TENCHU_FFMPEG "${CMAKE_SOURCE_DIR}/build/deps/ffmpeg")

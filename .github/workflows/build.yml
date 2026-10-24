@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+# The version the F1 menu's updater compares with the latest release: the tag for releases.
+env:
+  TENCHU_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+
 jobs:
   windows:
     runs-on: windows-2022

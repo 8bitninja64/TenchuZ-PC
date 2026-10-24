@@ -51,6 +51,17 @@ Original code following Darkness's architecture (not copied files).
   game pauses in VdSwap while open and the CP re-presents the last frame (presentAgain).
   Back+Start is filtered in XamInputGetState (filterGamePad) so the game never sees it.
   Settings it changes are written back into TenchuZ.ini in place (saveSettings).
+  host::g_mutex is recursive: handleMessage re-enters through ReleaseCapture (combo clicks
+  crashed with "resource deadlock would occur"). Panes are NavFlattened (the pad reaches
+  Resume/Quit); focusFirstOption() goes right before a page's first focusable widget.
+  Controller remapping ([controller] in TenchuZ.ini, gamepad.cpp remap()): the menu reads
+  the physical buttons (gamepadRawState), the game the mapped ones.
+- `host/update_check.cpp`: F1 > Update, ported from Blitz2003's updater (GitHub latest
+  release, SHA-256 digest check, tar.exe unpack, *.old-update backups removed at the next
+  start, restart). Version = TENCHU_VERSION (CMake cache, from the env; the release
+  workflow sets the tag). Test against a fake API: TENCHU_UPDATE_API=http://127.0.0.1:PORT
+  plus TENCHU_UPDATE_AUTOINSTALL=1 (installs and restarts without clicks). Runs with
+  TENCHU_CONTROL skip the startup check unless TENCHU_UPDATE_API is set.
 - Game module boundary (runtime/guest/module_abi.h): the translated code is tenchu_game.dll,
   TenchuZ.exe has none. Runtime functions the module calls register by name: TZ_IMPORT(Name)
   for imports, TZ_OVERRIDE(addr) for replaced game functions (also list the address in

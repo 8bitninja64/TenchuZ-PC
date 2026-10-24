@@ -19,6 +19,8 @@ const char* kDefaultFile = R"(; Tenchu Z Recomp settings. Delete this file to re
 [game]
 ; Your Tenchu Z (USA, Europe) disc image, chosen on the first start.
 disc =
+; Look for a newer release on GitHub when the game starts (F1 > Update installs it).
+update_check = true
 
 [display]
 ; Borderless fullscreen (Alt+Enter or F11 toggles it while playing).
@@ -120,6 +122,7 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
     try {
         if (section == "game") {
             if (key == "disc") settings.disc = value;
+            else if (key == "update_check") settings.updateCheck = parseBool(value);
         } else if (section == "display") {
             if (key == "fullscreen") settings.fullscreen = parseBool(value);
             else if (key == "window_width") settings.windowWidth = (std::max)(320, std::stoi(value));
@@ -234,6 +237,7 @@ void saveSettings() {
     const Settings& s = instance();
     std::vector<std::tuple<std::string, std::string, std::string>> values = {
         {"game", "disc", s.disc},
+        {"game", "update_check", text(s.updateCheck)},
         {"display", "fullscreen", text(s.fullscreen)},
         {"display", "vsync", text(s.vsync)},
         {"display", "resolution_scale", std::to_string(s.resolutionScale)},

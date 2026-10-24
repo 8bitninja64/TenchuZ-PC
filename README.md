@@ -47,9 +47,12 @@ The executable is built with XDK 2.0.4552 and imports `xboxkrnl.exe` and `xam.xe
 
 The disc image is read in place (nothing is extracted) and remembered in `TenchuZ.ini`.
 The compiled game code (`tenchu_game.dll`), saves and profile settings live in
-`%APPDATA%\TenchuZRecomp`. To update, unzip a newer release over the old one: the game
-code is recompiled automatically when the new release needs it. The release contains no
-game code or data; never share the `tenchu_game.dll` built from your disc.
+`%APPDATA%\TenchuZRecomp`. The game looks for a newer release when it starts (one request
+to GitHub; turn it off in F1 > Update): **F1 > Update** downloads it, checks its SHA-256
+against GitHub's, installs it in place and restarts. Your settings, saves and the compiled
+game code stay; the game code is recompiled automatically when the new release needs it.
+Unzipping a newer release over the old one works too. The release contains no game code or
+data; never share the `tenchu_game.dll` built from your disc.
 
 Windows 10/11 64-bit with a Direct3D 11 graphics card. The Visual C++ runtime is included.
 
@@ -106,7 +109,8 @@ RTX 3070 laptop; menus and the hideout run far higher.
 
 - **F1** (or **Back + Start** on a controller): settings menu, which pauses the game:
   display (frame rate limit, resolution, FPS counter), audio volume, controls
-  (keyboard rebinding, mouse), and unlocking all missions in your save.
+  (controller and keyboard remapping, mouse), unlocking all missions in your save, and
+  updates. A controller works it too: LB/RB switch sections, A selects, B goes back.
 - **Alt+Enter** or **F11**: toggle borderless fullscreen.
 - Controller: any pad SDL3 recognizes, buttons by position as on an Xbox pad; the first
   connected pad is player 1. Layouts come from `gamecontrollerdb.txt` next to the
