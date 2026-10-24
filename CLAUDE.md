@@ -75,6 +75,11 @@ builds when build/generated has sources). Run `<build>/TenchuZ.exe game` (folder
 (skip the first-start prompt). Release: tools/package.ps1 -Zip; the first start of a release
 runs tools/make_module.ps1 (recompile.py --strict + compile_module.py, about 110 s here).
 Patches are byte-exact (.gitattributes): Git for Windows' autocrlf broke them in clones.
+GitHub: github.com/8bitninja64/TenchuZ-PC (public). The build workflow builds and packages
+the runtime on every push; a `v*` tag publishes TenchuZ-windows-x64.zip as a release. FFmpeg
+for builds is the `deps-ffmpeg-n8.1.2-1` pre-release asset (ffmpeg workflow, run by hand),
+pinned by SHA-256 in tools/fetch_ffmpeg.py: when build_xma_codec.py changes, run the
+workflow with a new tag and update URL and SHA256 there.
 
 Driving the game (preferred over timed scripts): `TENCHU_CONTROL=<file>` executes lines
 appended at runtime (press/hold/release/stick/wait/shot/traceframe/dumpframe/quit, see
