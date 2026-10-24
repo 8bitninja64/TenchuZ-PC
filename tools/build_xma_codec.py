@@ -7,7 +7,8 @@ container FIFO delay, priming skip or synthesized EOF tail. Upstream codec math
 is unchanged. Everything else is stock: the ASF demuxer and WMV/WMA decoders
 serve the title's movies.
 
-Requires MSYS2 with mingw-w64-x86_64-gcc and make (../_Tools/msys64) and
+Requires MSYS2 with mingw-w64-x86_64-gcc and make (TENCHU_MSYS2, ../_Tools/msys64 or
+C:/msys64) and
 llvm-lib from Visual Studio. Output: build/deps/ffmpeg (bin, include, lib).
 """
 from pathlib import Path
@@ -15,6 +16,7 @@ import argparse
 import glob
 import hashlib
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -23,7 +25,8 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT.parent / '_Tools'
-MSYS = TOOLS / 'msys64'
+MSYS = next((path for path in ([Path(os.environ['TENCHU_MSYS2'])] if 'TENCHU_MSYS2' in os.environ else [])
+             + [TOOLS / 'msys64', Path('C:/msys64')] if (path / 'usr/bin/bash.exe').exists()), TOOLS / 'msys64')
 DEPS = ROOT / 'build' / 'deps'
 COMMIT = '1c2c67c0b9f7f66ab32c19dcf7f227bcd290aa4c'  # FFmpeg n8.1.2
 ARCHIVE_HASH = '1291ae49c285f7bd55c7c059aa43f1a0fd784a1ae22d5c76297dcd11c531248a'
@@ -93,6 +96,9 @@ def msys_path(path: Path) -> str:
 
 
 def main(rebuild: bool):
+    if not (MSYS / 'usr/bin/bash.exe').exists():
+        raise SystemExit('MSYS2 was not found (TENCHU_MSYS2, ../_Tools/msys64 or C:/msys64): install it from '
+                         'https://www.msys2.org and run: pacman -S mingw-w64-x86_64-gcc make')
     DEPS.mkdir(parents=True, exist_ok=True)
     archive = DEPS / 'ffmpeg-upstream.tar.gz'
     if not archive.exists():
