@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <shlobj.h>
 #include <stdexcept>
@@ -697,6 +698,35 @@ LONG CALLBACK onWatchedWrite(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 }  // namespace
+
+extern "C" uint32_t* volatile PPCEntryCounts = nullptr;
+
+namespace {
+constexpr uint32_t kCountedCode = 0x00A00000;  // 0x82000000-0x82A00000
+uint32_t* entryCounts = nullptr;
+}  // namespace
+
+void startEntryCounts() {
+    if (!entryCounts) entryCounts = new uint32_t[kCountedCode / 4];
+    std::memset(entryCounts, 0, kCountedCode);
+    PPCEntryCounts = entryCounts;
+}
+
+void stopEntryCounts(const std::string& path) {
+    PPCEntryCounts = nullptr;
+    if (!entryCounts) return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));  // let in-flight increments land
+    FILE* file = fopen(path.c_str(), "w");
+    if (!file) return;
+    size_t functions = 0;
+    for (uint32_t i = 0; i < kCountedCode / 4; ++i)
+        if (entryCounts[i]) {
+            fprintf(file, "%08X %u\n", 0x82000000u + i * 4, entryCounts[i]);
+            ++functions;
+        }
+    fclose(file);
+    logf("[count] %zu functions written to %s", functions, path.c_str());
+}
 
 void watchGuestWrites(uint32_t address) {
     static bool installed = (AddVectoredExceptionHandler(1, onWatchedWrite), true);

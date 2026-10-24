@@ -68,6 +68,22 @@ int16_t axis(double value) {
     return int16_t(value * 32767);
 }
 
+// Address expressions for peek/watchw: hex, '*addr+off' (through the pointer at addr), or
+// pointer chains 'addr>off>off...' (each '>' loads the word at the current address, then
+// adds the hex offset).
+uint32_t guestAddress(const std::string& text) {
+    const bool deref = !text.empty() && text[0] == '*';
+    char* end = nullptr;
+    uint32_t address = uint32_t(strtoul(text.c_str() + (deref ? 1 : 0), &end, 16));
+    if (deref) address = tz::load32(address);
+    while (end && *end) {
+        if (*end == '>') address = tz::load32(address);
+        else if (*end != '+') break;
+        address += uint32_t(strtoul(end + 1, &end, 16));
+    }
+    return address;
+}
+
 bool closeTo(float actual, float wanted) {
     return std::fabs(actual - wanted) <= 1e-4f * (std::max)(1.0f, std::fabs(wanted));
 }
@@ -154,11 +170,7 @@ void execute(Controller& c, Clock::time_point now) {
             std::string where;
             int words = 4;
             stream >> where >> words;
-            const bool deref = !where.empty() && where[0] == '*';
-            const auto plus = where.find('+');
-            uint32_t address = uint32_t(strtoul(where.c_str() + (deref ? 1 : 0), nullptr, 16));
-            if (deref) address = tz::load32(address);
-            if (plus != std::string::npos) address += uint32_t(strtoul(where.c_str() + plus + 1, nullptr, 16));
+            const uint32_t address = guestAddress(where);
             for (int i = 0; i < words; i += 8) {
                 std::string text;
                 for (int j = i; j < words && j < i + 8; ++j) {
@@ -190,11 +202,21 @@ void execute(Controller& c, Clock::time_point now) {
             std::vector<float> values;
             for (float value; stream >> value;) values.push_back(value);
             if (!values.empty()) findFloats(values);
+        } else if (command == "countstart") {
+            tz::startEntryCounts();
+        } else if (command == "countstop") {
+            std::string path;
+            stream >> path;
+            tz::stopEntryCounts(path);
         } else if (command == "watchw") {
             // watchw <hex address>: logs the guest code writing those 4 bytes.
             std::string where;
             stream >> where;
-            tz::watchGuestWrites(uint32_t(strtoul(where.c_str(), nullptr, 16)));
+            tz::watchGuestWrites(guestAddress(where));
+        } else if (command == "clock") {
+            // clock: logs host milliseconds since the first command (timing measurements).
+            static const Clock::time_point start = now;
+            logf("[control] clock %.1f", std::chrono::duration<double, std::milli>(now - start).count());
         } else if (command == "quit") {
             logf("[control] quitting");
             fflush(nullptr);

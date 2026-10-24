@@ -200,6 +200,10 @@ std::string guestBacktrace(const PPCContext& ctx, int depth = 16);
 // Debugging: a hardware watchpoint on 4 guest bytes; each write logs the writing
 // thread's guest function and backtrace (control command 'watchw').
 void watchGuestWrites(uint32_t address);
+// Debugging: counts guest function entries until stopped, then writes "address count"
+// lines (control commands countstart/countstop).
+void startEntryCounts();
+void stopEntryCounts(const std::string& path);
 
 // Guest printf (sprintf, _vsnprintf, DbgPrint).
 struct GuestArgs {

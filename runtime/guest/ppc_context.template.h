@@ -199,7 +199,10 @@ inline void PPCSafeIndirect(struct PPCContext& __restrict ctx, uint8_t* base, ui
 uint64_t PPCQueryTimebase();
 #define PPC_QUERY_TIMEBASE() PPCQueryTimebase()
 #define PPC_RECOMP_FAILURE(ctx, address, reason) PPCRecompFailure(ctx, address, reason)
-#define PPC_TRACE_ENTRY(ctx, address) do { (ctx).lastFunction = (address); (ctx).trace[(ctx).traceIndex++ & 63] = (address); } while (0)
+// Function entry counts (control commands countstart/countstop): null unless counting.
+// Indexed by (address - 0x82000000) / 4; unsynchronized, so counts are approximate.
+extern "C" uint32_t* volatile PPCEntryCounts;
+#define PPC_TRACE_ENTRY(ctx, address) do { (ctx).lastFunction = (address); (ctx).trace[(ctx).traceIndex++ & 63] = (address);     if (uint32_t* counts_ = PPCEntryCounts) ++counts_[((address) - 0x82000000u) >> 2]; } while (0)
 
 typedef void PPCFunc(struct PPCContext& __restrict__ ctx, uint8_t* base);
 
