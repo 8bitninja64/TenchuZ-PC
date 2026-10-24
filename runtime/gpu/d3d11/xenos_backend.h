@@ -33,6 +33,8 @@ public:
     ~XenosBackend();
     void draw(const DrawRequest& request, uint64_t vertexShader, uint64_t pixelShader);
     void swap(uint32_t frontBuffer);
+    // Presents the last frame again (paused game under the F1 menu).
+    void presentAgain();
 
 private:
     struct Impl;

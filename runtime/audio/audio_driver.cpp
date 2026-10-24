@@ -4,6 +4,7 @@
 // rate and its output dropped. TENCHU_NOAUDIO=1 forces the silent path;
 // TENCHU_AUDIO_DUMP=<file.wav> also records the submitted frames.
 #include "kernel/kernel.h"
+#include "host/settings.h"
 #include "ppc_recomp_shared.h"
 #include <windows.h>
 #include <xaudio2.h>
@@ -59,6 +60,7 @@ struct Output {
         if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) return false;
         if (FAILED(XAudio2Create(&engine, 0, XAUDIO2_DEFAULT_PROCESSOR))) return false;
         if (FAILED(engine->CreateMasteringVoice(&master))) return fail("mastering voice");
+        master->SetVolume(host::settings().mute ? 0.0f : host::settings().volume / 100.0f);
         WAVEFORMATEXTENSIBLE format{};
         format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
         format.Format.nChannels = kChannels;
@@ -163,6 +165,14 @@ void audioMain() {
     }
 }
 }  // namespace
+
+namespace tz::audio {
+// Master volume (0-1) from the F1 menu.
+void setOutputVolume(float volume) {
+    std::lock_guard lock(output.mutex);
+    if (output.master) output.master->SetVolume(volume);
+}
+}  // namespace tz::audio
 
 PPC_FUNC(__imp__XAudioRegisterRenderDriverClient) {
     // (callback* = {function, context}, driver*)

@@ -16,6 +16,10 @@ struct Settings {
     int resolutionScale = 1;      // internal resolution multiplier (1 = 720p, 2 = 1440p, 3 = 4K)
     int anisotropy = 16;          // texture filtering, 1 = off
     int frameRateLimit = 60;      // 30 = original pacing, 0 = unlimited
+    bool showFps = false;         // frame rate counter in the top left corner
+    // Audio
+    int volume = 100;             // master volume, percent
+    bool mute = false;
     // Input
     float mouseSensitivity = 1.0f;
     bool invertMouseY = false;
@@ -24,5 +28,12 @@ struct Settings {
 };
 
 const Settings& settings();
+// The same settings for the F1 menu (command processor thread), and writing them
+// back to TenchuZ.ini: changed values replace their lines, comments are kept.
+Settings& editableSettings();
+void saveSettings();
+// Restores the [keyboard] bindings of the default settings file.
+void resetKeyboardDefaults();
+std::string settingsFilePath();
 
 }  // namespace tz::host

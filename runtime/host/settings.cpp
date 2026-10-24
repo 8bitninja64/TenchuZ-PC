@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <tuple>
+#include <vector>
 
 namespace tz::host {
 namespace {
@@ -26,6 +28,13 @@ anisotropic_filtering = 16
 ; Frame rate limit. 30 is the original console pacing; higher values (60, 120,
 ; 144, 240, ...) or 0 for unlimited unlock it. Game speed does not change.
 frame_rate_limit = 60
+; Frame rate counter in the top left corner (also in the F1 menu).
+show_fps = false
+
+[audio]
+; Master volume in percent, and mute.
+volume = 100
+mute = false
 
 [input]
 mouse_sensitivity = 1.0
@@ -83,6 +92,10 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "resolution_scale") settings.resolutionScale = std::clamp(std::stoi(value), 1, 4);
             else if (key == "anisotropic_filtering") settings.anisotropy = std::clamp(std::stoi(value), 1, 16);
             else if (key == "frame_rate_limit") settings.frameRateLimit = (std::max)(0, std::stoi(value));
+            else if (key == "show_fps") settings.showFps = parseBool(value);
+        } else if (section == "audio") {
+            if (key == "volume") settings.volume = std::clamp(std::stoi(value), 0, 100);
+            else if (key == "mute") settings.mute = parseBool(value);
         } else if (section == "input") {
             if (key == "mouse_sensitivity") settings.mouseSensitivity = std::stof(value);
             else if (key == "invert_mouse_y") settings.invertMouseY = parseBool(value);
@@ -111,10 +124,9 @@ void parse(Settings& settings, std::istream& input) {
     }
 }
 
-}  // namespace
 
-const Settings& settings() {
-    static const Settings instance = [] {
+Settings& instance() {
+    static Settings instance = [] {
         Settings result;
         std::istringstream defaults(kDefaultFile);
         parse(result, defaults);
@@ -134,6 +146,81 @@ const Settings& settings() {
         return result;
     }();
     return instance;
+}
+
+std::string text(bool value) { return value ? "true" : "false"; }
+
+}  // namespace
+
+const Settings& settings() { return instance(); }
+Settings& editableSettings() { return instance(); }
+std::string settingsFilePath() { return settingsPath().string(); }
+
+void resetKeyboardDefaults() {
+    Settings defaults;
+    std::istringstream file(kDefaultFile);
+    parse(defaults, file);
+    instance().keys = defaults.keys;
+}
+
+void saveSettings() {
+    const Settings& s = instance();
+    std::vector<std::tuple<std::string, std::string, std::string>> values = {
+        {"display", "fullscreen", text(s.fullscreen)},
+        {"display", "vsync", text(s.vsync)},
+        {"display", "resolution_scale", std::to_string(s.resolutionScale)},
+        {"display", "anisotropic_filtering", std::to_string(s.anisotropy)},
+        {"display", "frame_rate_limit", std::to_string(s.frameRateLimit)},
+        {"display", "show_fps", text(s.showFps)},
+        {"audio", "volume", std::to_string(s.volume)},
+        {"audio", "mute", text(s.mute)},
+        {"input", "mouse_sensitivity", std::to_string(s.mouseSensitivity)},
+        {"input", "invert_mouse_y", text(s.invertMouseY)},
+    };
+    for (const auto& [key, value] : s.keys) values.emplace_back("keyboard", key, value);
+
+    std::vector<std::string> lines;
+    if (std::ifstream file{settingsPath()}) {
+        for (std::string line; std::getline(file, line);) lines.push_back(line);
+    }
+    std::vector<bool> written(values.size());
+    std::string section;
+    std::map<std::string, size_t> sectionEnd;  // line after a section's last setting
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string line = trim(lines[i].substr(0, lines[i].find(';')));
+        if (line.size() > 1 && line.front() == '[' && line.back() == ']') {
+            section = line.substr(1, line.size() - 2);
+            sectionEnd[section] = i + 1;
+            continue;
+        }
+        const size_t equals = line.find('=');
+        if (equals == std::string::npos) continue;
+        sectionEnd[section] = i + 1;
+        std::string key = trim(line.substr(0, equals));
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+        for (size_t v = 0; v < values.size(); ++v)
+            if (!written[v] && std::get<0>(values[v]) == section && std::get<1>(values[v]) == key) {
+                lines[i] = key + " = " + std::get<2>(values[v]);
+                written[v] = true;
+            }
+    }
+    // Settings the file did not have yet go at the end of their section.
+    for (size_t v = values.size(); v-- > 0;) {
+        if (written[v]) continue;
+        const auto& [sectionName, key, value] = values[v];
+        auto it = sectionEnd.find(sectionName);
+        if (it == sectionEnd.end()) {
+            lines.push_back("");
+            lines.push_back("[" + sectionName + "]");
+            it = sectionEnd.emplace(sectionName, lines.size()).first;
+        }
+        lines.insert(lines.begin() + std::ptrdiff_t(it->second), key + " = " + value);
+        for (auto& [name, end] : sectionEnd)
+            if (end >= it->second && name != sectionName) ++end;
+        ++it->second;
+    }
+    std::ofstream out(settingsPath(), std::ios::binary);
+    for (const auto& line : lines) out << line << '\n';
 }
 
 }  // namespace tz::host

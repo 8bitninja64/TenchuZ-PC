@@ -1832,5 +1832,9 @@ XenosBackend::XenosBackend(D3D11Renderer& renderer, const std::atomic<uint32_t>*
 XenosBackend::~XenosBackend() = default;
 void XenosBackend::draw(const DrawRequest& request, uint64_t vs, uint64_t ps) { impl_->draw(request, vs, ps); }
 void XenosBackend::swap(uint32_t frontBuffer) { impl_->swap(frontBuffer); }
+void XenosBackend::presentAgain() {
+    impl_->forgetBoundState();  // presenting binds its own pipeline state
+    impl_->renderer.presentAgain();
+}
 
 }  // namespace tz::gpu

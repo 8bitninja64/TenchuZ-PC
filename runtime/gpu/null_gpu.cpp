@@ -4,6 +4,7 @@
 #include "kernel/kernel.h"
 #include "audio/xma.h"
 #include "host/settings.h"
+#include "host/overlay.h"
 #include "gpu/d3d11/renderer.h"
 #include "gpu/d3d11/xenos_backend.h"
 #include <map>
@@ -648,7 +649,15 @@ void commandProcessorMain() {
         {
             std::unique_lock lock(gs.mutex);
             const auto idleStart = std::chrono::steady_clock::now();
-            gs.wake.wait(lock, [] { return gs.ringDwords && gs.registers[kRegRbWptr] != gs.readIndex; });
+            // While the F1 menu pauses the game no frames arrive: keep presenting the
+            // last one with the menu over it.
+            const auto ready = [] { return gs.ringDwords && gs.registers[kRegRbWptr] != gs.readIndex; };
+            while (!gs.wake.wait_for(lock, std::chrono::milliseconds(16), ready)) {
+                if (!host::overlay::isOpen()) continue;
+                lock.unlock();
+                if (auto* active = activeBackend()) active->presentAgain();
+                lock.lock();
+            }
             idleNs += nanosSince(idleStart);
             writeIndex = gs.registers[kRegRbWptr] % gs.ringDwords;
         }
@@ -897,6 +906,9 @@ PPC_FUNC(__imp__VdSwap) {
         fflush(stderr);
         ExitProcess(0);
     }
+    // The F1 menu pauses the game here, between two frames; the command processor
+    // keeps presenting the last one under the menu.
+    while (host::overlay::isOpen()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     ctx.r3.u64 = 0;
 }
 

@@ -54,17 +54,22 @@ struct State {
     HWND window = nullptr;
 };
 
+void loadBindings(State& s) {
+    for (int control = 0; control < ControlCount; ++control) {
+        s.bindings[control].clear();
+        const auto it = settings().keys.find(kControlNames[control]);
+        if (it == settings().keys.end()) continue;
+        std::istringstream names(it->second);
+        std::string name;
+        while (names >> name)
+            if (const int code = keyCode(name)) s.bindings[control].push_back(code);
+    }
+}
+
 State& state() {
     static State* instance = [] {
         auto* s = new State;
-        for (int control = 0; control < ControlCount; ++control) {
-            const auto it = settings().keys.find(kControlNames[control]);
-            if (it == settings().keys.end()) continue;
-            std::istringstream names(it->second);
-            std::string name;
-            while (names >> name)
-                if (const int code = keyCode(name)) s->bindings[control].push_back(code);
-        }
+        loadBindings(*s);
         return s;
     }();
     return *instance;
@@ -167,6 +172,41 @@ bool handleInputMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 }
 
 bool keyboardMouseActive() { return state().active; }
+
+void reloadKeyBindings() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    loadBindings(s);
+}
+
+void releaseMouse() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    setCapture(s, false);
+    s.keys.fill(false);
+}
+
+std::string keyName(int code) {
+    if ((code >= 'A' && code <= 'Z') || (code >= '0' && code <= '9')) return std::string(1, char(std::tolower(code)));
+    static const std::pair<const char*, int> names[] = {
+        {"space", VK_SPACE}, {"enter", VK_RETURN}, {"escape", VK_ESCAPE}, {"tab", VK_TAB},
+        {"shift", VK_SHIFT}, {"ctrl", VK_CONTROL}, {"alt", VK_MENU}, {"up", VK_UP}, {"down", VK_DOWN},
+        {"left", VK_LEFT}, {"right", VK_RIGHT}, {"backspace", VK_BACK}, {"mouse1", VK_LBUTTON},
+        {"mouse2", VK_RBUTTON}, {"mouse3", VK_MBUTTON}, {"mouse4", VK_XBUTTON1}, {"mouse5", VK_XBUTTON2}};
+    for (const auto& [label, value] : names)
+        if (code == value) return label;
+    if (code >= VK_F1 && code <= VK_F12) return "f" + std::to_string(code - VK_F1 + 1);
+    // Left/right variants report as the generic modifier.
+    if (code == VK_LSHIFT || code == VK_RSHIFT) return "shift";
+    if (code == VK_LCONTROL || code == VK_RCONTROL) return "ctrl";
+    if (code == VK_LMENU || code == VK_RMENU) return "alt";
+    return {};
+}
+
+const char* const* keyboardControls(int& count) {
+    count = ControlCount;
+    return kControlNames;
+}
 
 VirtualPad keyboardMouseState() {
     auto& s = state();

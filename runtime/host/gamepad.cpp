@@ -30,6 +30,7 @@ struct Pad {
 struct Published {
     bool connected = false;
     VirtualPad state;
+    char name[64] = {};
 };
 struct Rumble {
     uint16_t left = 0, right = 0;
@@ -139,7 +140,12 @@ void inputMain() {
         }
         std::array<Published, kPads> snapshot;
         for (int i = 0; i < kPads; ++i)
-            if (g.pads[i].handle) snapshot[i] = {true, read(g.pads[i].handle)};
+            if (g.pads[i].handle) {
+                snapshot[i].connected = true;
+                snapshot[i].state = read(g.pads[i].handle);
+                if (const char* name = SDL_GetGamepadName(g.pads[i].handle))
+                    strncpy_s(snapshot[i].name, name, _TRUNCATE);
+            }
         std::array<Rumble, kPads> pending;
         {
             std::lock_guard lock(g.mutex);
@@ -169,6 +175,14 @@ bool gamepadState(uint32_t user, VirtualPad& out) {
     if (user >= kPads || !g.published[user].connected) return false;
     out = g.published[user].state;
     return true;
+}
+
+std::string gamepadName(uint32_t user) {
+    start();
+    auto& g = gamepads();
+    std::lock_guard lock(g.mutex);
+    if (user >= kPads || !g.published[user].connected) return {};
+    return g.published[user].name[0] ? g.published[user].name : "Controller";
 }
 
 bool gamepadRumble(uint32_t user, uint16_t left, uint16_t right) {

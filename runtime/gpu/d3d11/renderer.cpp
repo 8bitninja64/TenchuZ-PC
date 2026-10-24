@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "host/overlay.h"
 #include "kernel/kernel.h"
 #include "kernel/control.h"
 #include "host/settings.h"
@@ -104,6 +105,7 @@ bool D3D11Renderer::initialize(HWND target) {
         logf("[d3d11] swap chain creation failed (%08lX)", hr);
         return false;
     }
+    host::overlay::initialize(window_, device_, context_);
     ID3DBlob* vs = compile(kBlitShader, "vs", "vs_5_0");
     ID3DBlob* ps = compile(kBlitShader, "ps", "ps_5_0");
     ID3DBlob* swapped = compile(kBlitShader, "psSwapped", "ps_5_0");
@@ -168,9 +170,30 @@ void D3D11Renderer::resizeIfNeeded() {
     height_ = height;
 }
 
-void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue) {
+void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue) { present(source, swapRedBlue, false); }
+
+void D3D11Renderer::presentAgain() { present(lastSource_, lastSwapRedBlue_, true); }
+
+void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, bool repeat) {
     resizeIfNeeded();
     ++frame_;
+    if (!repeat) {
+        if (source) source->AddRef();
+        if (lastSource_) lastSource_->Release();
+        lastSource_ = source;
+        lastSwapRedBlue_ = swapRedBlue;
+        // Frame rate of new game frames, averaged over half a second.
+        static auto windowStart = std::chrono::steady_clock::now();
+        static uint32_t frames = 0;
+        ++frames;
+        const double seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - windowStart).count();
+        if (seconds >= 0.5) {
+            fps_ = float(frames / seconds);
+            frames = 0;
+            windowStart = std::chrono::steady_clock::now();
+        }
+    }
     if (source) {
         // Letterbox the 16:9 game image into the window.
         float width = float(width_), height = float(height_);
@@ -199,7 +222,8 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue) 
         const float color[4] = {0.1f + 0.1f * std::sin(t), 0.1f, 0.1f + 0.1f * std::cos(t), 1.0f};
         context_->ClearRenderTargetView(backBufferView_, color);
     }
-    captureIfRequested();
+    if (!repeat) captureIfRequested();  // game frames only, without the menu
+    host::overlay::render(backBufferView_, fps_);
     const HRESULT presented = swapChain_->Present(syncInterval(), 0);
     if (frame_ % 300 == 0)
         TZ_TRACE("window", "[window] foreground %d iconic %d present %08X", GetForegroundWindow() == window_,

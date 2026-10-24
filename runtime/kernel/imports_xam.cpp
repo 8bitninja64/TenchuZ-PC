@@ -3,6 +3,7 @@
 #include "kernel.h"
 #include "control.h"
 #include "host/gamepad.h"
+#include "host/overlay.h"
 #include "host/input.h"
 #include "filesystem.h"
 #include "ppc_recomp_shared.h"
@@ -552,6 +553,11 @@ PPC_FUNC(__imp__XamInputGetState) {
     if (!connected) {
         ctx.r3.u64 = kErrorDeviceNotConnected;
         return;
+    }
+    // The F1 menu owns the controls while open (and until its buttons are released).
+    if (ctx.r3.u32 == 0 && host::overlay::filterGamePad(state.Gamepad.wButtons)) {
+        state.Gamepad = {};
+        synthesized = true;
     }
     if (traceEnabled("inputstate") && (state.Gamepad.wButtons || state.Gamepad.sThumbLX || state.Gamepad.sThumbLY))
         logf("[input] user %u flags %X lr %08X buttons %04X lx %d ly %d packet %u", ctx.r3.u32, ctx.r4.u32,

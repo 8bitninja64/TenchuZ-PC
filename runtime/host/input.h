@@ -2,6 +2,7 @@
 // Keyboard and mouse as controller 1, bound in TenchuZ.ini [keyboard].
 #include <windows.h>
 #include <cstdint>
+#include <string>
 
 namespace tz::host {
 
@@ -21,5 +22,13 @@ bool keyboardMouseActive();
 VirtualPad keyboardMouseState();
 // Combines a controller state with the keyboard/mouse one.
 void mergePad(VirtualPad& into, const VirtualPad& other);
+
+// For the F1 menu: rereads the [keyboard] bindings from the settings, frees the
+// cursor (window thread), names a virtual key or mouse button as the settings file
+// spells it ("" when it has no name), and lists the bindable controls.
+void reloadKeyBindings();
+void releaseMouse();
+std::string keyName(int virtualKey);
+const char* const* keyboardControls(int& count);
 
 }  // namespace tz::host

@@ -71,10 +71,11 @@ enough) with the C++ and Clang (ClangCL) components.
    python tools/build_xma_codec.py
    ```
 
-   Then fetch SDL3 (game controllers):
+   Then fetch SDL3 (game controllers) and Dear ImGui (the F1 menu):
 
    ```bash
    python tools/fetch_sdl.py
+   python tools/fetch_imgui.py
    ```
 
 5. Build the port:
@@ -104,6 +105,9 @@ rate that is a multiple of the limit (60 on a 60/120/240 Hz display), frames are
 locked to the display. Missions currently reach about 75-80 fps unlimited on an
 RTX 3070 laptop; menus and the hideout run far higher.
 
+- **F1** (or **Back + Start** on a controller): settings menu, which pauses the game:
+  display (frame rate limit, resolution, FPS counter), audio volume, controls
+  (keyboard rebinding, mouse), and unlocking all missions in your save.
 - **Alt+Enter** or **F11**: toggle borderless fullscreen.
 - Controller: any pad SDL3 recognizes, buttons by position as on an Xbox pad; the first
   connected pad is player 1. Layouts come from `gamecontrollerdb.txt` next to the

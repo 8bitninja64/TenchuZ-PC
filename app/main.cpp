@@ -4,6 +4,7 @@
 #include "gpu/d3d11/renderer.h"
 #include "host/input.h"
 #include "host/settings.h"
+#include "host/overlay.h"
 #include <thread>
 #include <cstdio>
 #include <exception>
@@ -44,6 +45,12 @@ void setFullscreen(HWND window, bool fullscreen) {
 
 LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     static bool fullscreen = false;
+    if (message == tz::host::overlay::kMessageFullscreen) {
+        if ((wParam != 0) != fullscreen) setFullscreen(window, fullscreen = wParam != 0);
+        return 0;
+    }
+    // F1 menu first: it takes keyboard and mouse while open.
+    if (message != WM_CLOSE && tz::host::overlay::handleMessage(window, message, wParam, lParam)) return 0;
     switch (message) {
     case WM_CLOSE:
         ExitProcess(0);

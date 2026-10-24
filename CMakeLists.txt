@@ -37,6 +37,7 @@ add_library(TenchuRuntime STATIC
     runtime/host/settings.cpp
     runtime/host/input.cpp
     runtime/host/gamepad.cpp
+    runtime/host/overlay.cpp
     runtime/kernel/kernel_data.cpp
     runtime/kernel/format.cpp
     runtime/kernel/imports_ke.cpp
@@ -68,6 +69,21 @@ target_link_libraries(TenchuRuntime PUBLIC
     "${TENCHU_FFMPEG}/lib/avcodec-tenchu.lib" "${TENCHU_FFMPEG}/lib/avutil-tenchu.lib"
     "${TENCHU_FFMPEG}/lib/avformat-tenchu.lib")
 file(GLOB TENCHU_FFMPEG_DLLS "${TENCHU_FFMPEG}/bin/*.dll")
+
+# Dear ImGui (F1 menu), fetched by tools/fetch_imgui.py.
+set(TENCHU_IMGUI "${CMAKE_SOURCE_DIR}/build/deps/imgui")
+if(NOT EXISTS "${TENCHU_IMGUI}/imgui.h")
+    message(FATAL_ERROR "Dear ImGui is missing: run python tools/fetch_imgui.py")
+endif()
+add_library(TenchuImGui STATIC
+    ${TENCHU_IMGUI}/imgui.cpp ${TENCHU_IMGUI}/imgui_draw.cpp ${TENCHU_IMGUI}/imgui_tables.cpp
+    ${TENCHU_IMGUI}/imgui_widgets.cpp ${TENCHU_IMGUI}/backends/imgui_impl_win32.cpp
+    ${TENCHU_IMGUI}/backends/imgui_impl_dx11.cpp)
+target_include_directories(TenchuImGui PUBLIC "${TENCHU_IMGUI}")
+# The menu reads controllers itself (SDL); the Win32 backend's XInput polling stays out.
+target_compile_definitions(TenchuImGui PUBLIC IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
+target_compile_options(TenchuImGui PRIVATE -Wno-everything)
+target_link_libraries(TenchuRuntime PUBLIC TenchuImGui)
 
 # SDL3 (game controllers), fetched by tools/fetch_sdl.py.
 set(TENCHU_SDL "${CMAKE_SOURCE_DIR}/build/deps/SDL3")
