@@ -157,3 +157,9 @@ name = "IndicatorHoldMidAsmHook"
 address = 0x822BE400
 registers = ["r11", "r29"]
 after_instruction = true
+
+# Wave water phase step, per frame (sub_823C30E8): scaled to the frame time
+[[midasm_hook]]
+name = "WavePhaseStepMidAsmHook"
+address = 0x823C33B0
+registers = ["f0"]

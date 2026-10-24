@@ -2,7 +2,10 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -10,6 +13,7 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <vector>
 
 #include "kernel.h"
 
@@ -62,6 +66,45 @@ int16_t axis(double value) {
     if (value > 1) value = 1;
     if (value < -1) value = -1;
     return int16_t(value * 32767);
+}
+
+bool closeTo(float actual, float wanted) {
+    return std::fabs(actual - wanted) <= 1e-4f * (std::max)(1.0f, std::fabs(wanted));
+}
+
+// Scans committed guest memory (heap, stacks, image, physical) for big-endian floats.
+void findFloats(const std::vector<float>& values) {
+    const uint8_t* base = tz::memory->base();
+    int found = 0;
+    for (const auto [begin, end] : {std::pair{0x40000000u, 0x7F000000u}, std::pair{0x80000000u, 0xA0000000u},
+                                    std::pair{0xA0000000u, 0xC0000000u}}) {
+        for (uint64_t address = begin; address < end && found < 32;) {
+            MEMORY_BASIC_INFORMATION info{};
+            if (!VirtualQuery(base + address, &info, sizeof(info))) break;
+            const uint64_t regionEnd = (std::min)(uint64_t(end), uint64_t(static_cast<const uint8_t*>(info.BaseAddress) +
+                                                                          info.RegionSize - base));
+            const bool readable = info.State == MEM_COMMIT &&
+                                  (info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
+                                  !(info.Protect & PAGE_GUARD);
+            if (readable) {
+                for (uint64_t at = address; at + values.size() * 4 <= regionEnd && found < 32; at += 4) {
+                    size_t i = 0;
+                    for (; i < values.size(); ++i) {
+                        const uint32_t bits = _byteswap_ulong(*reinterpret_cast<const uint32_t*>(base + at + i * 4));
+                        float value;
+                        std::memcpy(&value, &bits, 4);
+                        if (!closeTo(value, values[i])) break;
+                    }
+                    if (i == values.size()) {
+                        logf("[control] findf match at %08X", uint32_t(at));
+                        ++found;
+                    }
+                }
+            }
+            address = regionEnd;
+        }
+    }
+    logf("[control] findf done: %d matches", found);
 }
 
 // Runs queued commands until one asks for a delay. Called with the mutex held.
@@ -125,6 +168,16 @@ void execute(Controller& c, Clock::time_point now) {
                 }
                 logf("[control] peek %08X:%s", address + uint32_t(i) * 4, text.c_str());
             }
+        } else if (command == "findf") {
+            // findf <float> [<float>...]: logs guest addresses holding these consecutive floats.
+            std::vector<float> values;
+            for (float value; stream >> value;) values.push_back(value);
+            if (!values.empty()) findFloats(values);
+        } else if (command == "watchw") {
+            // watchw <hex address>: logs the guest code writing those 4 bytes.
+            std::string where;
+            stream >> where;
+            tz::watchGuestWrites(uint32_t(strtoul(where.c_str(), nullptr, 16)));
         } else if (command == "quit") {
             logf("[control] quitting");
             fflush(nullptr);

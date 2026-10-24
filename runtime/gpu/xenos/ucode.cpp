@@ -179,7 +179,7 @@ std::string disassemble(const Program& program) {
                     std::string text = std::string(pred) + "    + " +
                                        (uint32_t(sop) < 51 ? kScalarNames[uint32_t(sop)] : "sop?") +
                                        (alu.scalarClamp() ? "_sat " : " ") +
-                                       destText(program.type, alu.scalarDest(), alu.exportData()) +
+                                       destText(program.type, alu.exportData() ? alu.vectorDest() : alu.scalarDest(), alu.exportData()) +
                                        maskText(alu.scalarWriteMask()) + ", " + operands;
                     out += "      " + text + "\n";
                 }

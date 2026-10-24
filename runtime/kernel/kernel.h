@@ -197,6 +197,9 @@ void logf(const char* format, ...);
 // Return addresses of the current guest call chain, walking frame back chains
 // (each frame stores its caller's LR at back chain - 8).
 std::string guestBacktrace(const PPCContext& ctx, int depth = 16);
+// Debugging: a hardware watchpoint on 4 guest bytes; each write logs the writing
+// thread's guest function and backtrace (control command 'watchw').
+void watchGuestWrites(uint32_t address);
 
 // Guest printf (sprintf, _vsnprintf, DbgPrint).
 struct GuestArgs {

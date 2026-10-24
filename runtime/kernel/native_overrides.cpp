@@ -146,3 +146,10 @@ void IndicatorFadeOutRateMidAsmHook(PPCRegister& r9) {
 void IndicatorHoldMidAsmHook(PPCRegister& r11, PPCRegister& r29) {
     if (r29.s32 == 0 && r11.s32 == 150) r11.s64 = 151;
 }
+
+// Wave water (sub_823C30E8, type 1): each wave's phase advances by a constant per
+// frame (the type 2 water beside it uses the frame time). Scaled to the real frame
+// time so the waves keep their 30 fps speed (unchanged at 30 fps).
+void WavePhaseStepMidAsmHook(PPCRegister& f0) {
+    f0.f64 *= frameMilliseconds() * 0.03;
+}

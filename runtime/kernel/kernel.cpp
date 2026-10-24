@@ -1,6 +1,7 @@
 #include "kernel.h"
 #include "xex.h"
 #include "ppc_recomp_shared.h"
+#include <atomic>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -679,6 +680,51 @@ void startWatchdog() {
     }).detach();
 }
 }  // namespace
+
+namespace {
+std::atomic<int> watchedWrites{0};
+
+LONG CALLBACK onWatchedWrite(EXCEPTION_POINTERS* info) {
+    if (info->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP || !(info->ContextRecord->Dr6 & 1))
+        return EXCEPTION_CONTINUE_SEARCH;
+    info->ContextRecord->Dr6 = 0;
+    if (watchedWrites++ < 40)
+        if (auto* thread = currentThread())
+            logf("[watchw] %s fn %08X lr %08X value %08X |%s", thread->name.c_str(), thread->context.lastFunction,
+                 uint32_t(thread->context.lr),
+                 _byteswap_ulong(*reinterpret_cast<const uint32_t*>(info->ContextRecord->Dr0)),
+                 guestBacktrace(thread->context, 8).c_str());
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+}  // namespace
+
+void watchGuestWrites(uint32_t address) {
+    static bool installed = (AddVectoredExceptionHandler(1, onWatchedWrite), true);
+    (void)installed;
+    // Debug registers are per thread and a thread cannot reliably change its own:
+    // a helper suspends each guest thread in turn.
+    const uint64_t host = uint64_t(memory->base() + (address & ~3u));
+    std::thread([host] {
+        std::vector<std::shared_ptr<GuestThread>> threads;
+        {
+            std::lock_guard lock(threadMutex);
+            for (const auto& [kthread, weak] : threadsByKthread)
+                if (auto thread = weak.lock()) threads.push_back(thread);
+        }
+        for (const auto& thread : threads) {
+            if (!thread->host || SuspendThread(thread->host) == DWORD(-1)) continue;
+            CONTEXT context{};
+            context.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            if (GetThreadContext(thread->host, &context)) {
+                context.Dr0 = host;
+                context.Dr7 = (context.Dr7 & ~0xF0003ull) | 1 | (1ull << 16) | (3ull << 18);  // L0, write, 4 bytes
+                SetThreadContext(thread->host, &context);
+            }
+            ResumeThread(thread->host);
+        }
+        logf("[watchw] armed on %zu threads", threads.size());
+    }).detach();
+}
 
 namespace {
 // Samples each thread's current guest function every millisecond for ten

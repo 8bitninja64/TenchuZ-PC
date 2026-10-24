@@ -364,20 +364,32 @@ struct Emitter {
         // values there for a later *_prev instruction.
         line("float s = " + scalarExpression(alu, constantOrdinal) + ";");
         if (alu.scalarClamp()) line("s = saturate(s);");
-        if (vectorActive && alu.vectorWriteMask()) {
-            const std::string dest = destination(alu.vectorDest(), alu.exportData(), alu.vectorDestRelative());
-            const std::string m = mask(alu.vectorWriteMask());
-            line(dest + "." + m + " = v." + m + ";");
-        }
-        if (!alu.exportData()) {
-            if (vectorActive && alu.vectorWriteMask())
+        if (alu.exportData()) {
+            // Exports: both units write the vector destination. Per component: vector
+            // mask only = vector result, scalar mask only = scalar result, both = 1.0,
+            // neither = unchanged, or 0.0 when scalar_dest_rel is set.
+            const std::string dest = destination(alu.vectorDest(), true, false);
+            const uint32_t vectorMask = alu.vectorWriteMask(), scalarMask = alu.scalarWriteMask();
+            const uint32_t fromVector = vectorMask & ~scalarMask, fromScalar = scalarMask & ~vectorMask;
+            const uint32_t ones = vectorMask & scalarMask;
+            const uint32_t zeros = alu.scalarDestRelative() ? 0xF & ~(vectorMask | scalarMask) : 0;
+            if (fromVector) line(dest + "." + mask(fromVector) + " = v." + mask(fromVector) + ";");
+            if (fromScalar) line(dest + "." + mask(fromScalar) + " = s.xxxx." + mask(fromScalar) + ";");
+            if (ones) line(dest + "." + mask(ones) + " = (1.0).xxxx." + mask(ones) + ";");
+            if (zeros) line(dest + "." + mask(zeros) + " = (0.0).xxxx." + mask(zeros) + ";");
+        } else {
+            if (vectorActive && alu.vectorWriteMask()) {
+                const std::string dest = destination(alu.vectorDest(), false, alu.vectorDestRelative());
+                const std::string m = mask(alu.vectorWriteMask());
+                line(dest + "." + m + " = v." + m + ";");
                 noteTempWrite(alu.vectorDest(), alu.vectorDestRelative(), alu.vectorWriteMask() & 1);
-            if (alu.scalarWriteMask()) noteTempWrite(alu.scalarDest(), alu.scalarDestRelative(), alu.scalarWriteMask() & 1);
-        }
-        if (alu.scalarWriteMask()) {
-            const std::string dest = destination(alu.scalarDest(), alu.exportData(), alu.scalarDestRelative());
-            const std::string m = mask(alu.scalarWriteMask());
-            line(dest + "." + m + " = s.xxxx." + m + ";");
+            }
+            if (alu.scalarWriteMask()) {
+                const std::string dest = destination(alu.scalarDest(), false, alu.scalarDestRelative());
+                const std::string m = mask(alu.scalarWriteMask());
+                line(dest + "." + m + " = s.xxxx." + m + ";");
+                noteTempWrite(alu.scalarDest(), alu.scalarDestRelative(), alu.scalarWriteMask() & 1);
+            }
         }
         line("ps = s;");
         --indent;

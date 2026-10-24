@@ -162,7 +162,14 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   those values with carried whole ticks/ms (native_overrides.cpp). New frame-rate bugs:
   look for fctiwz of values derived from 0x82B57824. Debug aids: TENCHU_SKIP_VS,
   TENCHU_FIND_WRITER=<vs hash> / TENCHU_PROBE_RANGE=<pages> (guest writers of memory),
-  TENCHU_PROF_LINES=<function> (hot source lines; the generated code has /Z7 symbols).
+  TENCHU_PROF_LINES=<function> (hot source lines; the generated code has /Z7 symbols), control
+  commands findf (search guest memory for floats) and watchw (hardware write watchpoint;
+  its fn is the last function entered, often a save helper: read the backtrace/lr).
+- Wave water (sub_823C30E8, type 1 Gerstner waves, table 0x833AF5E0): the phase advanced
+  a constant per frame; WavePhaseStepMidAsmHook scales it by the frame time.
+- Shader exports: with export_data set, the scalar op also writes the vector destination;
+  a component in both write masks is 1.0, in neither (scalar_dest_rel set) 0.0 (Xenia's
+  rule). Writing the scalar to scalar_dest left water's projected w unset: no reflection.
 - Resolved textures are allocated padded (resolve widths round up): fetches scale UVs by
   fetch size / host size (g_textureScale), or blur chains drift (lantern bloom offset).
 - Saved profile settings once had all volumes at 0 from button-mashing tests: if the

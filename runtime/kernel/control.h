@@ -12,6 +12,8 @@
 //   dumpframe              save the next frame's resolved textures to build/resolved
 //   profile                start the host profiler window (TENCHU_TRACE=hostprof)
 //   peek [*]addr[+off] [n] log n guest words at addr ('*': through the pointer at addr)
+//   findf <f> [<f>...]     log guest addresses holding these consecutive floats
+//   watchw <addr>          hardware watchpoint: log the guest code writing those 4 bytes
 //   quit                   exit the process
 #include <cstdint>
 #include <string>
