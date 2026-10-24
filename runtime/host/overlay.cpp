@@ -303,6 +303,15 @@ bool drawDisplay(Settings& st) {
         ImGui::TextColored(kGold, "Switching to or from 30 fps applies on the next start.");
     changed |= ImGui::Checkbox("VSync", &st.vsync);
     changed |= ImGui::Checkbox("Show FPS counter", &st.showFps);
+    // HDR10: switches live; needs Windows HDR ("Use HDR" in Display settings) on this monitor.
+    changed |= ImGui::Checkbox("HDR", &st.hdr);
+    if (st.hdr && !hdrAvailable())
+        ImGui::TextColored(kGold, "This monitor is not in HDR mode: turn on \"Use HDR\" in Windows display settings.");
+    if (st.hdr) {
+        changed |= ImGui::SliderInt("Peak brightness (nits)", &st.hdrPeakNits, 400, 4000);
+        changed |= ImGui::SliderInt("Paper white (nits)", &st.hdrPaperWhiteNits, 80, 400);
+        if (st.hdrPaperWhiteNits > st.hdrPeakNits) st.hdrPaperWhiteNits = st.hdrPeakNits;
+    }
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextDisabled("Applied on the next start:");

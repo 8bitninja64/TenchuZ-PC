@@ -27,12 +27,29 @@ public:
     bool takeSuspicious() { return std::exchange(lastCaptureSuspicious_, false); }
 
 private:
+    // HDR10 output (settings hdr, with Windows HDR on for the window's monitor): the game
+    // image and the F1 menu are drawn into SDR textures, then expanded into the HDR back
+    // buffer (inverse tone map, Rec.2020, PQ). Otherwise frames go to the back buffer as before.
+    void updateHdr();
+    bool monitorHdr() const;
+    void createHdrTextures();
+    void releaseHdrTextures();
+    bool hdr_ = false;  // the swap chain is HDR10 now
+    DXGI_FORMAT backBufferFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+    ID3D11Texture2D* sdr_ = nullptr;  // the game image (SDR, window size)
+    ID3D11RenderTargetView* sdrView_ = nullptr;
+    ID3D11ShaderResourceView* sdrResource_ = nullptr;
+    ID3D11Texture2D* ui_ = nullptr;  // the F1 menu and FPS counter (premultiplied alpha)
+    ID3D11RenderTargetView* uiView_ = nullptr;
+    ID3D11ShaderResourceView* uiResource_ = nullptr;
+    ID3D11PixelShader* hdrPixelShader_ = nullptr;
+    ID3D11Buffer* hdrConstants_ = nullptr;
     void resizeIfNeeded();
     uint32_t refreshRate() const;
     uint32_t syncInterval();
     uint32_t refresh_ = 0;
     bool lastCaptureSuspicious_ = false;
-    // TENCHU_SCREENSHOTS=<dir>,<every N frames> saves presented frames as BMP.
+    // TENCHU_SCREENSHOTS=<dir>,<every N frames> saves presented frames as BMP (the SDR image).
     void captureIfRequested();
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;

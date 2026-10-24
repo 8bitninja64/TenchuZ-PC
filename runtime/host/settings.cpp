@@ -38,6 +38,12 @@ anisotropic_filtering = 16
 frame_rate_limit = 60
 ; Frame rate counter in the top left corner (also in the F1 menu).
 show_fps = false
+; HDR10 output on monitors with Windows HDR turned on: highlights are expanded up to
+; hdr_peak_nits (set it to your display's peak); mid tones and the F1 menu sit at
+; hdr_paper_white_nits.
+hdr = false
+hdr_peak_nits = 1000
+hdr_paper_white_nits = 200
 
 [audio]
 ; Master volume in percent, and mute.
@@ -132,6 +138,9 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "anisotropic_filtering") settings.anisotropy = std::clamp(std::stoi(value), 1, 16);
             else if (key == "frame_rate_limit") settings.frameRateLimit = (std::max)(0, std::stoi(value));
             else if (key == "show_fps") settings.showFps = parseBool(value);
+            else if (key == "hdr") settings.hdr = parseBool(value);
+            else if (key == "hdr_peak_nits") settings.hdrPeakNits = std::clamp(std::stoi(value), 80, 10000);
+            else if (key == "hdr_paper_white_nits") settings.hdrPaperWhiteNits = std::clamp(std::stoi(value), 80, 1000);
         } else if (section == "audio") {
             if (key == "volume") settings.volume = std::clamp(std::stoi(value), 0, 100);
             else if (key == "mute") settings.mute = parseBool(value);
@@ -210,6 +219,12 @@ int64_t nowMs() {
 
 void noteFrontEndFrame() { frontEndFrameAt.store(nowMs(), std::memory_order_relaxed); }
 
+namespace {
+std::atomic<bool> hdrDisplay{false};
+}
+bool hdrAvailable() { return hdrDisplay.load(std::memory_order_relaxed); }
+void setHdrAvailable(bool available) { hdrDisplay.store(available, std::memory_order_relaxed); }
+
 int activeFrameRateLimit() {
     const int limit = settings().frameRateLimit;
     // TENCHU_FRONTEND_UNCAPPED: no cap (testing).
@@ -244,6 +259,9 @@ void saveSettings() {
         {"display", "anisotropic_filtering", std::to_string(s.anisotropy)},
         {"display", "frame_rate_limit", std::to_string(s.frameRateLimit)},
         {"display", "show_fps", text(s.showFps)},
+        {"display", "hdr", text(s.hdr)},
+        {"display", "hdr_peak_nits", std::to_string(s.hdrPeakNits)},
+        {"display", "hdr_paper_white_nits", std::to_string(s.hdrPaperWhiteNits)},
         {"audio", "volume", std::to_string(s.volume)},
         {"audio", "mute", text(s.mute)},
         {"input", "mouse_sensitivity", std::to_string(s.mouseSensitivity)},
