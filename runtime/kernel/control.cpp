@@ -168,6 +168,23 @@ void execute(Controller& c, Clock::time_point now) {
                 }
                 logf("[control] peek %08X:%s", address + uint32_t(i) * 4, text.c_str());
             }
+        } else if (command == "list") {
+            // list <hex head> <hex next offset> [words]: walks a linked list from *head,
+            // logging each node's first words.
+            std::string head, next;
+            int words = 16;
+            stream >> head >> next >> words;
+            const uint32_t nextOffset = uint32_t(strtoul(next.c_str(), nullptr, 16));
+            uint32_t node = tz::load32(uint32_t(strtoul(head.c_str(), nullptr, 16)));
+            for (int count = 0; node && count < 64; ++count, node = tz::load32(node + nextOffset)) {
+                std::string text;
+                for (int j = 0; j < words; ++j) {
+                    char word[12];
+                    snprintf(word, sizeof(word), " %08X", tz::load32(node + uint32_t(j) * 4));
+                    text += word;
+                }
+                logf("[control] node %08X:%s", node, text.c_str());
+            }
         } else if (command == "findf") {
             // findf <float> [<float>...]: logs guest addresses holding these consecutive floats.
             std::vector<float> values;

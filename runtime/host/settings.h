@@ -36,4 +36,10 @@ void saveSettings();
 void resetKeyboardDefaults();
 std::string settingsFilePath();
 
+// The frame rate limit in effect: frameRateLimit, except 30 while the front end (title
+// screen and main menu, whose animations advance per frame) is showing.
+int activeFrameRateLimit();
+// Called by the front end's per-frame code.
+void noteFrontEndFrame();
+
 }  // namespace tz::host

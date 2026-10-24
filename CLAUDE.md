@@ -170,6 +170,11 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
 - Shader exports: with export_data set, the scalar op also writes the vector destination;
   a component in both write masks is 1.0, in neither (scalar_dest_rel set) 0.0 (Xenia's
   rule). Writing the scalar to scalar_dest left water's projected w unset: no reflection.
+- Front end: the game mode task (scheduler list head 0x82B5A65C, next +40, callbacks
+  +24/+28) runs title 822A5CB8/822A2370, load prompt 822A2CC0, main menu 822A55B8/
+  822A24B8, hideout 822A3920. Their animations count frames: overrides note front-end
+  frames and host::activeFrameRateLimit() holds presents to 30 meanwhile
+  (TENCHU_FRONTEND_UNCAPPED=1 disables). Control command 'list' walks such lists.
 - Resolved textures are allocated padded (resolve widths round up): fetches scale UVs by
   fetch size / host size (g_textureScale), or blur chains drift (lantern bloom offset).
 - Saved profile settings once had all volumes at 0 from button-mashing tests: if the

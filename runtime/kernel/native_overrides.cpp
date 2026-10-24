@@ -3,6 +3,7 @@
 // nonative disables them) and frame-rate fixes for code written for 30 fps.
 #include "kernel.h"
 #include "kernel/memory.h"
+#include "host/settings.h"
 #include "ppc_recomp_shared.h"
 
 #include <algorithm>
@@ -153,3 +154,14 @@ void IndicatorHoldMidAsmHook(PPCRegister& r11, PPCRegister& r29) {
 void WavePhaseStepMidAsmHook(PPCRegister& f0) {
     f0.f64 *= frameMilliseconds() * 0.03;
 }
+
+// Front end (title screen, load prompt, main menu): the game mode's per-frame
+// callbacks (task at the head of the scheduler, +24/+28). Their animations (the
+// flashing "Press Start", the burning Z) advance per frame, so presents are held to
+// 30 fps while they run (host::activeFrameRateLimit).
+#define TZ_FRONT_END(address)                              extern "C" PPC_FUNC(__imp__sub_##address);             PPC_FUNC(sub_##address) {                                  host::noteFrontEndFrame();                             __imp__sub_##address(ctx, base);                   }
+TZ_FRONT_END(822A5CB8)  // title screen
+TZ_FRONT_END(822A2370)
+TZ_FRONT_END(822A2CC0)  // "Load game?"
+TZ_FRONT_END(822A55B8)  // main menu
+TZ_FRONT_END(822A24B8)

@@ -141,8 +141,7 @@ uint32_t D3D11Renderer::refreshRate() const {
 // them to the display; otherwise the command processor's timer paces them.
 uint32_t D3D11Renderer::syncInterval() {
     if (!host::settings().vsync) return 0;
-    const int limit = host::settings().frameRateLimit;
-    const int fps = limit == 30 ? 30 : limit;
+    const int fps = host::activeFrameRateLimit();
     if (fps <= 0) return 1;
     if (frame_ % 120 == 1) refresh_ = refreshRate();  // follows monitor changes
     if (refresh_ && refresh_ % uint32_t(fps) == 0 && refresh_ / uint32_t(fps) <= 4) return refresh_ / uint32_t(fps);
@@ -150,9 +149,9 @@ uint32_t D3D11Renderer::syncInterval() {
 }
 
 bool D3D11Renderer::pacedByVsync() const {
-    const int limit = host::settings().frameRateLimit;
-    return host::settings().vsync && limit > 0 && limit != 30 && refresh_ && refresh_ % uint32_t(limit) == 0 &&
-           refresh_ / uint32_t(limit) <= 4;
+    const int limit = host::activeFrameRateLimit();
+    return host::settings().vsync && limit > 0 && host::settings().frameRateLimit != 30 && refresh_ &&
+           refresh_ % uint32_t(limit) == 0 && refresh_ / uint32_t(limit) <= 4;
 }
 
 void D3D11Renderer::resizeIfNeeded() {

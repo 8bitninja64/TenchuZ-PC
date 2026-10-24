@@ -136,8 +136,9 @@ uint32_t extentWrites = 0;
 // Unlocked frame rates: the host caps presents at frame_rate_limit. The title
 // measures real time, so the cap paces rendering without changing game speed.
 void limitFrameRate() {
-    const int limit = host::settings().frameRateLimit;
-    if (limit == 30 || limit <= 0 || renderer.pacedByVsync()) return;
+    if (host::settings().frameRateLimit == 30) return;  // the title's own pacing
+    const int limit = host::activeFrameRateLimit();
+    if (limit <= 0 || renderer.pacedByVsync()) return;
     using Clock = std::chrono::steady_clock;
     static Clock::time_point next = Clock::now();
     static HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
