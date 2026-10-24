@@ -15,7 +15,8 @@
 //                          (or a pointer chain addr>off>off: each '>' loads, then adds off)
 //   list <head> <next> [n] walk a linked list from *head (next pointer at +next), n words each
 //   findf <f> [<f>...]     log guest addresses holding these consecutive floats
-//   countstart / countstop <file>  count guest function entries in between, write them
+//   countstart / countstop <file>  count guest function entries in between, write them (builds
+//                          configured with -DTENCHU_ENTRY_COUNTS=ON)
 //   watchw <addr>          hardware watchpoint: log the guest code writing those 4 bytes
 //   clock                  log host milliseconds (timing measurements)
 //   quit                   exit the process

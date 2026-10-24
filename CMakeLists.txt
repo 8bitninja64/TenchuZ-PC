@@ -23,6 +23,12 @@ include("${TENCHU_GENERATED_DIR}/sources.cmake")
 add_library(TenchuPPC STATIC ${TENCHU_PPC_SOURCES})
 target_include_directories(TenchuPPC PUBLIC "${TENCHU_GENERATED_DIR}" "${TENCHU_SIMDE_DIR}")
 target_compile_definitions(TenchuPPC PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+# Debugging: per-function entry counts (control commands countstart/countstop). Costs a
+# test in every guest call, so it is off by default.
+option(TENCHU_ENTRY_COUNTS "Count guest function entries (debugging)" OFF)
+if(TENCHU_ENTRY_COUNTS)
+    target_compile_definitions(TenchuPPC PUBLIC TENCHU_ENTRY_COUNTS)
+endif()
 # Exact floating point; SSSE3 byte shuffles are exact and fast.
 target_compile_options(TenchuPPC PRIVATE /fp:strict /clang:-mssse3 /clang:-msse4.1 -Wno-everything /Z7)
 target_compile_options(TenchuPPC PUBLIC /EHsc)

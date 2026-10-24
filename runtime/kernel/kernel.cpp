@@ -707,6 +707,9 @@ uint32_t* entryCounts = nullptr;
 }  // namespace
 
 void startEntryCounts() {
+#ifndef TENCHU_ENTRY_COUNTS
+    logf("[count] not available: configure with -DTENCHU_ENTRY_COUNTS=ON");
+#endif
     if (!entryCounts) entryCounts = new uint32_t[kCountedCode / 4];
     std::memset(entryCounts, 0, kCountedCode);
     PPCEntryCounts = entryCounts;
