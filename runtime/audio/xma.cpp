@@ -80,12 +80,17 @@ struct Context {
     AVFrame* frame = nullptr;
     bool codecStereo = false;
     uint32_t nextPacket = 0;          // packet index within the current input buffer
+    // The title positions a stream with the input read offset (bits); nextPacket
+    // follows it when the stream starts and whenever the title moves it.
+    bool positioned = false;
+    uint32_t storedReadOffset = 0;    // the read offset this decoder last stored
     std::deque<int16_t> pending;      // decoded interleaved samples not yet written
 
     void resetDecoder() {
         if (codec) avcodec_free_context(&codec);
         pending.clear();
         nextPacket = 0;
+        positioned = false;
     }
 };
 
@@ -116,6 +121,12 @@ Decoder& decoder() {
 }
 
 bool openCodec(Context& context, bool stereo) {
+    // FFmpeg logs every bad packet to stderr (blocking writes); TENCHU_TRACE=ffmpeg keeps them.
+    static const bool quiet = [] {
+        av_log_set_level(traceEnabled("ffmpeg") ? AV_LOG_WARNING : AV_LOG_FATAL);
+        return true;
+    }();
+    (void)quiet;
     const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_XMA2);
     if (!codec) return false;
     context.codec = avcodec_alloc_context3(codec);
@@ -169,6 +180,8 @@ bool decodePacket(Context& context, const uint8_t* bytes) {
     return true;
 }
 
+constexpr uint32_t kMaxPacketsPerPass = 64;
+
 // One decoding pass over an enabled context: fill its output ring from its
 // input buffers as far as both allow. Called with the context mutex held.
 void work(uint32_t index, Context& context) {
@@ -185,6 +198,12 @@ void work(uint32_t index, Context& context) {
 
     if (context.codec && context.codecStereo != data.stereo()) context.resetDecoder();
     if (!context.codec && !openCodec(context, data.stereo())) return;
+    if (!context.positioned || data.inputReadOffset() != context.storedReadOffset) {
+        // Start (or seek) where the title points: streams need not begin at packet 0.
+        context.nextPacket = data.inputReadOffset() / (kPacketBytes * 8);
+        context.positioned = true;
+        avcodec_flush_buffers(context.codec);
+    }
 
     const uint32_t capacity = data.outputBlocks() * kBlockBytes;
     uint32_t writeOffset = data.outputWriteOffset() * kBlockBytes;
@@ -195,7 +214,13 @@ void work(uint32_t index, Context& context) {
     const uint32_t sampleBytes = 2;
     const uint32_t blockSamples = kBlockBytes / sampleBytes;
 
-    while (space >= kBlockBytes) {
+    // Bounded work per pass (the context mutex is held), and loops that yield no
+    // audio end instead of spinning: a loop region that decodes to nothing after the
+    // flush at each wrap once kept this loop (and the title's XMACreateContext,
+    // waiting for the mutex) busy forever.
+    uint32_t packetsThisPass = 0, silentWraps = 0;
+    size_t samplesAtWrap = SIZE_MAX;
+    while (space >= kBlockBytes && packetsThisPass < kMaxPacketsPerPass) {
         if (context.pending.size() >= blockSamples) {
             for (uint32_t i = 0; i < blockSamples; ++i) {
                 store16(output + writeOffset + i * 2, uint16_t(context.pending.front()));
@@ -213,11 +238,20 @@ void work(uint32_t index, Context& context) {
             data.setCurrentBuffer(buffer);
             context.nextPacket = 0;
         }
+        if (context.nextPacket >= data.inputPackets(buffer)) {
+            // A carried skip passes this whole buffer too.
+            const uint32_t carry = context.nextPacket - data.inputPackets(buffer);
+            data.setInputValid(buffer, false);
+            data.setCurrentBuffer(buffer ^ 1);
+            context.nextPacket = carry;
+            continue;
+        }
         const uint32_t packetAddress =
             Memory::fromPhysical(data.inputPointer(buffer)) + context.nextPacket * kPacketBytes;
         TZ_TRACE("xma", "[xma] context %u: packet %u of buffer %u (%u), pending %zu", index, context.nextPacket, buffer,
                  data.inputPackets(buffer), context.pending.size());
         const size_t before = context.pending.size();
+        ++packetsThisPass;
         const bool decoded = decodePacket(context, memory->host(packetAddress));
         if (traceEnabled("xmapeak")) {
             int peak = 0;
@@ -226,17 +260,39 @@ void work(uint32_t index, Context& context) {
                  load32(packetAddress));
         }
         if (!decoded) {
-            logf("[xma] context %u: packet decode failed", index);
+            // Rate-limited: some titles' streams fail often, and each line is a blocking write.
+            static std::atomic<uint64_t> failures{0};
+            const uint64_t failure = ++failures;
+            if (failure <= 20 || failure % 10000 == 0)
+                logf("[xma] context %u: packet decode failed (%llu so far)", index, (unsigned long long)failure);
+            // A fresh codec continues with the next packet: resetting the position too
+            // retried the same packet forever (endless failures, lag).
+            const uint32_t at = context.nextPacket;
             context.resetDecoder();
+            context.nextPacket = at;
+            context.positioned = true;
             if (!openCodec(context, data.stereo())) break;
         }
-        data.setInputReadOffset(++context.nextPacket * kPacketBytes * 8 + 32);
+        // Sounds with more than two channels interleave several streams' packets: the
+        // header's last byte counts the following packets that belong to other streams
+        // (decoding them as this stream's gave garbage, decoder resets and lag).
+        const uint32_t skip = memory->host(packetAddress)[3];
+        context.nextPacket += 1 + skip;
+        data.setInputReadOffset(context.nextPacket * kPacketBytes * 8 + 32);
         // Hardware looping (XMASetLoopData), at packet granularity: once the
         // packet holding the loop end is decoded, continue from the packet holding
         // the loop start. 255 loops is endless.
         const uint32_t loops = data.loopCount();
         const uint32_t loopEndPacket = data.loopEnd() / (kPacketBytes * 8);
         if (loops && context.nextPacket > loopEndPacket) {
+            silentWraps = context.pending.size() == samplesAtWrap ? silentWraps + 1 : 0;
+            samplesAtWrap = context.pending.size();
+            if (silentWraps >= 2) {
+                logf("[xma] context %u: loop %u-%u yields no audio; playing on without looping", index,
+                     data.loopStart(), data.loopEnd());
+                data.setLoopCount(0);
+                continue;
+            }
             if (loops != 255) data.setLoopCount(loops - 1);
             context.nextPacket = data.loopStart() / (kPacketBytes * 8);
             avcodec_flush_buffers(context.codec);
@@ -244,11 +300,13 @@ void work(uint32_t index, Context& context) {
             continue;
         }
         if (context.nextPacket >= data.inputPackets(buffer)) {
-            // Consumed: hand the buffer back and continue with the other one.
+            // Consumed: hand the buffer back and continue with the other one; a skip
+            // that runs past the end carries into it (as Xenia does).
+            const uint32_t carry = context.nextPacket - data.inputPackets(buffer);
             data.setInputValid(buffer, false);
             data.setCurrentBuffer(buffer ^ 1);
-            data.setInputReadOffset(32);
-            context.nextPacket = 0;
+            context.nextPacket = carry;
+            data.setInputReadOffset(carry * kPacketBytes * 8 + 32);
         }
     }
     data.setOutputWriteOffset(writeOffset / kBlockBytes);
@@ -268,6 +326,7 @@ void work(uint32_t index, Context& context) {
             if (word == 4) owned = 1u << 31;                      // current buffer
             store32(address + word * 4, (current & ~owned) | (data.words[word] & owned));
         }
+    context.storedReadOffset = data.inputReadOffset();
 }
 
 void workerMain() {
