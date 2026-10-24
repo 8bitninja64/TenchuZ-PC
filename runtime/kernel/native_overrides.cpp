@@ -1,11 +1,14 @@
-// Native versions of hot guest functions: same results and side effects, faster
-// host code. TENCHU_TRACE=verifynative also runs the original and reports any
-// difference; TENCHU_TRACE=nonative disables the replacements.
+// Native versions of hot guest functions (same results and side effects, faster host
+// code; TENCHU_TRACE=verifynative also runs the original and reports differences,
+// nonative disables them) and frame-rate fixes for code written for 30 fps.
 #include "kernel.h"
 #include "kernel/memory.h"
 #include "ppc_recomp_shared.h"
 
+#include <atomic>
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 using namespace tz;
@@ -74,4 +77,44 @@ PPC_FUNC(sub_823D4440) {
     }
     if (writeCursor) store32(kCursor, uint32_t(cursor));
     ctx.r3.u64 = result;
+}
+
+// Frame time (sub_822929D0 stores milliseconds per frame at 0x82B57824). Effect code
+// rounds it to whole 30 Hz ticks, int(ms * 0.03 + 0.5), which is 0 at 120 fps (water
+// ripples never expired), or to whole milliseconds. The midasm hooks in config/tenchuz.toml
+// give those sites carried whole values whose running sum follows real time.
+namespace {
+std::atomic<float> g_quantizedStep{0.0f};
+std::atomic<float> g_ticks30{0.0f};
+}
+extern "C" PPC_FUNC(__imp__sub_822929D0);
+PPC_FUNC(sub_822929D0) {
+    __imp__sub_822929D0(ctx, base);
+    static double carry = 0.0;
+    uint32_t bits = load32(0x82B57824);
+    float step;
+    std::memcpy(&step, &bits, 4);
+    carry += step;
+    const double whole = std::floor(carry);
+    carry -= whole;
+    g_quantizedStep.store(float(whole), std::memory_order_relaxed);
+    // 30 Hz ticks for sites computing int(ms * 0.03 + 0.5): carried so that the ticks
+    // follow real time at any rate (1 per frame at 30 fps as before; 0,0,0,1... at 120).
+    static double ticks = 0.0;
+    ticks += step * 0.03;
+    const double tickCount = std::floor(ticks + 0.5);
+    ticks -= tickCount;
+    g_ticks30.store(float(tickCount), std::memory_order_relaxed);
+}
+
+// Before the fctiwz of int(ms * 0.03 + 0.5): the carried tick count (+0.25 truncates to it).
+void FrameTicks30MidAsmHook(PPCRegister& f0) {
+    static const bool off = traceEnabled("noquantstep");
+    if (!off) f0.f64 = g_ticks30.load(std::memory_order_relaxed) + 0.25;
+}
+
+// After loads of the frame time that are truncated to whole milliseconds.
+void QuantizedFrameStepMidAsmHook(PPCRegister& f0) {
+    static const bool off = traceEnabled("noquantstep");
+    if (!off) f0.f64 = g_quantizedStep.load(std::memory_order_relaxed);
 }

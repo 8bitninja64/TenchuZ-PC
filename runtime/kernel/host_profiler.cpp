@@ -8,6 +8,7 @@
 #include <dbghelp.h>
 
 #include <algorithm>
+#include <cstring>
 #include <atomic>
 #include <mutex>
 #include <map>
@@ -108,6 +109,30 @@ void startHostProfiler(const char* name) {
             logf("[hostprof]   %5.1f%%  %s", 100.0 * sorted[i].first / (std::max)(1u, total), sorted[i].second.c_str());
         };
         report(samples, "by location");
+        // TENCHU_PROF_LINES=<function name part>: hottest source lines inside that function
+        // (generated code lines carry the guest instruction as a comment).
+        char focus[64]{};
+        if (GetEnvironmentVariableA("TENCHU_PROF_LINES", focus, sizeof(focus))) {
+            std::map<std::pair<std::string, DWORD>, uint32_t> lines;
+            for (const auto& [address, count] : samples) {
+                alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 256]{};
+                auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+                symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                symbol->MaxNameLen = 255;
+                DWORD64 displacement = 0;
+                if (!SymFromAddr(process, address, &displacement, symbol) || !strstr(symbol->Name, focus)) continue;
+                IMAGEHLP_LINE64 line{sizeof(line)};
+                DWORD lineDisplacement = 0;
+                if (SymGetLineFromAddr64(process, address, &lineDisplacement, &line))
+                    lines[{line.FileName, line.LineNumber}] += count;
+            }
+            std::vector<std::pair<uint32_t, std::pair<std::string, DWORD>>> sorted;
+            for (const auto& [where, count] : lines) sorted.push_back({count, where});
+            std::sort(sorted.rbegin(), sorted.rend());
+            for (size_t i = 0; i < sorted.size() && i < 40; ++i)
+                logf("[hostprof] line %5.1f%%  %s:%lu", 100.0 * sorted[i].first / (std::max)(1u, total),
+                     sorted[i].second.first.c_str(), sorted[i].second.second);
+        }
         report(callers, "by first caller in the executable (outside calls only)");
     }).detach();
 }

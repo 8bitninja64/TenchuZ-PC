@@ -1,6 +1,9 @@
 #include "memory.h"
+#include "kernel.h"
 #include <windows.h>
+#include <algorithm>
 #include <cstring>
+#include <string>
 #include <stdexcept>
 
 namespace tz {
@@ -105,8 +108,33 @@ void Memory::watchPages(WatchClient client, uint32_t firstPage, uint32_t count) 
     }
 }
 
+void Memory::probeWrites(uint32_t firstPage, uint32_t count) {
+    std::lock_guard lock(watchMutex_);
+    for (uint32_t page = firstPage; page < firstPage + count && page < kPhysicalPages; ++page) {
+        probed_[page >> 6].fetch_or(1ull << (page & 63));
+        if (!pageProtected(page)) {
+            protected_[page >> 6].fetch_or(1ull << (page & 63));
+            protectPhysical(page, 1, true);
+        }
+    }
+}
+
 bool Memory::unwatchForWrite(uint32_t physicalPage) {
     if (physicalPage >= kPhysicalPages) return false;
+    if ((probed_[physicalPage >> 6].fetch_and(~(1ull << (physicalPage & 63))) >> (physicalPage & 63)) & 1) {
+        // Distinct call stacks only (the same writers recur every frame).
+        static std::mutex seenMutex;
+        static std::vector<std::string> seen;
+        if (auto* thread = currentThread()) {
+            const std::string stack = guestBacktrace(thread->context, 10);
+            std::lock_guard seenLock(seenMutex);
+            if (seen.size() < 400 && std::find(seen.begin(), seen.end(), stack) == seen.end()) {
+                seen.push_back(stack);
+                logf("[writer] page %05X written by %s in %08X |%s", physicalPage, thread->name.c_str(),
+                     thread->context.lastFunction, stack.c_str());
+            }
+        }
+    }
     std::lock_guard lock(watchMutex_);
     if (pageProtected(physicalPage)) {
         const uint64_t clear = ~(1ull << (physicalPage & 63));

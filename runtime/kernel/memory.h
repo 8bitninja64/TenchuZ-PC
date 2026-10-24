@@ -92,6 +92,8 @@ public:
     // True when every page in [firstPage, lastPage] is valid for the client.
     bool rangeWatched(WatchClient client, uint32_t firstPage, uint32_t lastPage) const;
     void prepareHostWrite(uint32_t address, uint32_t size);
+    // Debugging (TENCHU_FIND_WRITER): logs the guest function that next writes these pages.
+    void probeWrites(uint32_t firstPage, uint32_t count);
     // Fault handler entry: true when the write may be retried.
     bool unwatchForWrite(uint32_t physicalPage);
 
@@ -106,6 +108,7 @@ private:
         std::unique_ptr<std::atomic<uint64_t>[]>(new std::atomic<uint64_t>[kPhysicalPages / 64]())};
     std::unique_ptr<std::atomic<uint64_t>[]> protected_{new std::atomic<uint64_t>[kPhysicalPages / 64]()};
     std::mutex watchMutex_;
+    std::unique_ptr<std::atomic<uint64_t>[]> probed_{new std::atomic<uint64_t>[kPhysicalPages / 64]()};
 
     static bool firstFit(std::map<uint32_t, uint32_t>& used, uint64_t begin, uint64_t end,
                          uint32_t size, uint32_t alignment, uint32_t& result);

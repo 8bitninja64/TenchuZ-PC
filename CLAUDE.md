@@ -156,6 +156,13 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   freeze through the context mutex), packet header byte 3 skips other streams' packets
   (Xenia's rule), passes are bounded and silent loops end. FFmpeg's log is quiet unless
   TENCHU_TRACE=ffmpeg. The rustling bushes in Mission 1 exercise all of this.
+- Frame time: 0x82B57824 is milliseconds per frame (sub_822929D0). Effect code (water
+  ripples, type 85) converts it to 30 Hz ticks with int(ms * 0.03 + 0.5), 0 above ~60 fps,
+  so effect lives never counted down. midasm_hook entries in config/tenchuz.toml replace
+  those values with carried whole ticks/ms (native_overrides.cpp). New frame-rate bugs:
+  look for fctiwz of values derived from 0x82B57824. Debug aids: TENCHU_SKIP_VS,
+  TENCHU_FIND_WRITER=<vs hash> / TENCHU_PROBE_RANGE=<pages> (guest writers of memory),
+  TENCHU_PROF_LINES=<function> (hot source lines; the generated code has /Z7 symbols).
 - Resolved textures are allocated padded (resolve widths round up): fetches scale UVs by
   fetch size / host size (g_textureScale), or blur chains drift (lantern bloom offset).
 - Saved profile settings once had all volumes at 0 from button-mashing tests: if the

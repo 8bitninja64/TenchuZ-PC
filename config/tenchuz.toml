@@ -25,3 +25,52 @@ restvmx_64_address = 0x82654AEC
 # The guest jmp_buf (over 300 bytes) holds the 256-byte host jmp_buf.
 setjmp_address = 0x82657B00
 longjmp_address = 0x826578C0
+
+# Frame time: 0x82B57824 holds milliseconds per frame (sub_822929D0). Effect code turns
+# it into whole 30 Hz ticks with int(ms * 0.03 + 0.5) (0 at 120 fps: water ripples never
+# expired) or into whole milliseconds with int(ms). FrameTicks30MidAsmHook replaces the
+# tick sites' value at their fctiwz with a carried tick count; QuantizedFrameStepMidAsmHook
+# gives the millisecond sites a whole number of ms whose sum follows the real time
+# (runtime/kernel/native_overrides.cpp).
+[[midasm_hook]]
+name = "QuantizedFrameStepMidAsmHook"
+address = 0x82380638
+registers = ["f0"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x82385AFC
+registers = ["f0"]
+
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x82388424
+registers = ["f0"]
+
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x82388484
+registers = ["f0"]
+
+[[midasm_hook]]
+name = "QuantizedFrameStepMidAsmHook"
+address = 0x8238AC0C
+registers = ["f0"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x8238AE74
+registers = ["f0"]
+
+[[midasm_hook]]
+name = "QuantizedFrameStepMidAsmHook"
+address = 0x823E2254
+registers = ["f0"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "FrameTicks30MidAsmHook"
+address = 0x82298924
+registers = ["f0"]

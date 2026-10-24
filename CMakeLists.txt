@@ -24,7 +24,7 @@ add_library(TenchuPPC STATIC ${TENCHU_PPC_SOURCES})
 target_include_directories(TenchuPPC PUBLIC "${TENCHU_GENERATED_DIR}" "${TENCHU_SIMDE_DIR}")
 target_compile_definitions(TenchuPPC PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 # Exact floating point; SSSE3 byte shuffles are exact and fast.
-target_compile_options(TenchuPPC PRIVATE /fp:strict /clang:-mssse3 /clang:-msse4.1 -Wno-everything)
+target_compile_options(TenchuPPC PRIVATE /fp:strict /clang:-mssse3 /clang:-msse4.1 -Wno-everything /Z7)
 target_compile_options(TenchuPPC PUBLIC /EHsc)
 
 # Kernel, devices and host integration.
