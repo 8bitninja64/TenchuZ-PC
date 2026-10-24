@@ -42,6 +42,11 @@ ID3D11DeviceContext* g_context = nullptr;
 
 // Key capture for rebinding: the control waiting for a key (-1 none).
 std::atomic<int> g_capture{-1};
+// Controller capture: the game control waiting for a controller button (-1 none). The
+// button that chose "Change" must be released first; Esc or 8 seconds cancel.
+std::atomic<int> g_padCapture{-1};
+bool g_padCaptureArmed = false;
+ULONGLONG g_padCaptureSince = 0;
 std::atomic<bool> g_popupOpen{false};
 
 enum Section { kDisplay, kAudio, kControls, kMissions, kAbout, kSectionCount };
@@ -65,6 +70,7 @@ void setOpen(bool open) {
     logf("[menu] %s", open ? "opened" : "closed");
     g_focusTo = Focus::Sections;
     g_capture = -1;
+    g_padCapture = -1;
     g_holdInput = true;  // the game gets the pads back once everything is released
     if (g_initialized) {
         std::lock_guard lock(g_mutex);
@@ -137,6 +143,44 @@ constexpr uint16_t kUp = 0x0001, kDown = 0x0002, kLeft = 0x0004, kRight = 0x0008
                    kShoulderL = 0x0100, kShoulderR = 0x0200, kA = 0x1000, kB = 0x2000;
 uint16_t g_padHeld = 0, g_padPressed = 0;
 
+// Assigns a controller button to a game control; the control that had it takes the old one.
+void assignPadButton(int control, int input) {
+    int count = 0;
+    const char* const* names = controllerControls(count);
+    if (control < 0 || control >= count || input < 0 || input >= count) return;
+    auto& pad = editableSettings().pad;
+    auto current = [&](int c) {
+        const auto it = pad.find(names[c]);
+        return it != pad.end() ? it->second : std::string(names[c]);
+    };
+    const std::string previous = current(control);
+    for (int other = 0; other < count; ++other)
+        if (other != control && current(other) == names[input]) pad[names[other]] = previous;
+    pad[names[control]] = names[input];
+    reloadControllerMapping();
+    saveSettings();
+}
+
+// While capturing, the first controller button pressed after all were released.
+void pollPadCapture(uint32_t pressedInputs) {
+    const int control = g_padCapture;
+    if (control < 0) return;
+    if (GetTickCount64() - g_padCaptureSince > 8000) {
+        g_padCapture = -1;
+        return;
+    }
+    if (!g_padCaptureArmed) {
+        g_padCaptureArmed = pressedInputs == 0;
+        return;
+    }
+    for (int input = 0; input < 32; ++input)
+        if (pressedInputs & (1u << input)) {
+            assignPadButton(control, input);
+            g_padCapture = -1;
+            return;
+        }
+}
+
 void pollPads() {
     uint16_t held = 0;
     // Automated runs drive controller 1 from the control file.
@@ -148,9 +192,20 @@ void pollPads() {
         if (pad.thumbs[0] < -16000) held |= kLeft;
         if (pad.thumbs[0] > 16000) held |= kRight;
     }
+    // The menu reads the physical buttons: a remapping cannot lock it out.
+    uint32_t inputs = 0;
+    if (control::active()) {
+        const auto pad = control::pad();
+        VirtualPad scripted;
+        scripted.buttons = pad.buttons;
+        scripted.leftTrigger = pad.leftTrigger;
+        scripted.rightTrigger = pad.rightTrigger;
+        inputs |= controllerInputs(scripted);
+    }
     for (uint32_t user = 0; user < 4; ++user) {
         VirtualPad pad;
-        if (!gamepadState(user, pad)) continue;
+        if (!gamepadRawState(user, pad)) continue;
+        inputs |= controllerInputs(pad);
         uint16_t buttons = pad.buttons;
         // The left stick navigates like the D-pad.
         if (pad.thumbs[1] > 16000) buttons |= kUp;
@@ -158,6 +213,17 @@ void pollPads() {
         if (pad.thumbs[0] < -16000) buttons |= kLeft;
         if (pad.thumbs[0] > 16000) buttons |= kRight;
         held |= buttons;
+    }
+    // A button being assigned does not navigate, nor does it after the assignment until
+    // every button is released (else the press also counted as B = back).
+    static bool waitRelease = false;
+    if (g_padCapture >= 0) {
+        pollPadCapture(inputs);
+        if (g_padCapture < 0) waitRelease = true;
+        held = 0;
+    } else if (waitRelease) {
+        if (!held && !inputs) waitRelease = false;
+        held = 0;
     }
     static uint16_t last = 0;
     const uint16_t pressed = held & ~last;
@@ -191,6 +257,13 @@ void feedNavigation() {
 }
 
 // ---- Sections ------------------------------------------------------------------------
+// Entering a section's options focuses its first control: called right before it (text
+// cannot take focus, so a request at the top of a page that starts with text was lost).
+void focusFirstOption() {
+    if (g_focusTo != Focus::Content) return;
+    ImGui::SetKeyboardFocusHere();
+    g_focusTo = Focus::None;
+}
 void drawFps(float fps) {
     ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.45f);
@@ -204,6 +277,7 @@ void drawFps(float fps) {
 bool drawDisplay(Settings& st) {
     bool changed = false;
     bool fullscreen = st.fullscreen;
+    focusFirstOption();
     if (ImGui::Checkbox("Fullscreen (Alt+Enter / F11)", &fullscreen)) {
         st.fullscreen = fullscreen;
         PostMessageW(g_window, kMessageFullscreen, fullscreen, 0);
@@ -263,6 +337,7 @@ bool drawDisplay(Settings& st) {
 
 bool drawAudio(Settings& st) {
     bool changed = false;
+    focusFirstOption();
     if (ImGui::SliderInt("Volume", &st.volume, 0, 100, "%d%%")) changed = true;
     if (ImGui::Checkbox("Mute", &st.mute)) changed = true;
     if (changed) audio::setOutputVolume(st.mute ? 0.0f : st.volume / 100.0f);
@@ -292,12 +367,53 @@ bool drawControls(Settings& st) {
         anyPad = true;
     }
     if (!anyPad) ImGui::TextDisabled("No controller connected (Xbox, PlayStation, Switch and most others work).");
+    // Controller buttons (all controllers), by position on an Xbox pad.
+    ImGui::TextUnformatted("Controller buttons:");
+    int padCount = 0;
+    const char* const* padControls = controllerControls(padCount);
+    // Tables without their own scrolling: the pane scrolls, and every Change button is
+    // a plain D-pad stop (a scrolling table is a child window the pad must enter first).
+    if (ImGui::BeginTable("pad", 3, ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("control", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+        ImGui::TableSetupColumn("button", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("change", ImGuiTableColumnFlags_WidthFixed);
+        for (int i = 0; i < padCount; ++i) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(controlLabel(padControls[i]));
+            ImGui::TableSetColumnIndex(1);
+            if (g_padCapture == i) {
+                ImGui::TextColored(kGold, "press a controller button (Esc cancels)");
+            } else {
+                const auto it = st.pad.find(padControls[i]);
+                const std::string input = it != st.pad.end() ? it->second : padControls[i];
+                int index = i;
+                for (int j = 0; j < padCount; ++j)
+                    if (input == padControls[j]) index = j;
+                ImGui::TextUnformatted(controllerInputName(index));
+            }
+            ImGui::TableSetColumnIndex(2);
+            ImGui::PushID(1000 + i);
+            if (i == 0) focusFirstOption();
+            if (ImGui::SmallButton("Change") && g_padCapture < 0) {
+                g_padCaptureArmed = false;
+                g_padCaptureSince = GetTickCount64();
+                g_padCapture = i;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (ImGui::Button("Reset controller to defaults")) {
+        resetControllerDefaults();
+        reloadControllerMapping();
+        changed = true;
+    }
     ImGui::Separator();
     ImGui::TextUnformatted("Keyboard and mouse (player 1):");
     int count = 0;
     const char* const* controls = keyboardControls(count);
-    const float height = ImGui::GetTextLineHeightWithSpacing() * 10;
-    if (ImGui::BeginTable("keys", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY, ImVec2(0, height))) {
+    if (ImGui::BeginTable("keys", 3, ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("control", ImGuiTableColumnFlags_WidthStretch, 1.2f);
         ImGui::TableSetupColumn("keys", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableSetupColumn("change", ImGuiTableColumnFlags_WidthFixed);
@@ -324,6 +440,7 @@ bool drawControls(Settings& st) {
     changed |= ImGui::SliderFloat("Mouse sensitivity", &st.mouseSensitivity, 0.2f, 3.0f, "%.2f");
     changed |= ImGui::Checkbox("Invert mouse Y", &st.invertMouseY);
     ImGui::TextDisabled("F1 / Esc: this menu   Alt+Enter / F11: fullscreen   Controller: Back + Start");
+    ImGui::TextDisabled("The menu itself always uses the controller's own buttons.");
     return changed;
 }
 
@@ -374,6 +491,7 @@ void drawMissions() {
     ImGui::TextWrapped("Mission Select offers the missions your save has cleared. This marks every one of the 50 "
                        "missions cleared (on the first difficulty), so all of them can be chosen.");
     ImGui::Spacing();
+    focusFirstOption();
     if (ImGui::Button("Unlock all missions")) unlockMissions();
     if (!g_missionMessage.empty()) ImGui::TextWrapped("%s", g_missionMessage.c_str());
     ImGui::Spacing();
@@ -398,9 +516,14 @@ void hint(const char* button, ImVec4 color, const char* action) {
 void drawMenu() {
     Settings& st = editableSettings();
     ImGuiIO& io = ImGui::GetIO();
-    // LB/RB switch sections; B (Backspace) returns to the section list.
-    if (g_padPressed & kShoulderL) g_section = (g_section + kSectionCount - 1) % kSectionCount;
-    if (g_padPressed & kShoulderR) g_section = (g_section + 1) % kSectionCount;
+    // Any controller button shows the navigation cursor: A only activates where it is
+    // visible, and moving focus from code (SetKeyboardFocusHere) does not show it.
+    if (g_padPressed) ImGui::SetNavCursorVisible(true);
+    // LB/RB switch sections (the highlight follows); B (Backspace) returns to the list.
+    if (g_padPressed & (kShoulderL | kShoulderR)) {
+        g_section = (g_section + ((g_padPressed & kShoulderL) ? kSectionCount - 1 : 1)) % kSectionCount;
+        g_focusTo = Focus::Sections;
+    }
     const bool back = (g_padPressed & kB) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false);
     if (back && !g_popupOpen && !ImGui::IsAnyItemActive() && g_capture < 0) g_focusTo = Focus::Sections;
 
@@ -458,10 +581,6 @@ void drawMenu() {
     ImGui::PopFont();
     ImGui::Separator();
     ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.45f);
-    if (g_focusTo == Focus::Content) {
-        ImGui::SetKeyboardFocusHere();
-        g_focusTo = Focus::None;
-    }
     switch (g_section) {
     case kDisplay: changed |= drawDisplay(st); break;
     case kAudio: changed |= drawAudio(st); break;
@@ -470,6 +589,7 @@ void drawMenu() {
     case kAbout: drawAbout(); break;
     }
     ImGui::PopItemWidth();
+    if (g_focusTo == Focus::Content) g_focusTo = Focus::None;  // a page without controls (About)
     ImGui::EndChild();
     // Footer: controller hints, Resume and Quit game.
     ImGui::Spacing();
@@ -522,7 +642,12 @@ bool isOpen() { return g_open; }
 
 bool filterGamePad(uint16_t buttons) {
     static bool comboHeld = false;
-    const bool combo = (buttons & (kBack | kStart)) == (kBack | kStart);
+    // Back + Start on any pad's physical buttons (or the merged, mapped ones).
+    bool combo = (buttons & (kBack | kStart)) == (kBack | kStart);
+    for (uint32_t user = 0; user < 4 && !combo; ++user) {
+        VirtualPad pad;
+        if (gamepadRawState(user, pad)) combo = (pad.buttons & (kBack | kStart)) == (kBack | kStart);
+    }
     if (combo && !comboHeld && !g_open) setOpen(true);
     comboHeld = combo;
     return combo || ownsInput();
@@ -564,6 +689,10 @@ bool handleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
             }
             return true;
         }
+    }
+    if (keyDown && wParam == VK_ESCAPE && g_padCapture >= 0) {
+        g_padCapture = -1;
+        return true;
     }
     if (keyDown && wParam == VK_ESCAPE && !repeat && !g_popupOpen) {
         setOpen(false);

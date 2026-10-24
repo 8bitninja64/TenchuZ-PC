@@ -27,6 +27,8 @@ struct Settings {
     bool invertMouseY = false;
     // Keyboard bindings: controller control -> key names ("w", "space", "mouse1", ...).
     std::map<std::string, std::string> keys;
+    // Controller remapping: game control -> the physical button driving it (Xbox names).
+    std::map<std::string, std::string> pad;
 };
 
 const Settings& settings();
@@ -36,6 +38,8 @@ Settings& editableSettings();
 void saveSettings();
 // Restores the [keyboard] bindings of the default settings file.
 void resetKeyboardDefaults();
+// Restores the [controller] mapping of the default settings file (every button as itself).
+void resetControllerDefaults();
 std::string settingsFilePath();
 
 // The frame rate limit in effect: frameRateLimit, except 30 while the front end (title

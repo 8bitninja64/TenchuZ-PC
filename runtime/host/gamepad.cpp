@@ -1,4 +1,5 @@
 #include "host/gamepad.h"
+#include "host/settings.h"
 #include "kernel/kernel.h"
 
 #include <SDL3/SDL.h>
@@ -29,7 +30,8 @@ struct Pad {
 // mutex that is only ever held for a copy.
 struct Published {
     bool connected = false;
-    VirtualPad state;
+    VirtualPad state;  // mapped
+    VirtualPad raw;    // physical
     char name[64] = {};
 };
 struct Rumble {
@@ -56,6 +58,46 @@ int16_t stickAxis(Sint16 value, bool invert) {
 }
 
 uint8_t triggerAxis(Sint16 value) { return uint8_t(std::clamp(int(value), 0, 32767) * 255 / 32767); }
+
+// ---- Remapping -------------------------------------------------------------------------
+// Inputs and game controls, by the same index: XInput button bits, or a trigger.
+struct Input {
+    const char* name;
+    const char* label;
+    uint16_t bit;  // 0 for the triggers
+};
+constexpr Input kInputs[] = {
+    {"a", "A", 0x1000}, {"b", "B", 0x2000}, {"x", "X", 0x4000}, {"y", "Y", 0x8000},
+    {"lb", "LB", 0x0100}, {"rb", "RB", 0x0200}, {"lt", "LT", 0}, {"rt", "RT", 0},
+    {"start", "Start", 0x0010}, {"back", "Back", 0x0020}, {"ls", "Left stick click", 0x0040},
+    {"rs", "Right stick click", 0x0080}, {"dpad_up", "D-pad up", 0x0001}, {"dpad_down", "D-pad down", 0x0002},
+    {"dpad_left", "D-pad left", 0x0004}, {"dpad_right", "D-pad right", 0x0008}};
+constexpr int kInputCount = int(std::size(kInputs));
+constexpr int kLeftTrigger = 6, kRightTrigger = 7;
+constexpr uint8_t kTriggerPressed = 30;  // the title treats a trigger above 30 as pressed
+
+// source[control] = the input that drives it (written by the menu, read by the input thread).
+// Filled by reloadControllerMapping before the input thread starts.
+std::array<std::atomic<uint8_t>, kInputCount> source{};
+
+uint8_t inputValue(const VirtualPad& raw, int input) {
+    if (input == kLeftTrigger) return raw.leftTrigger;
+    if (input == kRightTrigger) return raw.rightTrigger;
+    return (raw.buttons & kInputs[input].bit) ? 255 : 0;
+}
+
+VirtualPad remap(const VirtualPad& raw) {
+    VirtualPad mapped = raw;
+    mapped.buttons = 0;
+    mapped.leftTrigger = mapped.rightTrigger = 0;
+    for (int control = 0; control < kInputCount; ++control) {
+        const uint8_t value = inputValue(raw, source[control].load(std::memory_order_relaxed));
+        if (control == kLeftTrigger) mapped.leftTrigger = (std::max)(mapped.leftTrigger, value);
+        else if (control == kRightTrigger) mapped.rightTrigger = (std::max)(mapped.rightTrigger, value);
+        else if (value > kTriggerPressed) mapped.buttons |= kInputs[control].bit;
+    }
+    return mapped;
+}
 
 VirtualPad read(SDL_Gamepad* pad) {
     VirtualPad state;
@@ -142,7 +184,8 @@ void inputMain() {
         for (int i = 0; i < kPads; ++i)
             if (g.pads[i].handle) {
                 snapshot[i].connected = true;
-                snapshot[i].state = read(g.pads[i].handle);
+                snapshot[i].raw = read(g.pads[i].handle);
+                snapshot[i].state = remap(snapshot[i].raw);
                 if (const char* name = SDL_GetGamepadName(g.pads[i].handle))
                     strncpy_s(snapshot[i].name, name, _TRUNCATE);
             }
@@ -163,7 +206,10 @@ void inputMain() {
 
 void start() {
     auto& g = gamepads();
-    std::call_once(g.started, [] { std::thread(inputMain).detach(); });
+    std::call_once(g.started, [] {
+        reloadControllerMapping();
+        std::thread(inputMain).detach();
+    });
 }
 
 }  // namespace
@@ -175,6 +221,45 @@ bool gamepadState(uint32_t user, VirtualPad& out) {
     if (user >= kPads || !g.published[user].connected) return false;
     out = g.published[user].state;
     return true;
+}
+
+bool gamepadRawState(uint32_t user, VirtualPad& out) {
+    start();
+    auto& g = gamepads();
+    std::lock_guard lock(g.mutex);
+    if (user >= kPads || !g.published[user].connected) return false;
+    out = g.published[user].raw;
+    return true;
+}
+
+const char* const* controllerControls(int& count) {
+    static const auto names = [] {
+        std::array<const char*, kInputCount> list{};
+        for (int i = 0; i < kInputCount; ++i) list[i] = kInputs[i].name;
+        return list;
+    }();
+    count = kInputCount;
+    return names.data();
+}
+
+const char* controllerInputName(int input) { return input >= 0 && input < kInputCount ? kInputs[input].label : "?"; }
+
+uint32_t controllerInputs(const VirtualPad& raw) {
+    uint32_t pressed = 0;
+    for (int input = 0; input < kInputCount; ++input)
+        if (inputValue(raw, input) > kTriggerPressed) pressed |= 1u << input;
+    return pressed;
+}
+
+void reloadControllerMapping() {
+    for (int control = 0; control < kInputCount; ++control) {
+        int input = control;
+        const auto found = settings().pad.find(kInputs[control].name);
+        if (found != settings().pad.end())
+            for (int i = 0; i < kInputCount; ++i)
+                if (found->second == kInputs[i].name) input = i;
+        source[control] = uint8_t(input);
+    }
 }
 
 std::string gamepadName(uint32_t user) {

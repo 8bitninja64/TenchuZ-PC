@@ -46,6 +46,27 @@ mute = false
 mouse_sensitivity = 1.0
 invert_mouse_y = false
 
+; Controller buttons: each game control (left) is driven by the controller button on
+; the right, named by position on an Xbox pad: a, b, x, y, lb, rb, lt, rt, start, back,
+; ls, rs (stick clicks), dpad_up, dpad_down, dpad_left, dpad_right. The F1 menu edits them.
+[controller]
+a = a
+b = b
+x = x
+y = y
+lb = lb
+rb = rb
+lt = lt
+rt = rt
+start = start
+back = back
+ls = ls
+rs = rs
+dpad_up = dpad_up
+dpad_down = dpad_down
+dpad_left = dpad_left
+dpad_right = dpad_right
+
 ; Keyboard and mouse bindings for controller 1. Keys: a-z, 0-9, space, enter,
 ; escape, tab, shift, ctrl, alt, up, down, left, right, f1-f12, mouse1-mouse5.
 ; Several keys can be listed separated by spaces. The mouse moves the camera
@@ -116,6 +137,8 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "invert_mouse_y") settings.invertMouseY = parseBool(value);
         } else if (section == "keyboard") {
             settings.keys[key] = value;
+        } else if (section == "controller") {
+            settings.pad[key] = value;
         }
     } catch (...) {
         // Malformed values keep their defaults.
@@ -200,6 +223,13 @@ void resetKeyboardDefaults() {
     instance().keys = defaults.keys;
 }
 
+void resetControllerDefaults() {
+    Settings defaults;
+    std::istringstream file(kDefaultFile);
+    parse(defaults, file);
+    instance().pad = defaults.pad;
+}
+
 void saveSettings() {
     const Settings& s = instance();
     std::vector<std::tuple<std::string, std::string, std::string>> values = {
@@ -216,6 +246,7 @@ void saveSettings() {
         {"input", "invert_mouse_y", text(s.invertMouseY)},
     };
     for (const auto& [key, value] : s.keys) values.emplace_back("keyboard", key, value);
+    for (const auto& [key, value] : s.pad) values.emplace_back("controller", key, value);
 
     std::vector<std::string> lines;
     if (std::ifstream file{settingsPath()}) {
