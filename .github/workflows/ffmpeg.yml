@@ -1,0 +1,51 @@
+# Builds the pinned FFmpeg (tools/build_xma_codec.py: n8.1.2 plus the XMA decoder option) with
+# MSYS2 and attaches it to the deps-ffmpeg release, which tools/fetch_ffmpeg.py downloads (its
+# SHA-256 pinned there) so source builds and CI need no MSYS2. Run it by hand when the script
+# changes, with a new tag, then update URL and SHA256 in tools/fetch_ffmpeg.py.
+name: ffmpeg
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag for the archive
+        default: deps-ffmpeg-n8.1.2-1
+
+permissions:
+  contents: write
+
+jobs:
+  ffmpeg:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc make
+      - name: Build FFmpeg
+        shell: pwsh
+        env:
+          TENCHU_MSYS2: ${{ steps.msys2.outputs.msys2-location }}
+        run: python -I tools/build_xma_codec.py
+      - name: Archive
+        id: archive
+        shell: pwsh
+        run: |
+          $name = "ffmpeg-tenchu-n8.1.2-windows-x64.zip"
+          Compress-Archive -Path build/deps/ffmpeg/* -DestinationPath $name
+          $hash = (Get-FileHash $name -Algorithm SHA256).Hash.ToLower()
+          "SHA-256: $hash" | Tee-Object -FilePath hash.txt
+          "name=$name" >> $env:GITHUB_OUTPUT
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: FFmpeg n8.1.2 for Tenchu Z (build dependency)
+          prerelease: true
+          body_path: hash.txt
+          files: ${{ steps.archive.outputs.name }}

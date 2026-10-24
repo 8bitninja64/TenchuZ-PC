@@ -1,12 +1,15 @@
 # Builds Tenchu Z from your disc image in one command: the generator (XenonRecomp), the
 # game code translated from the disc (tenchu_game.dll) and the runtime (TenchuZ.exe).
 # Needs Git, Python 3.11+ and Visual Studio 2022 (or its Build Tools) with C++ and Clang.
-#   powershell -ExecutionPolicy Bypass -File tools/build.ps1 [-Iso <iso>] [-Configure] [-SkipRecomp] [-Target TenchuZ] [-BuildDir dir]
-# -SkipRecomp builds the runtime only (no disc needed), as for a release.
+#   powershell -ExecutionPolicy Bypass -File tools/build.ps1 [-Iso <iso>] [-Configure] [-SkipRecomp] [-BuildFfmpeg] [-Target TenchuZ] [-BuildDir dir]
+# -SkipRecomp builds the runtime only (no disc needed), as for a release. FFmpeg is the
+# prebuilt, hash-pinned release asset (tools/fetch_ffmpeg.py); -BuildFfmpeg builds it from
+# source instead (MSYS2), which is also the fallback when the download fails.
 param(
   [string]$Iso = "Tenchu Z (USA, Europe) (En,Fr,De,Es,It).iso",
   [switch]$Configure,
   [switch]$SkipRecomp,
+  [switch]$BuildFfmpeg,
   [string]$Target = "TenchuZ",
   [string]$BuildDir = "build/windows-clang"
 )
@@ -49,10 +52,13 @@ if (-not $SkipRecomp) {
   Invoke-Python tools/recompile.py --xex $xex --generator $generator; Assert-Exit "Translating the game code"
 }
 
-# 3. Libraries: FFmpeg (XMA audio and WMV movies; built with MSYS2), SDL3, Dear ImGui.
+# 3. Libraries: FFmpeg (XMA audio and WMV movies), SDL3, Dear ImGui.
 if (-not (Test-Path "build/deps/ffmpeg/include/libavcodec/avcodec.h")) {
   Write-Host "# FFmpeg"
-  Invoke-Python tools/build_xma_codec.py; Assert-Exit "Building FFmpeg"
+  if (-not $BuildFfmpeg) { Invoke-Python tools/fetch_ffmpeg.py }
+  if ($BuildFfmpeg -or $LASTEXITCODE) {
+    Invoke-Python tools/build_xma_codec.py; Assert-Exit "Building FFmpeg (needs MSYS2: https://www.msys2.org)"
+  }
 }
 if (-not (Test-Path "build/deps/SDL3/include/SDL3/SDL.h")) { Invoke-Python tools/fetch_sdl.py; Assert-Exit "Fetching SDL3" }
 if (-not (Test-Path "build/deps/imgui/imgui.h")) { Invoke-Python tools/fetch_imgui.py; Assert-Exit "Fetching Dear ImGui" }

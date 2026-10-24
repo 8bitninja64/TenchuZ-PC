@@ -35,8 +35,8 @@ The executable is built with XDK 2.0.4552 and imports `xboxkrnl.exe` and `xam.xe
 
 ## Playing on Windows
 
-1. Download `TenchuZ-windows-x64.zip` from the releases and unzip it anywhere you can
-   write to (not Program Files).
+1. Download `TenchuZ-windows-x64.zip` from the [Releases](../../releases) page and unzip it
+   anywhere you can write to (not Program Files).
 2. Install [Python 3.11 or newer](https://www.python.org/downloads/) (tick *Add python.exe
    to PATH*) and [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
    with *Desktop development with C++* and *C++ Clang tools for Windows*. They are needed
@@ -55,16 +55,23 @@ Windows 10/11 64-bit with a Direct3D 11 graphics card. The Visual C++ runtime is
 
 ## Building from source
 
-Requirements: Git, Python 3.11+, Visual Studio 2022 (Build Tools are enough) with C++
-and its Clang compiler, and [MSYS2](https://www.msys2.org) with
-`pacman -S mingw-w64-x86_64-gcc make` (FFmpeg is built from pinned source; it looks in
-`TENCHU_MSYS2`, `../_Tools/msys64` and `C:\msys64`). Then one command does everything:
-the generator (XenonRecomp, fetched into `../_Tools` and patched), `default.xex` read from
-your disc and translated, FFmpeg/SDL3/Dear ImGui, the game module and the runtime.
+Requirements: Git, Python 3.11+ and Visual Studio 2022 (Build Tools are enough) with C++
+and its Clang compiler. One command does everything: the generator (XenonRecomp, fetched
+into `../_Tools` and patched), `default.xex` read from your disc and translated, FFmpeg
+(prebuilt and hash-pinned, from this repository's `deps-ffmpeg` release), SDL3, Dear ImGui,
+the game module and the runtime.
+
+```bash
+git clone https://github.com/8bitninja64/TenchuZ-PC.git
+```
 
 ```bash
 powershell -ExecutionPolicy Bypass -File tools/build.ps1 -Iso "path/to/Tenchu Z (USA, Europe) (En,Fr,De,Es,It).iso"
 ```
+
+`-BuildFfmpeg` builds FFmpeg from its pinned source instead (`tools/build_xma_codec.py`,
+which needs [MSYS2](https://www.msys2.org) with `pacman -S mingw-w64-x86_64-gcc make`, found
+through `TENCHU_MSYS2`, `../_Tools/msys64` or `C:\msys64`).
 
 Run `build/windows-clang/TenchuZ.exe` (pick the disc on the first start, or pass the
 `.iso` or an extracted folder as the first argument). Later builds are incremental; pass
