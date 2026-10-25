@@ -59,6 +59,8 @@ if(EXISTS "${TENCHU_GENERATED_DIR}/sources.cmake")
     else()
         target_compile_options(tenchu_game PRIVATE -ffp-model=strict -mssse3 -msse4.1 -Wno-everything -fvisibility=hidden)
         set_target_properties(tenchu_game PROPERTIES PREFIX "")  # tenchu_game.so
+        # Its own symbols bind inside it (the runtime defines some of the same names).
+        target_link_options(tenchu_game PRIVATE -Wl,-Bsymbolic -Wl,--no-undefined)
     endif()
 endif()
 

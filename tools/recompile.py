@@ -17,15 +17,24 @@ import shutil
 import struct
 import subprocess
 import sys
-import tomllib
+try:
+    import tomllib
+except ImportError:  # Python 3.10 (Ubuntu 22.04): the subset config/tenchuz.toml uses
+    tomllib = None
 
 ROOT = Path(__file__).resolve().parents[1]
 # A release kit carries the generator and export tables in tools/; a source checkout
 # uses the shared ../_Tools/XenonRecomp (tools/setup_generator.py, tools/build.ps1).
-GENERATOR = next((path for path in (ROOT / "tools/XenonRecomp.exe",
-                                    ROOT.parent / "_Tools/XenonRecomp/build-tenchu/XenonRecomp/XenonRecomp.exe",
-                                    ROOT.parent / "_Tools/XenonRecomp/build/XenonRecomp/Release/XenonRecomp.exe")
-                  if path.exists()), ROOT / "tools/XenonRecomp.exe")
+# Linux builds of the generator: tools/XenonRecomp in a release, TENCHU_GENERATOR or
+# ../_Tools/XenonRecomp/build-linux in a checkout (tools/build_linux.sh).
+if sys.platform == "win32":
+    _GENERATORS = (ROOT / "tools/XenonRecomp.exe",
+                   ROOT.parent / "_Tools/XenonRecomp/build-tenchu/XenonRecomp/XenonRecomp.exe",
+                   ROOT.parent / "_Tools/XenonRecomp/build/XenonRecomp/Release/XenonRecomp.exe")
+else:
+    _GENERATORS = tuple(Path(path) for path in [os.environ.get("TENCHU_GENERATOR")] if path) + (
+        ROOT / "tools/XenonRecomp", ROOT.parent / "_Tools/XenonRecomp/build-linux/XenonRecomp/XenonRecomp")
+GENERATOR = next((path for path in _GENERATORS if path.exists()), _GENERATORS[0])
 TABLES = next((path for path in (ROOT / "tools/xbox", ROOT.parent / "_Tools/XenonRecomp/XenonUtils/xbox")
                if path.exists()), ROOT / "tools/xbox")
 CONFIG = ROOT / "config/tenchuz.toml"
@@ -39,14 +48,49 @@ SUPPORTED_XEX_SHA256 = "c727debeaad474dfcf8517202eebc388f9e51705ce3b01499486fa5f
 
 
 def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_toml(text: str) -> dict:
+    """tomllib.loads, or on Python 3.10 a reader for the TOML config/tenchuz.toml uses: [table],
+    [[array of tables]], key = string / integer (hex too) / boolean / array of those, comments."""
+    if tomllib:
+        return tomllib.loads(text)
+    def value(token: str):
+        token = token.strip()
+        if token.startswith("["):
+            inner = token[1:-1].strip()
+            return [value(part) for part in re.findall(r'"[^"]*"|[^,\s][^,]*', inner)] if inner else []
+        if token.startswith('"'):
+            return json.loads(token)
+        if token in ("true", "false"):
+            return token == "true"
+        return int(token.replace("_", ""), 0)
+    root: dict = {}
+    table = root
+    for raw in text.splitlines():
+        line = re.sub(r'\s*#[^"]*$', "", raw).strip()
+        if not line:
+            continue
+        if line.startswith("[["):
+            table = {}
+            root.setdefault(line[2:-2].strip(), []).append(table)
+        elif line.startswith("["):
+            table = root.setdefault(line[1:-1].strip(), {})
+        else:
+            key, _, rest = line.partition("=")
+            table[key.strip()] = value(rest)
+    return root
 
 
 def write_run_config(out: Path) -> tuple[Path, list[dict]]:
     """generation.toml with every path inside the output directory: the generator runs
     there with bare relative names (it joins narrow path strings)."""
-    source = tomllib.loads(CONFIG.read_text())
+    source = load_toml(CONFIG.read_text())
     config = source["main"]
     # Hand-written tables follow the XenonAnalyse output in one merged file.
     tables = CONFIG.parent / config["switch_table_file_path"]

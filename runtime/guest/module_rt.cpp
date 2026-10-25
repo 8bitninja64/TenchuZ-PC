@@ -25,7 +25,13 @@ uint32_t* volatile* tz::moduleEntryCounts() { return &PPCEntryCounts; }
 uint32_t* volatile* tz::moduleEntryCounts() { return nullptr; }
 #endif
 
-extern "C" __declspec(dllexport) const tz::GameModule* tenchu_module_init(const tz::RuntimeApi* api) {
+#ifdef _WIN32
+#define TZ_MODULE_EXPORT __declspec(dllexport)
+#else
+#define TZ_MODULE_EXPORT __attribute__((visibility("default")))  // the module builds with hidden visibility
+#endif
+
+extern "C" TZ_MODULE_EXPORT const tz::GameModule* tenchu_module_init(const tz::RuntimeApi* api) {
     if (!api || api->abiVersion != tz::kModuleAbiVersion || api->contextSize != sizeof(PPCContext)) return nullptr;
     g_api = api;
     return tz::builtinModule();

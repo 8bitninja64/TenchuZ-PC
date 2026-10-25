@@ -655,15 +655,21 @@ struct XenosBackend::Impl {
                                               DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16_FLOAT,
                                               DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT,
                                               DXGI_FORMAT_D24_UNORM_S8_UINT, DXGI_FORMAT_D32_FLOAT_S8X24_UINT};
-        for (; samples > 2; samples /= 2) {
-            bool supported = true;
+        auto supported = [&](uint32_t count) {
             for (const DXGI_FORMAT format : formats) {
                 UINT levels = 0;
-                supported = supported && SUCCEEDED(device->CheckMultisampleQualityLevels(format, samples, &levels)) &&
-                            levels;
+                if (FAILED(device->CheckMultisampleQualityLevels(format, count, &levels)) || !levels) return false;
             }
-            if (supported) break;
+            return true;
+        };
+        for (; samples > 2; samples /= 2) {
+            if (supported(samples)) break;
             logf("[d3d11] %ux MSAA is not supported for every target format", samples);
+        }
+        // 2x is optional in Vulkan (DXVK on lavapipe has 1x and 4x only): 4x, else none.
+        if (samples == 2 && !supported(2)) {
+            samples = supported(4) ? 4 : 1;
+            logf("[d3d11] 2x MSAA is not supported for every target format");
         }
         if (samples != 2) logf("[d3d11] %ux MSAA for the title's 2x targets", samples);
         return samples;

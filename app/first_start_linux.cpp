@@ -306,8 +306,8 @@ bool build(const std::string& script, const std::string& xexPath, const std::str
         prog.step = l.substr(2);
         int n = 0;
         if (sscanf(l.c_str(), "# Compiling %d files", &n) == 1) prog.total = n;
-      } else if (l.rfind("compiled ", 0) == 0) {
-        prog.compiled++;
+      } else if (int done = 0, total = 0; sscanf(l.c_str(), "[%d/%d]", &done, &total) == 2) {
+        prog.compiled = done;  // compile_module.py: "[n/N] file" per finished unit
       }
       if (!l.empty()) prog.last = l;
       if (l.rfind("xargs: ", 0) == 0) return;  // "...exited with status 255; aborting" once per job

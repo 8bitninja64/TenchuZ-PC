@@ -4,6 +4,8 @@
 #include <d3dcompiler.h>
 #include <vkd3d_shader.h>
 
+#include "kernel/kernel.h"
+
 #include <atomic>
 #include <cstring>
 #include <string>
@@ -62,6 +64,15 @@ extern "C" HRESULT WINAPI D3DCompile(LPCVOID data, SIZE_T size, LPCSTR name, con
     (void)flags2;
     if (code) *code = nullptr;
     if (errors) *errors = nullptr;
+    // Intrinsics vkd3d's HLSL compiler lacks (DXBC's ne is unordered: NaN != NaN).
+    static const char kPrelude[] =
+        "#define isnan(x) ((x) != (x))\n"
+        "#define isfinite(x) (abs(x) < asfloat(0x7f800000u))\n"
+        "#line 1\n";
+    std::string text(kPrelude);
+    text.append(static_cast<const char*>(data), size);
+    data = text.data();
+    size = text.size();
     std::vector<vkd3d_shader_macro> macros;
     for (const D3D_SHADER_MACRO* define = defines; define && define->Name; ++define)
         macros.push_back({define->Name, define->Definition ? define->Definition : ""});
@@ -95,6 +106,10 @@ extern "C" HRESULT WINAPI D3DCompile(LPCVOID data, SIZE_T size, LPCSTR name, con
     char* messages = nullptr;
     const int result = vkd3d_shader_compile(&info, &output, &messages);
     if (messages && errors && *messages) *errors = makeBlob(messages, std::strlen(messages) + 1);
+    // Several callers fall back silently: every failure is logged here.
+    if (result < 0)
+        tz::logf("[d3dcompile] %s %s (%s) failed: %s", info.source_name, entry ? entry : "", target ? target : "",
+                 messages ? messages : "");
     vkd3d_shader_free_messages(messages);
     if (result < 0) return E_FAIL;
     if (code) *code = makeBlob(output.code, output.size);

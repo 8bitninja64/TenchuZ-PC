@@ -11,3 +11,12 @@
      };
      bool has_sv_prefix = !ascii_strncasecmp(semantic_name, "sv_", 3);
  
+@@ -3161,6 +3165,8 @@
+             *sysval_semantic = VKD3D_SHADER_SV_RENDER_TARGET_ARRAY_INDEX;
+         else if (!ascii_strcasecmp(semantic_name, "sv_viewportarrayindex"))
+             *sysval_semantic = VKD3D_SHADER_SV_VIEWPORT_ARRAY_INDEX;
++        else if (!ascii_strcasecmp(semantic_name, "sv_clipdistance"))
++            *sysval_semantic = VKD3D_SHADER_SV_CLIP_DISTANCE;
+         else if (has_sv_prefix)
+             return false;
+         else
