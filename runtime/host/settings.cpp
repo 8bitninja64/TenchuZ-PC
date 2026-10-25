@@ -29,7 +29,7 @@ window_width = 1280
 window_height = 720
 vsync = true
 ; Internal rendering resolution as a multiple of the original 1280x720
-; (1 = 720p, 2 = 1440p, 3 = 4K). Higher values need much more video memory.
+; (1 = 720p, 1.5 = 1080p, 2 = 1440p, 3 = 4K). Higher values need much more video memory.
 resolution_scale = 1
 ; Anisotropic texture filtering: 1 (off), 2, 4, 8 or 16.
 anisotropic_filtering = 16
@@ -162,7 +162,7 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "window_width") settings.windowWidth = (std::max)(320, std::stoi(value));
             else if (key == "window_height") settings.windowHeight = (std::max)(180, std::stoi(value));
             else if (key == "vsync") settings.vsync = parseBool(value);
-            else if (key == "resolution_scale") settings.resolutionScale = std::clamp(std::stoi(value), 1, 4);
+            else if (key == "resolution_scale") settings.resolutionScale = std::clamp(std::stof(value), 1.0f, 4.0f);
             else if (key == "anisotropic_filtering") settings.anisotropy = std::clamp(std::stoi(value), 1, 16);
             else if (key == "frame_rate_limit") settings.frameRateLimit = (std::max)(0, std::stoi(value));
             else if (key == "show_fps") settings.showFps = parseBool(value);
@@ -296,6 +296,13 @@ void resetControllerDefaults() {
     instance().pad = defaults.pad;
 }
 
+// "1", "1.5", "2": the scale without trailing zeros.
+std::string scaleText(float scale) {
+    char text[16];
+    snprintf(text, sizeof(text), "%g", scale);
+    return text;
+}
+
 void saveSettings() {
     const Settings& s = instance();
     std::vector<std::tuple<std::string, std::string, std::string>> values = {
@@ -303,7 +310,7 @@ void saveSettings() {
         {"game", "update_check", text(s.updateCheck)},
         {"display", "fullscreen", text(s.fullscreen)},
         {"display", "vsync", text(s.vsync)},
-        {"display", "resolution_scale", std::to_string(s.resolutionScale)},
+        {"display", "resolution_scale", scaleText(s.resolutionScale)},
         {"display", "anisotropic_filtering", std::to_string(s.anisotropy)},
         {"display", "frame_rate_limit", std::to_string(s.frameRateLimit)},
         {"display", "show_fps", text(s.showFps)},

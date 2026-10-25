@@ -42,6 +42,7 @@ std::atomic<bool> g_holdInput{false};  // after closing: pads stay away from the
 // Opened by Back+Start on the title's thread: the menu's own pad poll (command processor
 // thread) may see that same press as new, so closing waits until the combo is released.
 std::atomic<bool> g_comboLatched{false};
+std::atomic<bool> g_paused{false};  // the menu paused the game since the last frame time
 std::atomic<bool> g_initialized{false};
 HWND g_window = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
@@ -60,7 +61,7 @@ const char* kSectionNames[kSectionCount] = {"Display", "Graphics", "Audio", "Con
                                             "Cheats",  "Update",   "About"};
 int g_section = 0;
 // Two panes: choosing a section moves the highlight into its options; B
-// (Backspace) moves it back to the list. Only F1, Esc or Back+Start close the menu.
+// (Backspace) moves it back to the list. Only Esc or Back+Start close the menu.
 enum class Focus { None, Sections, Content };
 Focus g_focusTo = Focus::Sections;
 
@@ -74,6 +75,7 @@ constexpr float kFontPx = 40.0f;  // rasterized large, scaled down to the window
 
 void setOpen(bool open) {
     if (g_open.exchange(open) == open) return;
+    if (open) g_paused = true;
     logf("[menu] %s", open ? "opened" : "closed");
     g_focusTo = Focus::Sections;
     g_capture = -1;
@@ -355,8 +357,8 @@ bool drawDisplay(Settings& st) {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextDisabled("Applied on the next start:");
-    static const std::pair<int, const char*> scales[] = {
-        {1, "720p (1x)"}, {2, "1440p (2x)"}, {3, "4K (3x)"}, {4, "5K (4x)"}};
+    static const std::pair<float, const char*> scales[] = {
+        {1.0f, "720p (1x)"}, {1.5f, "1080p (1.5x)"}, {2.0f, "1440p (2x)"}, {3.0f, "4K (3x)"}, {4.0f, "5K (4x)"}};
     const char* scale = scales[0].second;
     for (const auto& [value, label] : scales)
         if (value == st.resolutionScale) scale = label;
@@ -523,7 +525,7 @@ bool drawControls(Settings& st) {
     }
     changed |= ImGui::SliderFloat("Mouse sensitivity", &st.mouseSensitivity, 0.2f, 3.0f, "%.2f");
     changed |= ImGui::Checkbox("Invert mouse Y", &st.invertMouseY);
-    ImGui::TextDisabled("F1 / Esc: this menu   Alt+Enter / F11: fullscreen   Controller: Back + Start");
+    ImGui::TextDisabled("Esc: this menu   Alt+Enter / F11: fullscreen   Controller: Back + Start");
     ImGui::TextDisabled("The menu itself always uses the controller's own buttons.");
     return changed;
 }
@@ -798,7 +800,7 @@ void drawMenu() {
     hint("A", ImVec4(0.3f, 0.85f, 0.4f, 1), "select");
     hint("B", kCrimson, "back");
     hint("LB / RB", kSteel, "section");
-    hint("F1 / Back+Start", kGold, "close");
+    hint("Esc / Back+Start", kGold, "close");
     const ImGuiStyle& style = ImGui::GetStyle();
     auto width = [&](const char* text) { return ImGui::CalcTextSize(text).x + style.FramePadding.x * 2; };
     ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - width("Resume") - width("Quit game") - style.ItemSpacing.x);
@@ -841,6 +843,7 @@ void finishCapture(int virtualKey) {
 }  // namespace
 
 bool isOpen() { return g_open; }
+bool takePause() { return g_paused.exchange(false); }
 
 bool filterGamePad(uint16_t buttons) {
     static bool comboHeld = false;
@@ -866,9 +869,9 @@ bool handleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
         return true;
     }
     const bool keyDown = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
-    const bool repeat = keyDown && (lParam & (1 << 30));
-    if (keyDown && wParam == VK_F1) {
-        if (!repeat) setOpen(!g_open);
+    const bool repeat = keyDown && (lParam & (1 << 30));    // Esc opens the menu (and frees a captured mouse cursor with it).
+    if (keyDown && wParam == VK_ESCAPE && !g_open) {
+        if (!repeat) setOpen(true);
         return true;
     }
     if (!g_open) return false;

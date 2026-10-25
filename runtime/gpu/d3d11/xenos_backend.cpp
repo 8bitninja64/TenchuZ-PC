@@ -632,10 +632,13 @@ struct XenosBackend::Impl {
     // ---- Resolution scaling ----------------------------------------------------------
     // Host render targets and resolved textures are renderScale times the guest
     // size; guest coordinates are scaled only where they meet host resources.
-    const uint32_t renderScale = uint32_t(std::clamp(host::settings().resolutionScale, 1, 4));
+    // Fractional at 1.5 (1080p): guest coordinates round to host pixels the same way
+    // everywhere, so neighboring rectangles (tiles, resolves) still meet exactly.
+    const float renderScale = std::clamp(host::settings().resolutionScale, 1.0f, 4.0f);
+    LONG scaled(LONG value) const { return LONG(std::lround(double(value) * renderScale)); }
+    UINT scaled(UINT value) const { return UINT(std::lround(double(value) * renderScale)); }
     D3D11_RECT scaled(const D3D11_RECT& rect) const {
-        const LONG s = LONG(renderScale);
-        return {rect.left * s, rect.top * s, rect.right * s, rect.bottom * s};
+        return {scaled(rect.left), scaled(rect.top), scaled(rect.right), scaled(rect.bottom)};
     }
 
     // ---- MSAA override -----------------------------------------------------------------
@@ -693,8 +696,8 @@ struct XenosBackend::Impl {
         D3D11_TEXTURE2D_DESC desc{};
         const uint32_t guestHeight = (std::max)(16u, height / (samples >= 2 ? 2 : 1));
         const uint32_t hostSamples = samples == 2 ? msaaSamples : samples;
-        desc.Width = pitch * renderScale;
-        desc.Height = guestHeight * renderScale;
+        desc.Width = scaled(UINT(pitch));
+        desc.Height = scaled(UINT(guestHeight));
         desc.MipLevels = 1;
         desc.ArraySize = 1;
         desc.SampleDesc.Count = hostSamples;
@@ -783,8 +786,8 @@ struct XenosBackend::Impl {
         }
         if (!entry.texture) {
             D3D11_TEXTURE2D_DESC desc{};
-            desc.Width = width * renderScale;
-            desc.Height = height * renderScale;
+            desc.Width = scaled(UINT(width));
+            desc.Height = scaled(UINT(height));
             desc.MipLevels = 1;
             desc.ArraySize = 1;
             desc.Format = format;
@@ -1120,7 +1123,7 @@ struct XenosBackend::Impl {
     void substituteBloomSource(const xenos::ShaderInfo& info, ID3D11ShaderResourceView** views, UINT count) {
         ResolvedTexture* scene = count ? resolvedBinding(info, 0) : nullptr;
         if (!scene || views[0] != scene->view) return;
-        auto* view = postEffects.bloomSource(scene->view, scene->width, scene->height, renderScale, resolveGeneration);
+        auto* view = postEffects.bloomSource(scene->view, scene->width, scene->height, uint32_t(renderScale), resolveGeneration);
         if (view) {
             views[0] = view;
             forgetBoundState();  // the pass bound its own pipeline
@@ -1438,7 +1441,7 @@ struct XenosBackend::Impl {
         if (ps && psHash == kSceneCompositeShader) {
             if (postEffects.enabled()) substituteCompositeScene(ps->info, pixelViews, pixelViewCount);
         } else if (ps && psHash == kBloomShrinkShader) {
-            if (renderScale > 1 && host::settings().stableBloom)
+            if (renderScale >= 2 && host::settings().stableBloom)
                 substituteBloomSource(ps->info, pixelViews, pixelViewCount);
         } else if (ps && rectangles && tracePostFx && firstTarget->samples == 1 && pixelViewCount >= 2) {
             noteCompositeCandidate(psHash, ps->info, pixelViewCount);
@@ -1500,7 +1503,7 @@ struct XenosBackend::Impl {
             bound.depth = depthView;
             forgetTextureBindings();
         }
-        const D3D11_VIEWPORT viewport{0, 0, width * renderScale, height * renderScale, 0, 1};
+        const D3D11_VIEWPORT viewport{0, 0, float(scaled(UINT(width))), float(scaled(UINT(height))), 0, 1};
         if (!bound.valid || std::memcmp(&viewport, &bound.viewport, sizeof(viewport)) != 0) {
             context->RSSetViewports(1, &viewport);
             bound.viewport = viewport;
@@ -1856,14 +1859,14 @@ struct XenosBackend::Impl {
                 if (!sourceView || !copyShader) return;
                 const bool swap = !depthSource && ((reg(reg::RB_COPY_DEST_INFO) >> 24) & 1);
                 const bool float24 = depthSource && ((reg(reg::RB_DEPTH_INFO) >> 16) & 1);
-                const int32_t s = int32_t(renderScale);
-                const int32_t constants[8] = {int32_t(rect.left) * s, int32_t(rect.top) * s, int32_t(destX) * s,
-                                              int32_t(destY) * s, swap || float24 ? 1 : 0, 0, 0, 0};
+                const int32_t constants[8] = {int32_t(scaled(rect.left)), int32_t(scaled(rect.top)),
+                                              int32_t(scaled(UINT(destX))), int32_t(scaled(UINT(destY))),
+                                              swap || float24 ? 1 : 0, 0, 0, 0};
                 writeBuffer(copyConstants, constants, sizeof(constants));
                 context->OMSetRenderTargets(1, &target->target, nullptr);
-                const D3D11_VIEWPORT viewport{float(destX * renderScale), float(destY * renderScale),
-                                              float((rect.right - rect.left) * renderScale),
-                                              float((rect.bottom - rect.top) * renderScale), 0, 1};
+                const D3D11_VIEWPORT viewport{float(scaled(UINT(destX))), float(scaled(UINT(destY))),
+                                              float(scaled(rect.right) - scaled(rect.left)),
+                                              float(scaled(rect.bottom) - scaled(rect.top)), 0, 1};
                 context->RSSetViewports(1, &viewport);
                 context->RSSetState(nullptr);
                 context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
@@ -1971,8 +1974,8 @@ struct XenosBackend::Impl {
 
     void copySceneOnly(const RenderTarget& target, const D3D11_RECT& scissor) {
         // The front buffer is resolved from the target's top left corner.
-        const UINT width = (std::min)(UINT(scissor.right), target.width * renderScale);
-        const UINT height = (std::min)(UINT(scissor.bottom), target.height * renderScale);
+        const UINT width = (std::min)(UINT(scissor.right), scaled(UINT(target.width)));
+        const UINT height = (std::min)(UINT(scissor.bottom), scaled(UINT(target.height)));
         if (scissor.left || scissor.top || target.samples != 1 || !width || !height) return;
         D3D11_TEXTURE2D_DESC desc{};
         if (sceneOnly) sceneOnly->GetDesc(&desc);
@@ -2024,7 +2027,7 @@ struct XenosBackend::Impl {
         if (it != resolved.end() && sceneOnly && sceneOnlyFrame == frames) {
             D3D11_TEXTURE2D_DESC desc{};
             sceneOnly->GetDesc(&desc);
-            if (desc.Width == it->second.width * renderScale && desc.Height == it->second.height * renderScale)
+            if (desc.Width == scaled(UINT(it->second.width)) && desc.Height == scaled(UINT(it->second.height)))
                 scene = sceneOnlyView;
         }
         const auto presentStart = stamp();

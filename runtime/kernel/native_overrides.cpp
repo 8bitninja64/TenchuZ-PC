@@ -4,6 +4,7 @@
 #include "kernel.h"
 #include "kernel/memory.h"
 #include "host/settings.h"
+#include "host/overlay.h"
 #include "guest/host.h"
 
 #include <algorithm>
@@ -95,6 +96,11 @@ TZ_OVERRIDE(8228E5C8) {
     float measured;
     std::memcpy(&measured, &bits, 4);
     static double average = 0.0, owed = 0.0;
+    // The menu paused the game during this frame: it lasted one ordinary frame.
+    if (host::overlay::takePause() && average > 0.0) {
+        measured = float(average);
+        owed = 0.0;
+    }
     if (!(measured > 0.0f) || measured > 0.1f) {  // the first frame, loads, hitches: as measured
         if (measured > 0.0f) average = measured;
         owed = 0.0;

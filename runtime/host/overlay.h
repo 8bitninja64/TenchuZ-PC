@@ -19,6 +19,8 @@ void render(ID3D11RenderTargetView* target, float fps);
 
 // Any thread.
 bool isOpen();
+// True once after the menu paused the game (the next frame's time excludes the pause).
+bool takePause();
 bool ownsInput();  // the game sees neutral controls (open, or buttons still held from closing)
 // Game's controller read: opens the menu on Back + Start; true when the game must
 // see neutral controls instead (the combo itself never reaches it).

@@ -5,6 +5,7 @@
 // TENCHU_AUDIO_DUMP=<file.wav> also records the submitted frames.
 #include "kernel/kernel.h"
 #include "host/settings.h"
+#include "host/overlay.h"
 #include "guest/host.h"
 #include <windows.h>
 #include <xaudio2.h>
@@ -123,6 +124,12 @@ struct Output {
         voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
         return state.BuffersQueued;
     }
+    // While the menu pauses the game the device stops (queued sound waits too).
+    void pause(bool paused) {
+        std::lock_guard lock(mutex);
+        if (paused) voice->Stop();
+        else voice->Start();
+    }
     void submit(uint32_t samples) {
         std::lock_guard lock(mutex);
         if (queued() >= kBufferCount - 1) return;  // device stalled: drop rather than overwrite
@@ -155,7 +162,18 @@ void audioMain() {
     // later; tick at the hardware rate and skip ticks while the device queue is
     // full, so the device's consumption paces the mixer.
     auto next = std::chrono::steady_clock::now();
+    bool paused = false;
     for (;;) {
+        // The menu pauses the game: no mixing and no sound until it closes.
+        if (host::overlay::isOpen() != paused) {
+            paused = !paused;
+            if (outputReady) output.pause(paused);
+        }
+        if (paused) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            next = std::chrono::steady_clock::now();
+            continue;
+        }
         next += std::chrono::microseconds(5333);
         const auto now = std::chrono::steady_clock::now();
         if (next < now - std::chrono::milliseconds(50)) next = now;  // resync after a stall

@@ -97,7 +97,7 @@ on the NFL Blitz 2003 port).
 
 Settings live in `TenchuZ.ini` next to the executable, written with comments
 on first run: the disc image, fullscreen, window size, vsync, `resolution_scale` (1 = 720p,
-2 = 1440p, 3 = 4K), `frame_rate_limit`, mouse sensitivity and every keyboard
+1.5 = 1080p, 2 = 1440p, 3 = 4K), `frame_rate_limit`, mouse sensitivity and every keyboard
 binding.
 
 `frame_rate_limit` defaults to 60; 30 restores the console's pacing, and higher
@@ -107,7 +107,7 @@ rate that is a multiple of the limit (60 on a 60/120/240 Hz display), frames are
 locked to the display. Missions currently reach about 75-80 fps unlimited on an
 RTX 3070 laptop; menus and the hideout run far higher.
 
-- **F1** (or **Back + Start** on a controller): settings menu, which pauses the game:
+- **Esc** (or **Back + Start** on a controller): settings menu ("F1 menu"), which pauses the game and its sound:
   display (frame rate limit, resolution, FPS counter, HDR), graphics (ambient occlusion,
   sharpening, anti-aliasing), audio volume, controls (controller and keyboard remapping,
   mouse), unlocking all missions in your save, cheats, and updates. A controller works it
@@ -122,7 +122,7 @@ RTX 3070 laptop; menus and the hideout run far higher.
   connected pad is player 1. Layouts come from `gamecontrollerdb.txt` next to the
   executable; add your own lines to `gamecontrollerdb_user.txt`. Keyboard and mouse act as controller 1:
   WASD moves (Alt walks), click the window to capture the mouse for the camera,
-  Escape releases it. Default buttons: Space = A, C = B, left mouse = X,
+  Esc releases it (and opens the menu). Default buttons: Space = A, C = B, left mouse = X,
   right mouse = Y, Q/E = LB/RB, F/R = LT/RT, Enter or P = Start, Tab = Back,
   arrows or 1-4 = d-pad.
 - Saves and profile settings are stored in `%APPDATA%\TenchuZRecomp`.

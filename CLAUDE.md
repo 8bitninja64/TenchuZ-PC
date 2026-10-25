@@ -50,6 +50,12 @@ Original code following Darkness's architecture (not copied files).
   backends), modeled on Blitz2003's overlay.cpp. Drawn by the renderer before Present; the
   game pauses in VdSwap while open and the CP re-presents the last frame (presentAgain).
   Back+Start is filtered in XamInputGetState (filterGamePad) so the game never sees it.
+  Esc opens and closes it (F1 no longer does). While it is open the audio driver stops
+  ticking the title's mixer and stops the XAudio2 voice, and the next frame delta counts
+  as one ordinary frame (overlay::takePause in the sub_8228E5C8 override).
+  resolution_scale is a float (1, 1.5 = 1080p, 2, 3, 4): guest coordinates map to host
+  pixels through scaled() with rounding everywhere. The hideout's lighting follows the
+  PC clock (day in the morning, night at 4 AM): compare shots taken at the same time.
   Settings it changes are written back into TenchuZ.ini in place (saveSettings).
   host::g_mutex is recursive: handleMessage re-enters through ReleaseCapture (combo clicks
   crashed with "resource deadlock would occur"). Panes are NavFlattened (the pad reaches
