@@ -226,6 +226,21 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   fetch size / host size (g_textureScale), or blur chains drift (lantern bloom offset).
 - Saved profile settings once had all volumes at 0 from button-mashing tests: if the
   game is silent, check Options > Sound Settings before debugging audio.
+- Graphics extras ([graphics], F1 > Graphics, gpu/d3d11/post_effects.*): the scene composite
+  ps 7582CB38B8D839B4 (DOF + bloom before the HUD; scene on fetch 2, depth resolve on fetch 3
+  as 20e4-as-unorm, reversed Z) reads a processed copy: GTAO, CAS, experimental indirect
+  light. The camera is voted from depth-writing draws' vertex constants (c0-c3 rows, c3-c6
+  columns; validated 16:9 perspective). TENCHU_TRACE=postfx logs it and skipped composites
+  (and other composite-like shaders), aoview shows the occlusion. Stable bloom: at scale > 1
+  the bloom shrink ps 723D9B291D342106 reads a guest-size FP16 box average of the scene.
+  MSAA override: host sample count of the 2x targets (keys and guest sizes stay 2x). The
+  present scales with Catmull-Rom (up) or a box filter (down). Offline tests of the passes
+  are easy: post_effects.cpp only needs host::settings, logf and traceEnabled.
+- HDR: ResizeBuffers needs the back buffer unbound (the F1 menu re-presents). The HUD mask
+  is a copy of the composite's target taken right after the composite (the HUD follows in
+  the same target); the present's blit writes "still matches" into alpha
+  (TENCHU_TRACE=hudmask screenshots show it). Nits 0 = the display's peak / Windows' SDR
+  white (polled on its own thread).
 
 ## D3D facts (device at *VdGlobalDevice = 0x40001600)
 - Present = sub_8241BDE0 (park GPU on SCRATCH1 + vsync callback 8241BD50) then
