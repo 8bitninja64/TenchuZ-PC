@@ -388,6 +388,7 @@ bool drawGraphics(Settings& st) {
     if (st.ambientOcclusion) {
         changed |= ImGui::SliderInt("Occlusion strength", &st.aoStrength, 0, 200, "%d%%");
         changed |= ImGui::SliderInt("Occlusion radius", &st.aoRadius, 10, 400, "%d units");
+        changed |= ImGui::Checkbox("Indirect light (experimental)", &st.indirectLight);
     }
     ImGui::TextDisabled("Soft shadows in corners, under eaves and around objects on the ground.");
     changed |= ImGui::SliderInt("Sharpening", &st.sharpening, 0, 100, st.sharpening ? "%d%%" : "Off");

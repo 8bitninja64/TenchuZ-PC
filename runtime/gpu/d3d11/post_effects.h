@@ -59,7 +59,8 @@ private:
     bool ensure(Target& target, UINT width, UINT height, DXGI_FORMAT format);
     void bindCommonState();
     void writeConstants(const void* data, size_t size);
-    void pass(ID3D11PixelShader* shader, const Target& target, ID3D11ShaderResourceView* const* inputs, UINT count);
+    void pass(ID3D11PixelShader* shader, const Target& target, ID3D11ShaderResourceView* const* inputs, UINT count,
+              const Target* second = nullptr);
     const Projection* projection() const;
     void logStatus();
 
@@ -70,11 +71,14 @@ private:
     ID3D11PixelShader* prepass_ = nullptr;  // half-res view depth
     ID3D11PixelShader* gtao_ = nullptr;     // half-res (visibility, view depth)
     ID3D11PixelShader* blur_ = nullptr;     // depth-aware, one axis
+    ID3D11PixelShader* gtaoIndirect_ = nullptr;  // the same plus bounced light (experimental)
+    ID3D11PixelShader* blurIndirect_ = nullptr;
     ID3D11PixelShader* apply_ = nullptr;    // full res: sharpening, upsampled occlusion
     ID3D11PixelShader* downsample_ = nullptr;  // stable bloom: box filter to the guest size
     ID3D11Buffer* constants_ = nullptr;
     ID3D11SamplerState* pointClamp_ = nullptr;
-    Target viewDepth_, occlusion_[2], output_, bloom_;
+    ID3D11SamplerState* linearClamp_ = nullptr;
+    Target viewDepth_, occlusion_[2], indirect_[2], output_, bloom_;
 
     // Projection votes of this frame's depth-writing draws; the winner of the last frame
     // stands in when a frame has none.

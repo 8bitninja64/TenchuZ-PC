@@ -26,6 +26,7 @@ struct Settings {
     bool ambientOcclusion = false;  // screen-space ambient occlusion
     int aoStrength = 100;         // percent
     int aoRadius = 80;            // game units (about centimeters)
+    bool indirectLight = false;   // experimental color bleeding with the ambient occlusion
     int sharpening = 0;           // contrast-adaptive sharpening, percent (0 = off)
     int msaa = 2;                 // samples of the title's 2x MSAA targets: 2, 4 or 8 (next start)
     bool stableBloom = true;      // bloom from the 720p footprint at resolution scales above 1

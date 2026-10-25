@@ -58,6 +58,9 @@ upscale_filter = bicubic
 ambient_occlusion = false
 ao_strength = 100
 ao_radius = 80
+; Experimental, with ambient occlusion: light bounced off nearby surfaces tints what
+; faces them (color bleeding near bright walls and lanterns).
+indirect_light = false
 ; Contrast-adaptive sharpening of the 3D scene in percent (0 = off).
 sharpening = 0
 ; At resolution_scale 2 and above, bloom samples the scene averaged to 720p like the
@@ -172,6 +175,7 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             if (key == "ambient_occlusion") settings.ambientOcclusion = parseBool(value);
             else if (key == "ao_strength") settings.aoStrength = std::clamp(std::stoi(value), 0, 200);
             else if (key == "ao_radius") settings.aoRadius = std::clamp(std::stoi(value), 10, 400);
+            else if (key == "indirect_light") settings.indirectLight = parseBool(value);
             else if (key == "sharpening") settings.sharpening = std::clamp(std::stoi(value), 0, 100);
             else if (key == "stable_bloom") settings.stableBloom = parseBool(value);
             else if (key == "msaa") {
@@ -311,6 +315,7 @@ void saveSettings() {
         {"graphics", "ambient_occlusion", text(s.ambientOcclusion)},
         {"graphics", "ao_strength", std::to_string(s.aoStrength)},
         {"graphics", "ao_radius", std::to_string(s.aoRadius)},
+        {"graphics", "indirect_light", text(s.indirectLight)},
         {"graphics", "sharpening", std::to_string(s.sharpening)},
         {"graphics", "stable_bloom", text(s.stableBloom)},
         {"graphics", "msaa", std::to_string(s.msaa)},

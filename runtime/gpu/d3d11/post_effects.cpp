@@ -25,13 +25,17 @@ struct PostConstants {
     float sharpness;
     uint32_t debugView;
     int32_t blurStep[2];
-    int32_t boxSize, unused[3];
+    int32_t boxSize;
+    float indirectStrength;
+    float unused[2];
 };
 static_assert(sizeof(PostConstants) == 96, "PostFx layout");
 
 // Occlusion fades out toward this view depth (game units, about centimeters): fog
 // covers distant surfaces, and their occlusion radius is a pixel or less anyway.
 constexpr float kMaxDistance = 8000.0f;
+// Experimental indirect light: bounced light relative to the surface's own color.
+constexpr float kIndirectStrength = 3.0f;
 
 // All passes draw one full-screen triangle. View space is the projection's: x right,
 // y up, z (= clip w) forward, reconstructed from uv (y down) and the view depth.
@@ -51,6 +55,7 @@ cbuffer PostFx : register(b0) {
     uint debugView;        // 1: the occlusion alone (TENCHU_TRACE=aoview)
     int2 blurStep;         // (1, 0) or (0, 1)
     int boxSize;           // stable bloom: source texels per target texel and axis
+    float indirectStrength;  // experimental bounce light; 0 = off
 };
 SamplerState pointClamp : register(s0);
 static const float PI = 3.14159265, HALF_PI = 1.57079633;
@@ -88,10 +93,15 @@ float prepass(float4 position : SV_Position) : SV_Target {
 // ---- 2. Ground-truth ambient occlusion (Jimenez et al. 2016), simplified from XeGTAO:
 // in each slice through the view vector, the highest horizon on either side bounds the
 // visible arc, which is integrated against the normal's cosine. Output: visibility
-// (1 = open) and the view depth for the depth-aware passes.
+// (1 = open) and the view depth for the depth-aware passes. With indirect light
+// (experimental), the samples that raise a horizon also bounce their color as rendered
+// toward this pixel, by the arc they newly cover and the cosine at its normal.
 #define SLICES 3
 #define STEPS 4
 Texture2D<float> viewDepth : register(t0);
+Texture2D sceneColor : register(t1);  // indirect light
+SamplerState linearClamp : register(s1);
+float3 Linear(float3 color) { return pow(saturate(color), 2.2); }
 float FastAcos(float x) {
     float a = min(abs(x), 1.0);  // rounding can leave dot products of unit vectors just above 1
     float r = (-0.156583 * a + HALF_PI) * sqrt(1.0 - a);
@@ -100,8 +110,9 @@ float FastAcos(float x) {
 // Interleaved gradient noise (Jimenez): an even per-pixel rotation the blur averages out.
 float IGN(float2 p) { return frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715)))); }
 float3 SamplePosition(float2 uv) { return ViewPosition(uv, viewDepth.SampleLevel(pointClamp, uv, 0)); }
-float2 gtao(float4 position : SV_Position) : SV_Target {
-    float2 uv = position.xy * texel;
+float2 Occlusion(float2 position, bool withIndirect, out float3 indirect) {
+    indirect = 0.0;
+    float2 uv = position * texel;
     float3 P = SamplePosition(uv);
     if (P.z >= maxDistance) return float2(1.0, min(P.z, 65000.0));
     // The normal from the neighbors on the side with the smaller depth step (no normals
@@ -116,7 +127,7 @@ float2 gtao(float4 position : SV_Position) : SV_Target {
     float screenRadius = radius * projScale / P.z;  // half-res pixels
     if (screenRadius < 1.0) return float2(1.0, P.z);
     float minStep = 1.3 / screenRadius;             // the nearest samples stay off this pixel
-    float noiseSlice = IGN(position.xy), noiseStep = IGN(position.xy + float2(17.0, 59.0));
+    float noiseSlice = IGN(position), noiseStep = IGN(position + float2(17.0, 59.0));
     float visibility = 0.0;
     [unroll] for (int s = 0; s < SLICES; ++s) {
         float phi = (s + noiseSlice) * (PI / SLICES);
@@ -136,8 +147,16 @@ float2 gtao(float4 position : SV_Position) : SV_Target {
             float2 offset = round(omega * (k * k + minStep)) * texel;
             float3 d0 = SamplePosition(uv + offset) - P, d1 = SamplePosition(uv - offset) - P;
             float l0 = max(length(d0), 1e-4), l1 = max(length(d1), 1e-4);
-            horizon0 = max(horizon0, lerp(low0, dot(d0 / l0, V), saturate(l0 * falloffMul + falloffAdd)));
-            horizon1 = max(horizon1, lerp(low1, dot(d1 / l1, V), saturate(l1 * falloffMul + falloffAdd)));
+            float c0 = lerp(low0, dot(d0 / l0, V), saturate(l0 * falloffMul + falloffAdd));
+            float c1 = lerp(low1, dot(d1 / l1, V), saturate(l1 * falloffMul + falloffAdd));
+            if (withIndirect) {
+                indirect += Linear(sceneColor.SampleLevel(linearClamp, uv + offset, 0).rgb) *
+                            (max(c0 - horizon0, 0.0) * saturate(dot(N, d0 / l0)));
+                indirect += Linear(sceneColor.SampleLevel(linearClamp, uv - offset, 0).rgb) *
+                            (max(c1 - horizon1, 0.0) * saturate(dot(N, d1 / l1)));
+            }
+            horizon0 = max(horizon0, c0);
+            horizon1 = max(horizon1, c1);
         }
         float h0 = n + clamp(-FastAcos(horizon1) - n, -HALF_PI, HALF_PI);
         float h1 = n + clamp(FastAcos(horizon0) - n, -HALF_PI, HALF_PI);
@@ -146,31 +165,64 @@ float2 gtao(float4 position : SV_Position) : SV_Target {
                       (2.0 * cosN + 2.0 * (h0 + h1) * sinN - cos(2.0 * h0 - n) - cos(2.0 * h1 - n)) * 0.25;
     }
     visibility = isnan(visibility) ? 1.0 : saturate(visibility / SLICES);  // never a black pixel
-    // Fades in over the first pixels of radius (distant surfaces).
-    return float2(lerp(1.0, visibility, saturate(screenRadius - 1.0)), P.z);
+    // Fades in over the first pixels of radius (distant surfaces). A side's horizon rises by
+    // at most 2 (in cosine): the bounce is the covered fraction, averaged over both sides.
+    float fadeIn = saturate(screenRadius - 1.0);
+    if (withIndirect) indirect = any(isnan(indirect)) ? 0.0 : indirect * (fadeIn / (4.0 * SLICES));
+    return float2(lerp(1.0, visibility, fadeIn), P.z);
+}
+float2 gtao(float4 position : SV_Position) : SV_Target {
+    float3 unused;
+    return Occlusion(position.xy, false, unused);
+}
+struct OcclusionOutput {
+    float2 occlusion : SV_Target0;
+    float4 indirect : SV_Target1;
+};
+OcclusionOutput gtaoIndirect(float4 position : SV_Position) {
+    OcclusionOutput output;
+    float3 indirect;
+    output.occlusion = Occlusion(position.xy, true, indirect);
+    output.indirect = float4(indirect, 0.0);
+    return output;
 }
 
-// ---- 3. Depth-aware blur of the occlusion along one axis (texels outside the target load
-// as depth 0 and get no weight).
+// ---- 3. Depth-aware blur of the occlusion (and indirect light) along one axis (texels
+// outside the target load as depth 0 and get no weight).
 Texture2D<float2> occlusionIn : register(t0);
-float2 blur(float4 position : SV_Position) : SV_Target {
-    int2 p = int2(position.xy);
+Texture2D<float4> indirectIn : register(t1);
+float2 Blur(int2 p, bool withIndirect, out float3 indirect) {
     float2 center = occlusionIn.Load(int3(p, 0));
     float sum = center.x, weights = 1.0;
+    indirect = withIndirect ? indirectIn.Load(int3(p, 0)).rgb : 0.0;
     [unroll] for (int i = -3; i <= 3; ++i) {
         if (i == 0) continue;
         float2 s = occlusionIn.Load(int3(p + blurStep * i, 0));
         float w = exp2(-0.15 * i * i) * saturate(1.0 - abs(s.y - center.y) / (0.05 * abs(i) * center.y));
         sum += s.x * w;
+        if (withIndirect) indirect += indirectIn.Load(int3(p + blurStep * i, 0)).rgb * w;
         weights += w;
     }
+    indirect /= weights;
     return float2(sum / weights, center.y);
+}
+float2 blur(float4 position : SV_Position) : SV_Target {
+    float3 unused;
+    return Blur(int2(position.xy), false, unused);
+}
+OcclusionOutput blurIndirect(float4 position : SV_Position) {
+    OcclusionOutput output;
+    float3 indirect;
+    output.occlusion = Blur(int2(position.xy), true, indirect);
+    output.indirect = float4(indirect, 0.0);
+    return output;
 }
 
 // ---- 4. Full resolution: sharpening, then the occlusion, upsampled by depth.
 Texture2D scene : register(t0);
 Texture2D<float> depthFull : register(t1);
 Texture2D<float2> occlusion : register(t2);
+Texture2D<float4> indirectLight : register(t3);
 float3 SceneAt(int2 p, int2 last) { return scene.Load(int3(clamp(p, 0, last), 0)).rgb; }
 // AMD FidelityFX CAS (MIT), without scaling: a 5-tap sharpen whose strength follows the
 // local contrast (soft minimum and maximum of the 3x3 neighborhood), so edges do not ring.
@@ -202,7 +254,15 @@ float4 apply(float4 position : SV_Position) : SV_Target {
         float protect = 1.0 - smoothstep(0.7, 1.0, max(color.r, max(color.g, color.b)));  // lamps, fire, sky
         // The occlusion is linear light, the scene gamma 2.2.
         float shade = pow(visibility, strength * fade * protect / 2.2);
-        color.rgb = debugView ? shade.xxx : color.rgb * shade;
+        float3 shaded = color.rgb * shade;
+        if (indirectStrength > 0.0) {
+            // Bounced light, tinted by this surface's own color (the only stand-in for its albedo).
+            float3 bounce = float3(dot(indirectLight.GatherRed(pointClamp, uv), weights),
+                                   dot(indirectLight.GatherGreen(pointClamp, uv), weights),
+                                   dot(indirectLight.GatherBlue(pointClamp, uv), weights)) / dot(weights, 1.0);
+            shaded = pow(max(Linear(shaded) * (1.0 + bounce * (indirectStrength * fade)), 0.0), 1.0 / 2.2);
+        }
+        color.rgb = debugView ? shade.xxx : shaded;
     }
     return color;
 }
@@ -269,7 +329,8 @@ void PostEffects::initialize(ID3D11Device* device, ID3D11DeviceContext* context)
         release(code);
     }
     const std::pair<const char*, ID3D11PixelShader**> pixelShaders[] = {
-        {"prepass", &prepass_}, {"gtao", &gtao_}, {"blur", &blur_}, {"apply", &apply_}, {"downsample", &downsample_}};
+        {"prepass", &prepass_}, {"gtao", &gtao_}, {"blur", &blur_}, {"gtaoIndirect", &gtaoIndirect_},
+        {"blurIndirect", &blurIndirect_}, {"apply", &apply_}, {"downsample", &downsample_}};
     for (const auto& [entry, shader] : pixelShaders)
         if (ID3DBlob* code = compile(entry, "ps_5_0")) {
             device_->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader);
@@ -286,7 +347,10 @@ void PostEffects::initialize(ID3D11Device* device, ID3D11DeviceContext* context)
     sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     sampler.MaxLOD = D3D11_FLOAT32_MAX;
     device_->CreateSamplerState(&sampler, &pointClamp_);
-    ready_ = vertex_ && prepass_ && gtao_ && blur_ && apply_ && downsample_ && constants_ && pointClamp_;
+    sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    device_->CreateSamplerState(&sampler, &linearClamp_);
+    ready_ = vertex_ && prepass_ && gtao_ && blur_ && gtaoIndirect_ && blurIndirect_ && apply_ && downsample_ &&
+             constants_ && pointClamp_ && linearClamp_;
     if (!ready_) logf("[postfx] unavailable (shader or state creation failed)");
 }
 
@@ -383,19 +447,21 @@ void PostEffects::bindCommonState() {
     context_->RSSetState(nullptr);
     context_->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
     context_->OMSetDepthStencilState(nullptr, 0);
-    context_->PSSetSamplers(0, 1, &pointClamp_);
+    ID3D11SamplerState* samplers[2] = {pointClamp_, linearClamp_};
+    context_->PSSetSamplers(0, 2, samplers);
     context_->PSSetConstantBuffers(0, 1, &constants_);
 }
 
 void PostEffects::pass(ID3D11PixelShader* shader, const Target& target, ID3D11ShaderResourceView* const* inputs,
-                       UINT count) {
-    context_->OMSetRenderTargets(1, &target.target, nullptr);
+                       UINT count, const Target* second) {
+    ID3D11RenderTargetView* targets[2] = {target.target, second ? second->target : nullptr};
+    context_->OMSetRenderTargets(second ? 2 : 1, targets, nullptr);
     const D3D11_VIEWPORT viewport{0, 0, float(target.width), float(target.height), 0, 1};
     context_->RSSetViewports(1, &viewport);
     context_->PSSetShader(shader, nullptr, 0);
     context_->PSSetShaderResources(0, count, inputs);
     context_->Draw(3, 0);
-    ID3D11ShaderResourceView* none[3] = {};
+    ID3D11ShaderResourceView* none[4] = {};
     context_->PSSetShaderResources(0, count, none);
     context_->OMSetRenderTargets(0, nullptr, nullptr);
 }
@@ -431,10 +497,13 @@ ID3D11ShaderResourceView* PostEffects::processScene(ID3D11Texture2D* scene, ID3D
     }
     const UINT width = sceneDesc.Width, height = sceneDesc.Height;
     const UINT halfWidth = (width + 1) / 2, halfHeight = (height + 1) / 2;
+    const bool indirect = withOcclusion && settings.indirectLight;
     if (!ensure(output_, width, height, sceneDesc.Format) ||
         (withOcclusion && (!ensure(viewDepth_, halfWidth, halfHeight, DXGI_FORMAT_R32_FLOAT) ||
                            !ensure(occlusion_[0], halfWidth, halfHeight, DXGI_FORMAT_R16G16_FLOAT) ||
-                           !ensure(occlusion_[1], halfWidth, halfHeight, DXGI_FORMAT_R16G16_FLOAT)))) {
+                           !ensure(occlusion_[1], halfWidth, halfHeight, DXGI_FORMAT_R16G16_FLOAT))) ||
+        (indirect && (!ensure(indirect_[0], halfWidth, halfHeight, DXGI_FORMAT_R16G16B16A16_FLOAT) ||
+                      !ensure(indirect_[1], halfWidth, halfHeight, DXGI_FORMAT_R16G16B16A16_FLOAT)))) {
         skipped("cannot create the effect targets");
         lastValid_ = false;
         return nullptr;
@@ -467,21 +536,30 @@ ID3D11ShaderResourceView* PostEffects::processScene(ID3D11Texture2D* scene, ID3D
         k.texel[1] = 1.0f / float(halfHeight);
         writeConstants(&k, sizeof(k));
         pass(prepass_, viewDepth_, &depthView, 1);
-        pass(gtao_, occlusion_[0], &viewDepth_.view, 1);
+        // The blurs carry the indirect light along (second target).
+        ID3D11ShaderResourceView* gtaoInputs[2] = {viewDepth_.view, sceneView};
+        pass(indirect ? gtaoIndirect_ : gtao_, occlusion_[0], gtaoInputs, indirect ? 2 : 1,
+             indirect ? &indirect_[0] : nullptr);
         k.blurStep[0] = 1;
         writeConstants(&k, sizeof(k));
-        pass(blur_, occlusion_[1], &occlusion_[0].view, 1);
+        ID3D11ShaderResourceView* horizontal[2] = {occlusion_[0].view, indirect_[0].view};
+        pass(indirect ? blurIndirect_ : blur_, occlusion_[1], horizontal, indirect ? 2 : 1,
+             indirect ? &indirect_[1] : nullptr);
         k.blurStep[0] = 0;
         k.blurStep[1] = 1;
         writeConstants(&k, sizeof(k));
-        pass(blur_, occlusion_[0], &occlusion_[1].view, 1);
+        ID3D11ShaderResourceView* vertical[2] = {occlusion_[1].view, indirect_[1].view};
+        pass(indirect ? blurIndirect_ : blur_, occlusion_[0], vertical, indirect ? 2 : 1,
+             indirect ? &indirect_[0] : nullptr);
+        k.indirectStrength = indirect ? kIndirectStrength : 0.0f;
     }
     k.texel[0] = 1.0f / float(width);
     k.texel[1] = 1.0f / float(height);
     writeConstants(&k, sizeof(k));
-    ID3D11ShaderResourceView* inputs[3] = {sceneView, withOcclusion ? depthView : nullptr,
-                                           withOcclusion ? occlusion_[0].view : nullptr};
-    pass(apply_, output_, inputs, 3);
+    ID3D11ShaderResourceView* inputs[4] = {sceneView, withOcclusion ? depthView : nullptr,
+                                           withOcclusion ? occlusion_[0].view : nullptr,
+                                           indirect ? indirect_[0].view : nullptr};
+    pass(apply_, output_, inputs, 4);
     lastScene_ = sceneView;
     lastDepth_ = depthView;
     lastGeneration_ = generation;
