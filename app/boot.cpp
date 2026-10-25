@@ -27,7 +27,7 @@ namespace {
 
 // Tenchu Z (USA, Europe) disc default.xex (also checked by tools/recompile.py).
 constexpr char kSupportedXex[] = "c727debeaad474dfcf8517202eebc388f9e51705ce3b01499486fa5ff47f9f06";
-constexpr wchar_t kTitle[] = L"Tenchu Z";
+constexpr wchar_t kTitle[] = L"Tenchu Z Recomp";
 
 // The files of a release that make_module.ps1 builds the module from: a module built by an
 // older release is rebuilt after an update. Missing files mean a development build, which
@@ -79,7 +79,7 @@ void showError(const std::wstring& message) { MessageBoxW(nullptr, message.c_str
 void showError(const std::wstring& message) {
     const std::string text = compat::narrow(message.c_str());
     fprintf(stderr, "[boot] %s\n", text.c_str());
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Tenchu Z", text.c_str(), nullptr);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Tenchu Z Recomp", text.c_str(), nullptr);
 }
 #endif
 
@@ -353,7 +353,7 @@ bool loadModule(const GameSource& source) {
                     L"a few minutes (about 2 on an 8-core PC, longer on fewer cores).\n\n"
                     L"Requirements: Python 3.11 or newer, and Visual Studio 2022 Build Tools with "
                     L"'Desktop development with C++' and 'C++ Clang tools for Windows'.\n\nCompile now?",
-                    L"Tenchu Z - first start", MB_YESNO | MB_ICONINFORMATION) != IDYES)
+                    L"Tenchu Z Recomp - first start", MB_YESNO | MB_ICONINFORMATION) != IDYES)
         return false;
 
     const auto xexPath = work / L"default.xex";

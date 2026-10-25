@@ -766,7 +766,7 @@ void drawMenu() {
                         ImGui::GetColorU32(kSteel));
     ImGui::Dummy(ImVec2(0, stripe));
     ImGui::PushFont(g_fontTitle);
-    ImGui::TextColored(ImVec4(1, 1, 1, 1), "TENCHU Z");
+    ImGui::TextColored(ImVec4(1, 1, 1, 1), "TENCHU Z RECOMP");
     ImGui::PopFont();
     ImGui::SameLine();
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetTextLineHeight() * 0.35f);

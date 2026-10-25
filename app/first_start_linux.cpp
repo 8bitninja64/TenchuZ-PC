@@ -80,7 +80,7 @@ class Window {
       return false;
     }
     m_inited = true;
-    m_win = SDL_CreateWindow("Tenchu Z - first start", 1280, 720, SDL_WINDOW_RESIZABLE);
+    m_win = SDL_CreateWindow("Tenchu Z Recomp - first start", 1280, 720, SDL_WINDOW_RESIZABLE);
     if (!m_win) {
       logf("[boot] first start: cannot open a window (%s)", SDL_GetError());
       return false;
@@ -153,7 +153,7 @@ class Window {
     SDL_FRect bar{m_ox, m_oy + 20, kW, 2};
     SDL_RenderFillRect(m_ren, &bar);
     SDL_SetRenderDrawColor(m_ren, 255, 255, 255, 255);
-    SDL_RenderDebugText(m_ren, m_ox + 12, m_oy + 8, "TENCHU Z - FIRST START");
+    SDL_RenderDebugText(m_ren, m_ox + 12, m_oy + 8, "TENCHU Z RECOMP - FIRST START");
     float y = m_oy + 36;
     for (const std::string& l : lines) {
       SDL_RenderDebugText(m_ren, m_ox + 12, y, l.c_str());

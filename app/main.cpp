@@ -91,7 +91,7 @@ void startWindowThread() {
         const auto& settings = tz::host::settings();
         RECT rect{0, 0, settings.windowWidth, settings.windowHeight};
         AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
-        HWND window = CreateWindowExW(0, windowClass.lpszClassName, L"Tenchu Z", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+        HWND window = CreateWindowExW(0, windowClass.lpszClassName, L"Tenchu Z Recomp", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                                       CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr,
                                       windowClass.hInstance, nullptr);
         tz::host::initializeInput(window);
@@ -242,7 +242,7 @@ void startWindowThread() {
     std::thread([] {
         if (!SDL_Init(SDL_INIT_VIDEO)) tz::fatal("Cannot open a window: %s", SDL_GetError());
         const auto& settings = tz::host::settings();
-        SDL_Window* window = SDL_CreateWindow("Tenchu Z", settings.windowWidth, settings.windowHeight,
+        SDL_Window* window = SDL_CreateWindow("Tenchu Z Recomp", settings.windowWidth, settings.windowHeight,
                                               SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN);
         if (!window) tz::fatal("Cannot open a window: %s", SDL_GetError());
         tz::host::initializeInput(window);
