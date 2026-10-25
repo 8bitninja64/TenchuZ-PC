@@ -25,8 +25,9 @@ struct PostConstants {
     float sharpness;
     uint32_t debugView;
     int32_t blurStep[2];
+    int32_t boxSize, unused[3];
 };
-static_assert(sizeof(PostConstants) == 80, "PostFx layout");
+static_assert(sizeof(PostConstants) == 96, "PostFx layout");
 
 // Occlusion fades out toward this view depth (game units, about centimeters): fog
 // covers distant surfaces, and their occlusion radius is a pixel or less anyway.
@@ -49,6 +50,7 @@ cbuffer PostFx : register(b0) {
     float sharpness;       // CAS sharpness 0-1; negative = no sharpening
     uint debugView;        // 1: the occlusion alone (TENCHU_TRACE=aoview)
     int2 blurStep;         // (1, 0) or (0, 1)
+    int boxSize;           // stable bloom: source texels per target texel and axis
 };
 SamplerState pointClamp : register(s0);
 static const float PI = 3.14159265, HALF_PI = 1.57079633;
@@ -204,6 +206,16 @@ float4 apply(float4 position : SV_Position) : SV_Target {
     }
     return color;
 }
+
+// ---- Stable bloom: the average of each boxSize x boxSize block (one guest texel).
+Texture2D boxIn : register(t0);
+float4 downsample(float4 position : SV_Position) : SV_Target {
+    int2 p = int2(position.xy) * boxSize;
+    float4 sum = 0.0;
+    for (int y = 0; y < boxSize; ++y)
+        for (int x = 0; x < boxSize; ++x) sum += boxIn.Load(int3(p + int2(x, y), 0));
+    return sum / float(boxSize * boxSize);
+}
 )";
 
 float dot3(const float a[3], const float b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
@@ -257,7 +269,7 @@ void PostEffects::initialize(ID3D11Device* device, ID3D11DeviceContext* context)
         release(code);
     }
     const std::pair<const char*, ID3D11PixelShader**> pixelShaders[] = {
-        {"prepass", &prepass_}, {"gtao", &gtao_}, {"blur", &blur_}, {"apply", &apply_}};
+        {"prepass", &prepass_}, {"gtao", &gtao_}, {"blur", &blur_}, {"apply", &apply_}, {"downsample", &downsample_}};
     for (const auto& [entry, shader] : pixelShaders)
         if (ID3DBlob* code = compile(entry, "ps_5_0")) {
             device_->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader);
@@ -274,7 +286,7 @@ void PostEffects::initialize(ID3D11Device* device, ID3D11DeviceContext* context)
     sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     sampler.MaxLOD = D3D11_FLOAT32_MAX;
     device_->CreateSamplerState(&sampler, &pointClamp_);
-    ready_ = vertex_ && prepass_ && gtao_ && blur_ && apply_ && constants_ && pointClamp_;
+    ready_ = vertex_ && prepass_ && gtao_ && blur_ && apply_ && downsample_ && constants_ && pointClamp_;
     if (!ready_) logf("[postfx] unavailable (shader or state creation failed)");
 }
 
@@ -359,6 +371,22 @@ void PostEffects::writeConstants(const void* data, size_t size) {
     context_->Unmap(constants_, 0);
 }
 
+// State shared by all passes; the backend sets all of its own again afterwards
+// (forgetBoundState).
+void PostEffects::bindCommonState() {
+    ID3D11ShaderResourceView* unbound[16] = {};
+    context_->PSSetShaderResources(0, 16, unbound);
+    context_->IASetInputLayout(nullptr);
+    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context_->VSSetShader(vertex_, nullptr, 0);
+    context_->GSSetShader(nullptr, nullptr, 0);
+    context_->RSSetState(nullptr);
+    context_->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+    context_->OMSetDepthStencilState(nullptr, 0);
+    context_->PSSetSamplers(0, 1, &pointClamp_);
+    context_->PSSetConstantBuffers(0, 1, &constants_);
+}
+
 void PostEffects::pass(ID3D11PixelShader* shader, const Target& target, ID3D11ShaderResourceView* const* inputs,
                        UINT count) {
     context_->OMSetRenderTargets(1, &target.target, nullptr);
@@ -412,19 +440,7 @@ ID3D11ShaderResourceView* PostEffects::processScene(ID3D11Texture2D* scene, ID3D
         return nullptr;
     }
 
-    // Common state; the backend sets all of its own again afterwards (forgetBoundState).
-    ID3D11ShaderResourceView* unbound[16] = {};
-    context_->PSSetShaderResources(0, 16, unbound);
-    context_->IASetInputLayout(nullptr);
-    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context_->VSSetShader(vertex_, nullptr, 0);
-    context_->GSSetShader(nullptr, nullptr, 0);
-    context_->RSSetState(nullptr);
-    context_->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-    context_->OMSetDepthStencilState(nullptr, 0);
-    context_->PSSetSamplers(0, 1, &pointClamp_);
-    context_->PSSetConstantBuffers(0, 1, &constants_);
-
+    bindCommonState();
     PostConstants k{};
     static const bool aoView = traceEnabled("aoview");
     k.debugView = aoView ? 1 : 0;
@@ -474,6 +490,25 @@ ID3D11ShaderResourceView* PostEffects::processScene(ID3D11Texture2D* scene, ID3D
     return output_.view;
 }
 
+ID3D11ShaderResourceView* PostEffects::bloomSource(ID3D11ShaderResourceView* sceneView, UINT guestWidth,
+                                                   UINT guestHeight, uint32_t scale, uint64_t generation) {
+    if (!ready_ || scale < 2) return nullptr;
+    if (bloomValid_ && sceneView == bloomScene_ && generation == bloomGeneration_) return bloom_.view;
+    if (!ensure(bloom_, guestWidth, guestHeight, DXGI_FORMAT_R16G16B16A16_FLOAT)) {
+        bloomValid_ = false;
+        return nullptr;
+    }
+    bindCommonState();
+    PostConstants k{};
+    k.boxSize = int32_t(scale);
+    writeConstants(&k, sizeof(k));
+    pass(downsample_, bloom_, &sceneView, 1);
+    bloomScene_ = sceneView;
+    bloomGeneration_ = generation;
+    bloomValid_ = true;
+    return bloom_.view;
+}
+
 void PostEffects::endFrame() {
     logStatus();
     const Candidate* best = nullptr;
@@ -482,7 +517,7 @@ void PostEffects::endFrame() {
     lastFrameValid_ = best != nullptr;
     if (best) lastFrame_ = best->projection;
     candidateCount_ = offered_ = 0;
-    lastValid_ = false;
+    lastValid_ = bloomValid_ = false;
 }
 
 // TENCHU_TRACE=postfx, once a second: the camera the vote chose (expect aspect 1.778 and a

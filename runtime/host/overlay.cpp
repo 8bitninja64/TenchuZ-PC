@@ -381,6 +381,8 @@ bool drawGraphics(Settings& st) {
     }
     ImGui::TextDisabled("Soft shadows in corners, under eaves and around objects on the ground.");
     changed |= ImGui::SliderInt("Sharpening", &st.sharpening, 0, 100, st.sharpening ? "%d%%" : "Off");
+    changed |= ImGui::Checkbox("Stable bloom", &st.stableBloom);
+    ImGui::TextDisabled("Above 720p internal resolution: bloom from the original footprint, no sparkle.");
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextDisabled("Applied on the next start:");

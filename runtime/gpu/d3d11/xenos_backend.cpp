@@ -219,6 +219,8 @@ D3D11_COMPARISON_FUNC comparison(uint32_t function) {
 // into the 1280-pitch target): the last 3D draw of a gameplay frame; the HUD follows it
 // in the same target, then the target is resolved to the front buffer.
 constexpr uint64_t kSceneCompositeShader = 0x7582CB38B8D839B4ull;
+// The bloom chain's first step: 16 taps of the 1280x720 scene (fetch constant 1) into 320x180.
+constexpr uint64_t kBloomShrinkShader = 0x723D9B291D342106ull;
 
 }  // namespace
 
@@ -1112,6 +1114,19 @@ struct XenosBackend::Impl {
         }
     }
 
+    // Stable bloom ([graphics] stable_bloom): at resolution scales above 1 the bloom shrink
+    // reads the scene box-filtered back to its guest size, the footprint its taps were made
+    // for (post_effects.h). Normalized UVs, so the binding's texture scale stays right.
+    void substituteBloomSource(const xenos::ShaderInfo& info, ID3D11ShaderResourceView** views, UINT count) {
+        ResolvedTexture* scene = count ? resolvedBinding(info, 0) : nullptr;
+        if (!scene || views[0] != scene->view) return;
+        auto* view = postEffects.bloomSource(scene->view, scene->width, scene->height, renderScale, resolveGeneration);
+        if (view) {
+            views[0] = view;
+            forgetBoundState();  // the pass bound its own pipeline
+        }
+    }
+
     // TENCHU_TRACE=postfx: names other shaders that look like a scene composite (a
     // rectangle into a single-sample target, reading a resolved R32 depth and a resolved
     // RGBA8 image of the same size), e.g. cutscene or underwater variants not hooked yet.
@@ -1422,6 +1437,9 @@ struct XenosBackend::Impl {
         }
         if (ps && psHash == kSceneCompositeShader) {
             if (postEffects.enabled()) substituteCompositeScene(ps->info, pixelViews, pixelViewCount);
+        } else if (ps && psHash == kBloomShrinkShader) {
+            if (renderScale > 1 && host::settings().stableBloom)
+                substituteBloomSource(ps->info, pixelViews, pixelViewCount);
         } else if (ps && rectangles && tracePostFx && firstTarget->samples == 1 && pixelViewCount >= 2) {
             noteCompositeCandidate(psHash, ps->info, pixelViewCount);
         }

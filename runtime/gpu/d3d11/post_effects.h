@@ -3,8 +3,9 @@
 // composites its 3D scene, before the HUD is drawn: ambient occlusion (a simplified GTAO,
 // after Intel's XeGTAO, MIT) from the resolved depth, and contrast-adaptive sharpening
 // (after AMD FidelityFX CAS, MIT). The composite then reads the processed copy instead of
-// the scene resolve; guest memory and every other draw are untouched. Runs on the command
-// processor thread, which owns the context.
+// the scene resolve; guest memory and every other draw are untouched. Also the steadier
+// bloom source for internal resolutions above 720p. Runs on the command processor thread,
+// which owns the context.
 #include <d3d11.h>
 #include <cstdint>
 
@@ -34,6 +35,12 @@ public:
     ID3D11ShaderResourceView* processScene(ID3D11Texture2D* scene, ID3D11ShaderResourceView* sceneView,
                                            ID3D11Texture2D* depth, ID3D11ShaderResourceView* depthView,
                                            uint64_t generation);
+    // Stable bloom at resolution scales above 1: the bloom shrink's 16 taps sample the scaled
+    // scene at fixed UV offsets, so each covers 1/scale^2 of its original footprint and small
+    // highlights sparkle. It reads this instead: the scene averaged back to its guest size
+    // (FP16, so dim lights keep their energy), as The Darkness Recomp's logical bloom view.
+    ID3D11ShaderResourceView* bloomSource(ID3D11ShaderResourceView* sceneView, UINT guestWidth, UINT guestHeight,
+                                          uint32_t scale, uint64_t generation);
     // Why the composite was left alone (logged with TENCHU_TRACE=postfx).
     void skipped(const char* reason);
     // The last processed scene (dumpframe), or nullptr.
@@ -50,6 +57,7 @@ private:
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     };
     bool ensure(Target& target, UINT width, UINT height, DXGI_FORMAT format);
+    void bindCommonState();
     void writeConstants(const void* data, size_t size);
     void pass(ID3D11PixelShader* shader, const Target& target, ID3D11ShaderResourceView* const* inputs, UINT count);
     const Projection* projection() const;
@@ -63,9 +71,10 @@ private:
     ID3D11PixelShader* gtao_ = nullptr;     // half-res (visibility, view depth)
     ID3D11PixelShader* blur_ = nullptr;     // depth-aware, one axis
     ID3D11PixelShader* apply_ = nullptr;    // full res: sharpening, upsampled occlusion
+    ID3D11PixelShader* downsample_ = nullptr;  // stable bloom: box filter to the guest size
     ID3D11Buffer* constants_ = nullptr;
     ID3D11SamplerState* pointClamp_ = nullptr;
-    Target viewDepth_, occlusion_[2], output_;
+    Target viewDepth_, occlusion_[2], output_, bloom_;
 
     // Projection votes of this frame's depth-writing draws; the winner of the last frame
     // stands in when a frame has none.
@@ -83,6 +92,9 @@ private:
     ID3D11ShaderResourceView* lastDepth_ = nullptr;
     uint64_t lastGeneration_ = ~0ull;
     bool lastValid_ = false;
+    ID3D11ShaderResourceView* bloomScene_ = nullptr;
+    uint64_t bloomGeneration_ = ~0ull;
+    bool bloomValid_ = false;
     // TENCHU_TRACE=postfx: once a second, the projection and how composites went.
     const char* skipReason_ = nullptr;
     uint32_t applied_ = 0, skippedCount_ = 0;
