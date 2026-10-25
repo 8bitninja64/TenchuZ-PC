@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 using namespace tz;
@@ -119,6 +120,100 @@ TZ_OVERRIDE(8228E5C8) {
     uint32_t outBits;
     std::memcpy(&outBits, &out, 4);
     store32(0x82B577BC, outBits);
+}
+
+// Game camera (class vtable 0x821DB970, update sub_823E1F30). It adds the frame's ms to a
+// carry (+348) and advances in fixed 16 ms steps (+432: steps this frame), so above 62.5 fps
+// it only moves on some frames: every other frame at 120 fps, while the player moves every
+// frame (the character shook on screen while running). For the frame's view, the camera copy
+// (sub_823E0C40, which hands eye +16 and target +32 to the renderer) gets the camera
+// interpolated between its last two steps by the carry, as fixed-step games render: the
+// interpolated eye and target are written into the camera for the copy (at its view-matrix
+// call, sub_823E1328) and the true ones put back before the camera's next update.
+// TENCHU_TRACE=nocamlerp disables it.
+namespace {
+struct CameraSteps {
+    float previous[8] = {}, current[8] = {};  // eye xyzw, target xyzw
+    float fraction = 1.0f;                    // carry / 16 ms
+    bool shown = false;                       // the camera holds the interpolated values
+};
+std::unordered_map<uint32_t, CameraSteps> g_cameraSteps;  // title thread only
+
+float loadFloat(uint32_t address) {
+    const uint32_t bits = load32(address);
+    float value;
+    std::memcpy(&value, &bits, 4);
+    return value;
+}
+void readCamera(uint32_t camera, float out[8]) {
+    for (uint32_t i = 0; i < 4; ++i) {
+        out[i] = loadFloat(camera + 16 + i * 4);
+        out[4 + i] = loadFloat(camera + 32 + i * 4);
+    }
+}
+void writeCamera(uint32_t camera, const float values[8]) {
+    for (uint32_t i = 0; i < 8; ++i) {
+        uint32_t bits;
+        std::memcpy(&bits, &values[i], 4);
+        store32(camera + (i < 4 ? 16 + i * 4 : 32 + (i - 4) * 4), bits);
+    }
+}
+// As lvx loads it: the 16 big-endian bytes of x, y, z, w, reversed.
+void setVector(PPCVRegister& v, const float values[4]) {
+    uint8_t bytes[16];
+    for (int i = 0; i < 4; ++i) {
+        uint32_t bits;
+        std::memcpy(&bits, &values[i], 4);
+        bits = _byteswap_ulong(bits);
+        std::memcpy(bytes + i * 4, &bits, 4);
+    }
+    for (int i = 0; i < 16; ++i) v.u8[i] = bytes[15 - i];
+}
+}  // namespace
+
+TZ_OVERRIDE(823E1F30) {
+    const uint32_t camera = ctx.r3.u32;
+    CameraSteps& steps = g_cameraSteps[camera];
+    if (steps.shown) {  // the true state back before the camera moves on
+        writeCamera(camera, steps.current);
+        steps.shown = false;
+    }
+    float before[8], after[8];
+    readCamera(camera, before);
+    __imp__sub_823E1F30(ctx, base);
+    readCamera(camera, after);
+    const uint32_t count = load32(camera + 432);
+    if (count >= 1) {
+        // The state one step back: several steps in a frame (60 fps and below) are taken
+        // as even parts of the frame's move.
+        for (int i = 0; i < 8; ++i) steps.previous[i] = before[i] + (after[i] - before[i]) * float(count - 1) / float(count);
+        std::memcpy(steps.current, after, sizeof(after));
+    } else if (std::memcmp(after, steps.current, sizeof(after)) != 0) {
+        // Moved without a step (a cut): show the camera as it is.
+        std::memcpy(steps.previous, after, sizeof(after));
+        std::memcpy(steps.current, after, sizeof(after));
+    }
+    steps.fraction = std::clamp(loadFloat(camera + 348) / 16.0f, 0.0f, 1.0f);
+}
+
+TZ_OVERRIDE(823E1328) {
+    static const bool off = traceEnabled("nocamlerp");
+    if (!off && uint32_t(ctx.lr) == 0x823E0D3C) {  // the per-frame camera copy (r31: the camera)
+        const uint32_t camera = ctx.r31.u32;
+        const auto it = g_cameraSteps.find(camera);
+        float now[8];
+        if (it != g_cameraSteps.end() && !it->second.shown &&
+            (readCamera(camera, now), std::memcmp(now, it->second.current, sizeof(now)) == 0)) {
+            CameraSteps& steps = it->second;
+            float shown[8];
+            for (int i = 0; i < 8; ++i) shown[i] = steps.previous[i] + (steps.current[i] - steps.previous[i]) * steps.fraction;
+            writeCamera(camera, shown);  // the copy stores these after this call
+            steps.shown = true;
+            setVector(ctx.v1, shown);      // eye
+            setVector(ctx.v2, shown + 4);  // target
+        }
+    }
+    __imp__sub_823E1328(ctx, base);
 }
 
 // Frame time (sub_822929D0 stores milliseconds per frame at 0x82B57824). Effect code

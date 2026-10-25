@@ -5,6 +5,8 @@
 823D4440  # zone iterator (native version)
 8228E5C8  # frame delta: smoothed to the display period
 822929D0  # frame timer: carried 30 Hz ticks and whole milliseconds
+823E1F30  # game camera update: remembers its last two 16 ms steps
+823E1328  # view matrix from eye/target: the camera interpolated between its steps
 822A5CB8  # front end per-frame callbacks (30 fps hold): title screen
 822A2370
 822A2CC0  # "Load game?"

@@ -1488,6 +1488,16 @@ struct XenosBackend::Impl {
             }
         }
         addTime(hostTime[4], constantsStart);
+        // TENCHU_TRACE=judder: the first static-mesh draw's view-projection rows (c0-c3) per
+        // frame, to follow where the player lands on screen (pair with trace 'playerpos').
+        static const bool traceJudder = traceEnabled("judder");
+        if (traceJudder && vsHash == 0x823563D4BC2C4D10ull && judderFrame != frames) {
+            judderFrame = frames;
+            const auto* c = reinterpret_cast<const float*>(constantRegisters);
+            logf("[judder] %llu %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g",
+                 (unsigned long long)(frames + 1), c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10],
+                 c[11], c[12], c[13], c[14], c[15]);
+        }
 
         // Pipeline (only what changed since the last draw).
         if (!bound.valid) {
@@ -1971,6 +1981,7 @@ struct XenosBackend::Impl {
     ID3D11Texture2D* sceneOnly = nullptr;
     ID3D11ShaderResourceView* sceneOnlyView = nullptr;
     uint64_t sceneOnlyFrame = ~0ull;
+    uint64_t judderFrame = ~0ull;  // trace 'judder'
 
     void copySceneOnly(const RenderTarget& target, const D3D11_RECT& scissor) {
         // The front buffer is resolved from the target's top left corner.

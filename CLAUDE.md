@@ -208,6 +208,15 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   120 fps (player shook against the camera: "motion blur" while running); the override
   smooths it (display period while the limit holds, else an average; the rest carried).
   TENCHU_TRACE=rawdelta disables it; TENCHU_TRACE=playerpos logs ms and position per frame.
+- Game camera (vtable 0x821DB970, update sub_823E1F30) steps in fixed 16 ms steps (carry
+  +348, steps +432), so above 62.5 fps it moved every other frame: the real cause of the
+  "motion blur" on the character. The camera copy sub_823E0C40 (eye +16, target +32 to the
+  renderer via globals 0x8340BD80/BD50) now gets the camera interpolated between its last
+  two steps (written into the camera for the copy, true state restored before the next
+  update; native_overrides.cpp). TENCHU_TRACE=judder logs the first static mesh's
+  view-projection rows per frame (project the player with them to see on-screen motion);
+  nocamlerp disables the interpolation. Lighting features cost ~1%: the hideout runs ~190
+  fps unlimited either way (CPU-bound emulation).
 - User clip planes: PA_CL_CLIP_CNTL bits 0-5 + PA_CL_UCP_n (0x2388) become SV_ClipDistance
   in translated vertex shaders (cbuffer b2). The water reflection pass clips at the water
   plane with plane 0; without it submerged legs showed upside down. TENCHU_TRACE=noucp.
