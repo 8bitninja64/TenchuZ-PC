@@ -1,6 +1,6 @@
 # Tenchu Z Recomp
 
-A native Windows x64 port of **Tenchu Z (Xbox 360)** by static recompilation,
+A native Windows and Linux x64 port of **Tenchu Z (Xbox 360)** by static recompilation,
 modeled on [The Darkness Recomp](https://github.com/portingpete/The-Darkness-Recomp).
 The 360 executable is translated ahead of time to C++ with XenonRecomp and
 linked against a native runtime: no emulation at runtime.
@@ -19,8 +19,8 @@ hideout and missions with D3D11 rendering at the original 30 fps.
 | XEX decode (AES + basic compression) | done: `tools/xex_image.py` |
 | AOT translation | complete: 15,666 functions, 62 units |
 | Kernel / XAM runtime | threads, sync, files, saves (XAM content), profile settings |
-| Graphics | Xenos command processor + microcode-to-HLSL translator on D3D11 |
-| Audio | XAudio2 output; XMA decoder hardware emulated with FFmpeg |
+| Graphics | Xenos command processor + microcode-to-HLSL translator on D3D11 (Linux: DXVK-native on Vulkan, vkd3d-shader) |
+| Audio | XAudio2 output (Linux: SDL3); XMA decoder hardware emulated with FFmpeg |
 | Movies | the game's own WMV player, real time |
 | Input | any controller via SDL3 (Xbox, PlayStation, Switch, 8BitDo...), keyboard and mouse (rebindable) |
 | Modern features | 60 fps and higher, resolution scaling up to 4x (4K = scale 3), borderless fullscreen, HDR10, ambient occlusion, sharpening, MSAA up to 8x |
@@ -56,6 +56,22 @@ data; never share the `tenchu_game.dll` built from your disc.
 
 Windows 10/11 64-bit with a Direct3D 11 graphics card. The Visual C++ runtime is included.
 
+## Playing on Linux and Steam Deck
+
+1. Download `TenchuZ-linux-x64.tar.xz` from the [Releases](../../releases) page and unpack it
+   anywhere you can write to (`tar xf TenchuZ-linux-x64.tar.xz`).
+2. Run `TenchuZ/TenchuZ` and pick your disc image when asked (a file chooser through
+   `zenity` or `kdialog`; or pass the image's path: `./TenchuZ "path/to/Tenchu Z.iso"`).
+3. On the first start a window asks to compile the game code from your disc and shows the
+   progress. Everything it needs comes with the game (including a compiler, so SteamOS works
+   as it is) apart from `python3`, which SteamOS and desktop distributions include.
+
+Needs x86-64 Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Mint 21, Fedora,
+Arch, SteamOS) and a Vulkan 1.3 driver. On a Steam Deck in Game Mode, add `TenchuZ` as a
+non-Steam game (no Proton). The compiled game code (`tenchu_game.so`), saves and profile
+settings live in `~/.local/share/TenchuZRecomp` (`$XDG_DATA_HOME`). Updates work as on
+Windows (F1 > Update, with the system's `curl`). HDR output is Windows-only for now.
+
 ## Building from source
 
 Requirements: Git, Python 3.11+ and Visual Studio 2022 (Build Tools are enough) with C++
@@ -88,6 +104,24 @@ makes the release (`dist/TenchuZ-windows-x64.zip`, about 4 MB): the runtime, its
 the kit the first start compiles the game module with. It refuses to package anything
 derived from the game. `tools/make_module.ps1 -Xex <default.xex>` builds only the module,
 as a release's first start does.
+
+### Linux
+
+On Ubuntu/Debian, `sudo tools/install_linux_deps.sh` installs the compilers and headers
+(other distributions: clang, CMake, Ninja, Meson, glslang, bison, flex, nasm and SDL3's
+X11/Wayland/audio development packages). Then
+
+```bash
+tools/build_linux.sh "path/to/Tenchu Z (USA, Europe) (En,Fr,De,Es,It).iso"
+```
+
+builds the generator (`../_Tools/XenonRecomp/build-linux`), the libraries (vkd3d-shader,
+SDL3, DXVK-native and FFmpeg from pinned sources, `tools/setup_linux_deps.sh`), the game
+module and the runtime into `build/linux-clang`. `TENCHU_SKIP_RECOMP=1` builds the runtime
+alone. Releases are built like CI does, in an Ubuntu 22.04 container
+(`tools/build_linux_release.sh`), then packaged with `tools/package_linux.sh`, which adds a
+trimmed [Zig](https://ziglang.org) as the first start's compiler. `tools/make_module.sh
+<default.xex>` builds only the module.
 
 The game code is a separate module, `tenchu_game.dll`, translated from your
 `default.xex`; `TenchuZ.exe` contains none of it (`runtime/guest/module_abi.h`, modeled
@@ -125,7 +159,8 @@ RTX 3070 laptop; menus and the hideout run far higher.
   Esc releases it (and opens the menu). Default buttons: Space = A, C = B, left mouse = X,
   right mouse = Y, Q/E = LB/RB, F/R = LT/RT, Enter or P = Start, Tab = Back,
   arrows or 1-4 = d-pad.
-- Saves and profile settings are stored in `%APPDATA%\TenchuZRecomp`.
+- Saves and profile settings are stored in `%APPDATA%\TenchuZRecomp` (Linux:
+  `~/.local/share/TenchuZRecomp`).
 
 ## Layout
 
@@ -139,10 +174,12 @@ RTX 3070 laptop; menus and the hideout run far higher.
 | `runtime/gpu/` | Xenos command processor, shader translator, D3D11 backend |
 | `runtime/audio/` | XAudio render driver, XMA decoder contexts |
 | `runtime/host/` | settings, keyboard and mouse |
-| `app/` | window and entry point |
+| `runtime/platform/` | Linux: Win32 compatibility, SDL3 window messages, D3DCompile on vkd3d-shader; portable crypto |
+| `app/` | window, entry point, disc choice and first start |
 | `tools/patches/` | generator patch series (Darkness fixes + Tenchu Z additions) |
 | `game/` | optional extracted disc for development (ignored by Git) |
 | `tools/build.ps1`, `make_module.ps1`, `package.ps1` | one-command build, module build, release |
+| `tools/build_linux.sh`, `make_module.sh`, `package_linux.sh` | the same on Linux |
 
 ## License and credits
 
@@ -154,3 +191,7 @@ The first-start module build follows the NFL Blitz 2003 port.
 Audio and movie decoding use FFmpeg (LGPL 2.1+), built from pinned source with
 a small opt-in patch to its XMA decoder; `tools/build_xma_codec.py` keeps the
 patch, provenance and license files beside the DLLs.
+On Linux, Direct3D 11 runs on Vulkan through DXVK-native (zlib), shaders compile with
+vkd3d-shader (LGPL 2.1+, with a small patch in `tools/patches`), and the window, input and
+sound use SDL3 (zlib). The Linux release bundles a trimmed Zig toolchain (MIT, with its
+bundled licenses) for the first-start compile.

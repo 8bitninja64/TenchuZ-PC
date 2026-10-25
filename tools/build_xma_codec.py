@@ -13,7 +13,7 @@ llvm-lib from Visual Studio. Output: build/deps/ffmpeg (bin, include, lib).
 
 On Linux it builds natively with the system compiler (CC, else gcc or clang from
 PATH) and make: same source, patch and feature set, pthreads, PIC shared libraries
-(libavcodec-tenchu.so.62 ...), installed into build/deps-linux/ffmpeg (include, lib).
+(libavcodec-tenchu.so.62 ...), installed into build/deps-linux/ffmpeg (include, lib; TENCHU_DEPS_DIR moves it).
 Objects are built under TENCHU_DEPS_WORK (default ~/tenchu-deps), off the slow
 /mnt drive when the repository lives on Windows. No rpath is set on the libraries:
 the executable's $ORIGIN rpath finds them.
@@ -36,7 +36,7 @@ TOOLS = ROOT.parent / '_Tools'
 MSYS = next((path for path in ([Path(os.environ['TENCHU_MSYS2'])] if 'TENCHU_MSYS2' in os.environ else [])
              + [TOOLS / 'msys64', Path('C:/msys64')] if (path / 'usr/bin/bash.exe').exists()), TOOLS / 'msys64')
 DEPS = ROOT / 'build' / 'deps'
-DEPS_LINUX = ROOT / 'build' / 'deps-linux'
+DEPS_LINUX = Path(os.environ.get('TENCHU_DEPS_DIR', ROOT / 'build' / 'deps-linux'))
 WORK_LINUX = Path(os.environ.get('TENCHU_DEPS_WORK', Path.home() / 'tenchu-deps'))
 COMMIT = '1c2c67c0b9f7f66ab32c19dcf7f227bcd290aa4c'  # FFmpeg n8.1.2
 ARCHIVE_HASH = '1291ae49c285f7bd55c7c059aa43f1a0fd784a1ae22d5c76297dcd11c531248a'

@@ -282,6 +282,38 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   (TENCHU_TRACE=hudmask screenshots show it). Nits 0 = the display's peak / Windows' SDR
   white (polled on its own thread).
 
+## Linux (2026-10-25)
+- Same renderer: D3D11 through DXVK-native 3.1.1 (SDL3 WSI, DXVK_WSI_DRIVER=SDL3 set in main),
+  HLSL through vkd3d-shader 1.19 (runtime/platform/d3dcompile_vkd3d.cpp: own D3DCompile, since
+  vkd3d-utils' COM uses ms_abi; prelude defines isnan/isfinite; failures are logged
+  [d3dcompile]). tools/patches/vkd3d-clipdistance.patch: SV_ClipDistance in VS/GS/PS signatures
+  and GS input arrays (rectangle lists drew half quads without it). 2x MSAA is optional in
+  Vulkan: validatedMsaa falls back to 4x, else 1x (lavapipe).
+- Platform layer: runtime/platform/win32_compat.h (force-included on Linux: small Win32 calls,
+  VK_/WM_ constants, waitable timers), win32_files.h (CreateFileW/ReadFile/... on fds, FILETIME),
+  window_sdl.cpp (SDL events -> the Win32 messages input.cpp and the F1 menu already handle;
+  PostMessageW = SDL user event; platform::currentEvent() for ImGui's SDL3 backend and relative
+  mouse motion). kernel/fault.cpp: one access-fault dispatcher (vectored handler / SIGSEGV with
+  REG_ERR bit 1 = write) for the watched pages and MMIO. Memory: mmap PROT_NONE 4 GiB + memfd
+  mapped at A0/C0/E0 (E at offset 4 KiB). Guest threads: pthreads with 16 MB stacks; Suspend is
+  cooperative (new threads start suspended; waits are suspension points). Crypto (XEX AES,
+  SHA-256) is portable (runtime/platform/crypto.cpp) on both platforms. watchw and hostprof are
+  Windows-only. User dir $XDG_DATA_HOME/TenchuZRecomp (userDataDirectory()).
+- Module: tools/make_module.sh (bundled Zig from tools/zig.tar.xz, else clang++; g++ cannot
+  build the generated code), compile_module.py's Linux mode, first start window
+  app/first_start_linux.cpp (from Blitz). The Linux generator is built with
+  -DCMAKE_CXX_FLAGS=-UXENON_RECOMP_USE_ALIAS: its output is then byte-identical to the MSVC
+  generator's (with aliases it emits weak aliases instead of wrappers). recompile.py runs on
+  Python 3.10 (TOML subset reader, no file_digest); xex_image.py decrypts with libcrypto via
+  ctypes or pure Python.
+- Build: tools/build_linux.sh (dev, build/linux-clang), tools/build_linux_release.sh (Ubuntu
+  22.04 container, CI), tools/package_linux.sh (TENCHU_MAX_GLIBC=2.35). Dependencies:
+  tools/install_linux_deps.sh (apt), tools/setup_linux_deps.sh (pinned sources into
+  build/deps-linux or TENCHU_DEPS_DIR; work tree TENCHU_DEPS_WORK, default ~/tenchu-deps).
+- WSL testing (Ubuntu 26.04, lavapipe, WSLg): scripts in build/linux (build_runtime.sh,
+  module_build.sh, run_title.sh with a control file; nav_hideout.txt). Copy saves into
+  ~/.local/share/TenchuZRecomp/content or the game starts at character creation.
+
 ## D3D facts (device at *VdGlobalDevice = 0x40001600)
 - Present = sub_8241BDE0 (park GPU on SCRATCH1 + vsync callback 8241BD50) then
   sub_8241BF50. Interrupt handler 82425D88. Kick-off thread 82431D28 runs recorded
