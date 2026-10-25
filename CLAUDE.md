@@ -253,6 +253,12 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   (rise 232 -> 402), run (top speed x1.75, also when on before spawning), data patches; the
   damage hook sees player attacks (TENCHU_TRACE=cheats logs every damage call). Guards block
   most swings, so a boosted normal hit (one-hit kills) was not observed yet.
+  Costumes: equipped menu choice u8 PROFILE+528+c (c 0 hair, 1 hood, 2 torso, 3 waist cloth,
+  4 arms, 5 legs, 6 scabbard, 7/8 swords); the model is built from a 192-byte descriptor at
+  PROFILE+672 (+0 face, +4 hood, +8 arms, +0xC torso, +0x10 waist, +0x14 legs, variants
+  +0x18.., +0x30 hair, +0x8C gender) copied by sub_8234BDD0 into the costume object
+  (player+0x1250) and loaded by the PlayerModelLoad task (sub_8234B558; -1 skips a slot). Parts
+  are complete meshes (no body underneath); index 0 of arms/torso/legs is bare skin.
   Testing aids: control "poke <addr> <hex>..." writes guest words; the player moves by
   writing both +0x70 and +0xD80 (x, y, z floats). A closed-loop test bot (peek positions,
   steer the stick from the observed motion, teleport next to a guard) drove these checks.

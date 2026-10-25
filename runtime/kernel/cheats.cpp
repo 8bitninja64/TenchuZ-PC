@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 
 namespace tz::cheats {
@@ -19,7 +20,7 @@ namespace {
 enum Cheat {
     kInfiniteHealth, kOneHitKills, kInvisible, kSilent, kInfiniteItems, kCurePoison, kUnbreakableGuard,
     kSuperJump, kFastRun, kLowGravity, kFastGrapple, kLongGrapple, kSoftLanding, kFreeShopping, kBestRank,
-    kPerfectStealth,
+    kPerfectStealth, kNudeNinja,
     kMaxMoney, kUnlockSkills, kFillStock, kAllCostumes,
     kCount
 };
@@ -41,6 +42,7 @@ const Info kInfo[kCount] = {
     {"shopping", "Free shopping", "Buying items, skills and costumes costs nothing (you still need the money to afford them).", false},
     {"rank", "Grand Master rank", "Every mission ends with at least the top score (900). It is saved as the mission's best.", false},
     {"stealth", "Perfect stealth record", "Detections and combat time do not count against your mission score.", false},
+    {"nude", "Nude Ninja", "Your ninja wears nothing but skin (no hood, bare arms, torso and legs). Takes effect the next time the character appears: start or restart a mission, or go back to the hideout. Your saved costume is not changed.", false},
     {"money", "Max money", "Sets your money to 99,999,999.", true},
     {"skills", "Unlock all skills", "Makes every skill available in the skill shop.", true},
     {"stock", "Fill item stock", "Puts 99 of every shop item in your stock (carried ones included).", true},
@@ -314,6 +316,29 @@ TZ_OVERRIDE(82402AF8) {
         ctx.r3.u64 = 900;
         store32(0x8340BF64, 900);
     }
+}
+
+// Costume for a character model (r3 the costume object, r4 the 192-byte descriptor it copies,
+// e.g. the profile's own at PROFILE+672). Nude Ninja hands it the player's costume with the
+// stock bare-skin parts (index 0 of arms, torso and legs: the full-length legs cover the
+// hips) and no hood or waist cloth (-1 skips a slot), then puts the saved values back.
+// Descriptor words: +0x04 hood, +0x08 arms, +0x0C torso, +0x10 waist cloth, +0x14 legs; the
+// variants of those slots at +0x1C..+0x2C.
+TZ_OVERRIDE(8234BDD0) {
+    const uint32_t source = ctx.r4.u32, m = load32(0x82B57814);
+    if (!enabled(kNudeNinja) || !m || !source || source != load32(m + 0x90) + 672) {
+        __imp__sub_8234BDD0(ctx, base);
+        return;
+    }
+    static constexpr uint32_t kBare[][2] = {{0x04, 0xFFFFFFFF}, {0x08, 0}, {0x0C, 0}, {0x10, 0xFFFFFFFF}, {0x14, 0},
+                                           {0x1C, 0}, {0x20, 0}, {0x24, 0}, {0x28, 0}, {0x2C, 0}};
+    uint32_t saved[std::size(kBare)];
+    for (size_t i = 0; i < std::size(kBare); ++i) {
+        saved[i] = load32(source + kBare[i][0]);
+        store32(source + kBare[i][0], kBare[i][1]);
+    }
+    __imp__sub_8234BDD0(ctx, base);  // copies the descriptor into the costume object
+    for (size_t i = 0; i < std::size(kBare); ++i) store32(source + kBare[i][0], saved[i]);
 }
 
 // The grapple's ray length (1400, shared with AI sight) after its load in sub_82363860.

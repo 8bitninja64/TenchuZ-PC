@@ -22,6 +22,7 @@
 8233F240  # player top run speed: fast run
 8229A940  # spend money: free shopping
 82402AF8  # mission score: Grand Master rank
+8234BDD0  # character costume copy: Nude Ninja
 
 # runtime/kernel/diagnostics.cpp
 82413CB0
