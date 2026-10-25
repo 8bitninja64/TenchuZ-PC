@@ -48,6 +48,16 @@ hdr_paper_white_nits = 0
 ; look at paper white; above 100 brightens mid tones too). The HUD stays at paper white.
 hdr_highlights = 100
 
+[graphics]
+; Ambient occlusion: soft shadows in corners, under eaves and around objects standing on
+; the ground, from the depth of the 3D scene (the HUD is not affected). Strength in
+; percent, radius in game units (about centimeters).
+ambient_occlusion = false
+ao_strength = 100
+ao_radius = 80
+; Contrast-adaptive sharpening of the 3D scene in percent (0 = off).
+sharpening = 0
+
 [audio]
 ; Master volume in percent, and mute.
 volume = 100
@@ -148,6 +158,11 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "hdr_peak_nits") settings.hdrPeakNits = automatic(std::stoi(value), 80, 10000);
             else if (key == "hdr_paper_white_nits") settings.hdrPaperWhiteNits = automatic(std::stoi(value), 80, 1000);
             else if (key == "hdr_highlights") settings.hdrHighlights = std::clamp(std::stoi(value), 0, 200);
+        } else if (section == "graphics") {
+            if (key == "ambient_occlusion") settings.ambientOcclusion = parseBool(value);
+            else if (key == "ao_strength") settings.aoStrength = std::clamp(std::stoi(value), 0, 200);
+            else if (key == "ao_radius") settings.aoRadius = std::clamp(std::stoi(value), 10, 400);
+            else if (key == "sharpening") settings.sharpening = std::clamp(std::stoi(value), 0, 100);
         } else if (section == "audio") {
             if (key == "volume") settings.volume = std::clamp(std::stoi(value), 0, 100);
             else if (key == "mute") settings.mute = parseBool(value);
@@ -277,6 +292,10 @@ void saveSettings() {
         {"display", "hdr_peak_nits", std::to_string(s.hdrPeakNits)},
         {"display", "hdr_paper_white_nits", std::to_string(s.hdrPaperWhiteNits)},
         {"display", "hdr_highlights", std::to_string(s.hdrHighlights)},
+        {"graphics", "ambient_occlusion", text(s.ambientOcclusion)},
+        {"graphics", "ao_strength", std::to_string(s.aoStrength)},
+        {"graphics", "ao_radius", std::to_string(s.aoRadius)},
+        {"graphics", "sharpening", std::to_string(s.sharpening)},
         {"audio", "volume", std::to_string(s.volume)},
         {"audio", "mute", text(s.mute)},
         {"input", "mouse_sensitivity", std::to_string(s.mouseSensitivity)},

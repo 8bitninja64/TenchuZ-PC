@@ -71,6 +71,7 @@ add_library(TenchuRuntime OBJECT
     runtime/gpu/d3d11/renderer.cpp
     runtime/gpu/d3d11/xenos_backend.cpp
     runtime/gpu/d3d11/texture_cache.cpp
+    runtime/gpu/d3d11/post_effects.cpp
     runtime/audio/audio_driver.cpp
     runtime/audio/xma.cpp
     runtime/movie/movie_player.cpp)

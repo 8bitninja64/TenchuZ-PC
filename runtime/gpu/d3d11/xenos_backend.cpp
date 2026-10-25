@@ -1,6 +1,7 @@
 #include "xenos_backend.h"
 #include "gpu/registers.h"
 #include "gpu/d3d11/texture_cache.h"
+#include "gpu/d3d11/post_effects.h"
 #include "kernel/kernel.h"
 #include "kernel/control.h"
 #include "host/settings.h"
@@ -775,6 +776,7 @@ struct XenosBackend::Impl {
     std::map<uint32_t, ID3D11RasterizerState*> rasterStates;
     std::map<uint32_t, ID3D11SamplerState*> samplers;
     TextureCache textures;
+    PostEffects postEffects;
     ID3D11Texture2D* whiteTexture = nullptr;
     ID3D11ShaderResourceView* whiteView = nullptr;
 
@@ -929,6 +931,7 @@ struct XenosBackend::Impl {
         device->CreateTexture2D(&texture, &data, &whiteTexture);
         device->CreateShaderResourceView(whiteTexture, nullptr, &whiteView);
         textures.initialize(device, context);
+        postEffects.initialize(device, context);
     }
 
     // ---- Indices -------------------------------------------------------------------
@@ -1043,6 +1046,64 @@ struct XenosBackend::Impl {
             addTime(hostTime[0], textureStart);
         }
         return count;
+    }
+
+    // The resolved texture a shader's texture binding reads (as bindTextures found it), if any.
+    ResolvedTexture* resolvedBinding(const xenos::ShaderInfo& info, UINT slot) {
+        TextureFetch fetch;
+        for (int i = 0; i < 6; ++i)
+            fetch.words[i] = reg(reg::SHADER_CONSTANT_FETCH_00_0 + info.textures[slot].fetchConstant * 6 + i);
+        auto it = resolved.find(fetch.baseAddress() & 0x1FFFFFFF);
+        return it != resolved.end() && it->second.view ? &it->second : nullptr;
+    }
+
+    // Enhanced lighting: the scene composite reads its scene (fetch constant 2) with
+    // ambient occlusion and sharpening applied (post_effects.h), computed from the depth
+    // resolve it reads through fetch constant 3. The substitute has the resolve's size and
+    // format, so the binding's texture scale stays right.
+    void substituteCompositeScene(const xenos::ShaderInfo& info, ID3D11ShaderResourceView** views, UINT count) {
+        int sceneSlot = -1, depthSlot = -1;
+        for (UINT slot = 0; slot < count; ++slot) {
+            if (info.textures[slot].fetchConstant == 2) sceneSlot = int(slot);
+            else if (info.textures[slot].fetchConstant == 3) depthSlot = int(slot);
+        }
+        ResolvedTexture* scene = sceneSlot >= 0 ? resolvedBinding(info, UINT(sceneSlot)) : nullptr;
+        ResolvedTexture* depth = depthSlot >= 0 ? resolvedBinding(info, UINT(depthSlot)) : nullptr;
+        if (!scene || !depth || views[sceneSlot] != scene->view) {
+            postEffects.skipped("the composite does not read a resolved scene and depth");
+            return;
+        }
+        auto* view = postEffects.processScene(scene->texture, scene->view, depth->texture, depth->view, resolveGeneration);
+        if (!view) return;
+        views[sceneSlot] = view;
+        forgetBoundState();  // the passes bound their own pipeline (like resolve())
+        if (dumpFrame()) {
+            CreateDirectoryA("build/resolved", nullptr);
+            saveTexture(postEffects.output(), "build/resolved/postfx_scene.bmp");
+        }
+    }
+
+    // TENCHU_TRACE=postfx: names other shaders that look like a scene composite (a
+    // rectangle into a single-sample target, reading a resolved R32 depth and a resolved
+    // RGBA8 image of the same size), e.g. cutscene or underwater variants not hooked yet.
+    std::set<uint64_t> compositeCandidates;
+    void noteCompositeCandidate(uint64_t psHash, const xenos::ShaderInfo& info, UINT count) {
+        if (compositeCandidates.count(psHash)) return;
+        bool depth = false, color = false;
+        UINT width = 0, height = 0;
+        for (UINT slot = 0; slot < count; ++slot)
+            if (ResolvedTexture* texture = resolvedBinding(info, slot)) {
+                if (texture->format == DXGI_FORMAT_R32_FLOAT) depth = true;
+                else if (texture->format == DXGI_FORMAT_R8G8B8A8_UNORM) color = true;
+                else continue;
+                if (width && (texture->width != width || texture->height != height)) return;
+                width = texture->width;
+                height = texture->height;
+            }
+        if (!depth || !color) return;
+        compositeCandidates.insert(psHash);
+        logf("[postfx] pixel shader %016llX looks like a scene composite (%ux%u), not hooked",
+             (unsigned long long)psHash, width, height);
     }
 
     // ---- Draw ----------------------------------------------------------------------
@@ -1305,6 +1366,11 @@ struct XenosBackend::Impl {
         shared.positionOffset[0] = offset[0] * 2.0f / width - 1.0f;
         shared.positionOffset[1] = 1.0f - offset[1] * 2.0f / height;
         shared.positionOffset[2] = offset[2];
+        // Enhanced lighting: depth-writing draws vote for the camera projection that ambient
+        // occlusion rebuilds view positions with (post_effects.h).
+        if (depthView && (depthControl & 4) && postEffects.wantsProjection())
+            postEffects.noteProjection(reinterpret_cast<const float*>(registers) + reg::SHADER_CONSTANT_000_X, scale[2],
+                                       offset[2]);
         const uint32_t colorControl = reg(reg::RB_COLORCONTROL);
         shared.alphaTest[0] = (colorControl >> 3) & 1 ? float(colorControl & 7) : 7.0f;
         shared.alphaTest[1] = asFloat(reg(reg::RB_ALPHA_REF));
@@ -1324,6 +1390,11 @@ struct XenosBackend::Impl {
         if (textures.pipelineChanges() != texturePipelineChanges) {
             texturePipelineChanges = textures.pipelineChanges();
             forgetBoundState();
+        }
+        if (ps && psHash == kSceneCompositeShader) {
+            if (postEffects.enabled()) substituteCompositeScene(ps->info, pixelViews, pixelViewCount);
+        } else if (ps && rectangles && tracePostFx && firstTarget->samples == 1 && pixelViewCount >= 2) {
+            noteCompositeCandidate(psHash, ps->info, pixelViewCount);
         }
         if (!bound.sharedValid || std::memcmp(&shared, &bound.shared, sizeof(shared)) != 0) {
             bound.shared = shared;
@@ -1608,6 +1679,8 @@ struct XenosBackend::Impl {
     uint64_t frames = 0;
     uint32_t tileDraws[2] = {}, resolves = 0;  // per frame (swap trace)
     const bool flickerLog = traceEnabled("flickerlog");
+    const bool tracePostFx = traceEnabled("postfx");
+    uint64_t resolveGeneration = 0;  // counts every resolve (post effects reuse results within one)
     std::vector<std::string> frameLog, previousFrameLog;  // flickerlog: this and the last good frame
     // Draws skipped since the last swap: mode, count, shader, indices, target, upload, primitive.
     uint64_t dropped[7] = {};
@@ -1630,6 +1703,7 @@ struct XenosBackend::Impl {
         forgetBoundState();  // resolves draw with their own pipeline state
         ScopedTime timed{hostTime[2]};
         ++resolves;
+        ++resolveGeneration;
         if (flickerLog) {
             char line[160];
             snprintf(line, sizeof(line), "resolve control %08X dest %08X pitch %08X wo %08X", reg(reg::RB_COPY_CONTROL),
@@ -1955,6 +2029,7 @@ struct XenosBackend::Impl {
         std::fill(std::begin(dropped), std::end(dropped), 0);
         ++frames;
         updateHotPages();
+        postEffects.endFrame();
         if (control::takeFlag("traceframe")) liveTraceFrame = frames;
         if (control::takeFlag("dumpframe")) liveDumpFrame = frames;
         textures.beginFrame();

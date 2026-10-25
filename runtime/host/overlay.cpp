@@ -51,8 +51,8 @@ bool g_padCaptureArmed = false;
 ULONGLONG g_padCaptureSince = 0;
 std::atomic<bool> g_popupOpen{false};
 
-enum Section { kDisplay, kAudio, kControls, kMissions, kUpdate, kAbout, kSectionCount };
-const char* kSectionNames[kSectionCount] = {"Display", "Audio", "Controls", "Missions", "Update", "About"};
+enum Section { kDisplay, kGraphics, kAudio, kControls, kMissions, kUpdate, kAbout, kSectionCount };
+const char* kSectionNames[kSectionCount] = {"Display", "Graphics", "Audio", "Controls", "Missions", "Update", "About"};
 int g_section = 0;
 // Two panes: choosing a section moves the highlight into its options; B
 // (Backspace) moves it back to the list. Only F1, Esc or Back+Start close the menu.
@@ -366,6 +366,21 @@ bool drawDisplay(Settings& st) {
         }
         ImGui::EndCombo();
     }
+    return changed;
+}
+
+// Effects the original does not have (gpu/d3d11/post_effects.h): on the 3D scene only,
+// before the HUD is drawn; they apply live.
+bool drawGraphics(Settings& st) {
+    bool changed = false;
+    focusFirstOption();
+    changed |= ImGui::Checkbox("Ambient occlusion", &st.ambientOcclusion);
+    if (st.ambientOcclusion) {
+        changed |= ImGui::SliderInt("Occlusion strength", &st.aoStrength, 0, 200, "%d%%");
+        changed |= ImGui::SliderInt("Occlusion radius", &st.aoRadius, 10, 400, "%d units");
+    }
+    ImGui::TextDisabled("Soft shadows in corners, under eaves and around objects on the ground.");
+    changed |= ImGui::SliderInt("Sharpening", &st.sharpening, 0, 100, st.sharpening ? "%d%%" : "Off");
     return changed;
 }
 
@@ -695,6 +710,7 @@ void drawMenu() {
     ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.45f);
     switch (g_section) {
     case kDisplay: changed |= drawDisplay(st); break;
+    case kGraphics: changed |= drawGraphics(st); break;
     case kAudio: changed |= drawAudio(st); break;
     case kControls: changed |= drawControls(st); break;
     case kMissions: drawMissions(); break;
