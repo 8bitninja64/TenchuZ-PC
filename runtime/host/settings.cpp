@@ -57,6 +57,9 @@ ao_strength = 100
 ao_radius = 80
 ; Contrast-adaptive sharpening of the 3D scene in percent (0 = off).
 sharpening = 0
+; Multisample anti-aliasing of the 3D scene: 2 (the original), 4 or 8 samples. Applied
+; at the next start; more samples need more video memory (at most 4 from resolution_scale 3).
+msaa = 2
 
 [audio]
 ; Master volume in percent, and mute.
@@ -163,6 +166,10 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "ao_strength") settings.aoStrength = std::clamp(std::stoi(value), 0, 200);
             else if (key == "ao_radius") settings.aoRadius = std::clamp(std::stoi(value), 10, 400);
             else if (key == "sharpening") settings.sharpening = std::clamp(std::stoi(value), 0, 100);
+            else if (key == "msaa") {
+                const int samples = std::stoi(value);
+                settings.msaa = samples >= 8 ? 8 : samples >= 4 ? 4 : 2;
+            }
         } else if (section == "audio") {
             if (key == "volume") settings.volume = std::clamp(std::stoi(value), 0, 100);
             else if (key == "mute") settings.mute = parseBool(value);
@@ -296,6 +303,7 @@ void saveSettings() {
         {"graphics", "ao_strength", std::to_string(s.aoStrength)},
         {"graphics", "ao_radius", std::to_string(s.aoRadius)},
         {"graphics", "sharpening", std::to_string(s.sharpening)},
+        {"graphics", "msaa", std::to_string(s.msaa)},
         {"audio", "volume", std::to_string(s.volume)},
         {"audio", "mute", text(s.mute)},
         {"input", "mouse_sensitivity", std::to_string(s.mouseSensitivity)},

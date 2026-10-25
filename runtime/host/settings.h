@@ -26,6 +26,7 @@ struct Settings {
     int aoStrength = 100;         // percent
     int aoRadius = 80;            // game units (about centimeters)
     int sharpening = 0;           // contrast-adaptive sharpening, percent (0 = off)
+    int msaa = 2;                 // samples of the title's 2x MSAA targets: 2, 4 or 8 (next start)
     // Game
     std::string disc;             // the disc image chosen on the first start (UTF-8)
     bool updateCheck = true;      // look for a newer release on GitHub at startup (F1 > Update)

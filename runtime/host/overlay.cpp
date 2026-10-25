@@ -381,6 +381,22 @@ bool drawGraphics(Settings& st) {
     }
     ImGui::TextDisabled("Soft shadows in corners, under eaves and around objects on the ground.");
     changed |= ImGui::SliderInt("Sharpening", &st.sharpening, 0, 100, st.sharpening ? "%d%%" : "Off");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextDisabled("Applied on the next start:");
+    static const std::pair<int, const char*> msaa[] = {{2, "2x (original)"}, {4, "4x"}, {8, "8x"}};
+    const char* samples = msaa[0].second;
+    for (const auto& [value, label] : msaa)
+        if (value == st.msaa) samples = label;
+    if (ImGui::BeginCombo("Anti-aliasing (MSAA)", samples)) {
+        for (const auto& [value, label] : msaa)
+            if (ImGui::Selectable(label, value == st.msaa)) {
+                st.msaa = value;
+                changed = true;
+            }
+        ImGui::EndCombo();
+    }
+    if (st.msaa == 8 && st.resolutionScale >= 3) ImGui::TextDisabled("4x at internal resolutions of 4K and above.");
     return changed;
 }
 

@@ -636,6 +636,34 @@ struct XenosBackend::Impl {
         return {rect.left * s, rect.top * s, rect.right * s, rect.bottom * s};
     }
 
+    // ---- MSAA override -----------------------------------------------------------------
+    // [graphics] msaa (applied at start): the host sample count of the title's 2x targets.
+    // Target keys and guest sizes keep the title's count (the 640x1024 tile layout depends
+    // on it). Every format a target can have must support the count, else it halves.
+    const uint32_t msaaSamples = validatedMsaa();
+    uint32_t validatedMsaa() const {
+        uint32_t samples = uint32_t(host::settings().msaa);
+        // The 640-pitch tiles are 640x1024 times the scale squared: at scale 3, 8x D32S8X24
+        // depth alone takes about 380 MB.
+        if (renderScale >= 3) samples = (std::min)(samples, 4u);
+        static const DXGI_FORMAT formats[] = {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+                                              DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16_FLOAT,
+                                              DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT,
+                                              DXGI_FORMAT_D24_UNORM_S8_UINT, DXGI_FORMAT_D32_FLOAT_S8X24_UINT};
+        for (; samples > 2; samples /= 2) {
+            bool supported = true;
+            for (const DXGI_FORMAT format : formats) {
+                UINT levels = 0;
+                supported = supported && SUCCEEDED(device->CheckMultisampleQualityLevels(format, samples, &levels)) &&
+                            levels;
+            }
+            if (supported) break;
+            logf("[d3d11] %ux MSAA is not supported for every target format", samples);
+        }
+        if (samples != 2) logf("[d3d11] %ux MSAA for the title's 2x targets", samples);
+        return samples;
+    }
+
     // ---- Render targets (EDRAM) --------------------------------------------------
     // Each distinct EDRAM base/pitch/format/samples is a host render target.
     struct RenderTarget {
@@ -662,11 +690,12 @@ struct XenosBackend::Impl {
         const uint32_t height = (std::min)(2048u, 2048 / tilesPerRow * 16);
         D3D11_TEXTURE2D_DESC desc{};
         const uint32_t guestHeight = (std::max)(16u, height / (samples >= 2 ? 2 : 1));
+        const uint32_t hostSamples = samples == 2 ? msaaSamples : samples;
         desc.Width = pitch * renderScale;
         desc.Height = guestHeight * renderScale;
         desc.MipLevels = 1;
         desc.ArraySize = 1;
-        desc.SampleDesc.Count = samples;
+        desc.SampleDesc.Count = hostSamples;
         desc.Usage = D3D11_USAGE_DEFAULT;
         if (isDepth) {
             // Typeless so depth resolves can read it.
@@ -683,18 +712,18 @@ struct XenosBackend::Impl {
         if (isDepth) {
             D3D11_DEPTH_STENCIL_VIEW_DESC dsv{};
             dsv.Format = format ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_D24_UNORM_S8_UINT;
-            dsv.ViewDimension = samples > 1 ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
+            dsv.ViewDimension = hostSamples > 1 ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
             if (FAILED(device->CreateDepthStencilView(target.texture, &dsv, &target.depth)))
                 logf("[d3d11] cannot create depth view (format %u, %u samples)", format, samples);
             D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
             srv.Format = format ? DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS : DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-            srv.ViewDimension = samples > 1 ? D3D11_SRV_DIMENSION_TEXTURE2DMS : D3D11_SRV_DIMENSION_TEXTURE2D;
+            srv.ViewDimension = hostSamples > 1 ? D3D11_SRV_DIMENSION_TEXTURE2DMS : D3D11_SRV_DIMENSION_TEXTURE2D;
             srv.Texture2D.MipLevels = 1;
             if (FAILED(device->CreateShaderResourceView(target.texture, &srv, &target.depthView)))
                 logf("[d3d11] cannot create depth shader view (format %u, %u samples)", format, samples);
         } else {
             device->CreateRenderTargetView(target.texture, nullptr, &target.color);
-            if (samples > 1) {
+            if (hostSamples > 1) {
                 desc.SampleDesc.Count = 1;
                 desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
                 device->CreateTexture2D(&desc, nullptr, &target.resolveScratch);
@@ -706,10 +735,10 @@ struct XenosBackend::Impl {
         }
         target.width = pitch;
         target.height = guestHeight;
-        target.samples = samples;
+        target.samples = hostSamples;
         target.format = desc.Format;
-        TZ_TRACE("rt", "[d3d11] %s target base %u pitch %u format %u samples %u -> %ux%u", isDepth ? "depth" : "color",
-                 base, pitch, format, samples, desc.Width, desc.Height);
+        TZ_TRACE("rt", "[d3d11] %s target base %u pitch %u format %u samples %u (host %u) -> %ux%u",
+                 isDepth ? "depth" : "color", base, pitch, format, samples, hostSamples, desc.Width, desc.Height);
         return &target;
     }
 
