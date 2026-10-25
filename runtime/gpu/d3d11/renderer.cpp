@@ -10,7 +10,9 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -199,6 +201,39 @@ float windowsSdrWhiteNits(HMONITOR monitor) {
             return float(white.SDRWhiteLevel) / 1000.0f * 80.0f;
     }
     return 200.0f;
+}
+
+// Windows' SDR brightness slider does not make the DXGI factory stale, so its value is
+// polled while HDR output uses it, on a thread of its own: QueryDisplayConfig can take
+// milliseconds, as long as a frame at high rates.
+std::atomic<HMONITOR> sdrWhiteMonitor{nullptr};  // the monitor to poll; nullptr: none
+std::mutex sdrWhiteMutex;
+HMONITOR sdrWhitePolledMonitor = nullptr;  // the last result and its monitor
+float sdrWhitePolled = 0.0f;
+
+void pollSdrWhite(HMONITOR monitor) {
+    sdrWhiteMonitor = monitor;
+    if (!monitor) return;
+    static std::once_flag started;
+    std::call_once(started, [] {
+        std::thread([] {
+            for (;;) {
+                if (const HMONITOR polled = sdrWhiteMonitor.load()) {
+                    const float nits = windowsSdrWhiteNits(polled);
+                    std::lock_guard lock(sdrWhiteMutex);
+                    sdrWhitePolledMonitor = polled;
+                    sdrWhitePolled = nits;
+                }
+                Sleep(2000);
+            }
+        }).detach();
+    });
+}
+
+// The last polled SDR white level of a monitor, or 0.
+float polledSdrWhite(HMONITOR monitor) {
+    std::lock_guard lock(sdrWhiteMutex);
+    return sdrWhitePolledMonitor == monitor ? sdrWhitePolled : 0.0f;
 }
 
 }  // namespace
@@ -414,9 +449,11 @@ void D3D11Renderer::updateHdr() {
                  sdrWhiteNits_);
         available = now;
         host::setHdrAvailable(available);
-        // Windows' SDR brightness slider does not make the factory stale: follow it while used.
-        if (hdr_ && host::settings().hdrPaperWhiteNits == 0 && monitorHdr_)
-            sdrWhiteNits_ = windowsSdrWhiteNits(outputMonitor_);
+        // Follow Windows' SDR brightness slider while automatic paper white uses it.
+        const bool followSdrWhite = hdr_ && host::settings().hdrPaperWhiteNits == 0 && monitorHdr_;
+        if (const float polled = followSdrWhite ? polledSdrWhite(outputMonitor_) : 0.0f; polled > 0.0f)
+            sdrWhiteNits_ = polled;
+        pollSdrWhite(followSdrWhite ? outputMonitor_ : nullptr);
         // What "auto" stands for, shown in the F1 menu.
         const float autoPeak = monitorPeakNits_ >= 400.0f ? monitorPeakNits_ : 1000.0f;
         host::setHdrAutoNits(int(autoPeak + 0.5f), int((std::max)(sdrWhiteNits_, 80.0f) + 0.5f));
