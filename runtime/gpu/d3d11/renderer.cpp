@@ -31,16 +31,30 @@ Output vs(uint id : SV_VertexID) {
 }
 float4 ps(Output i) : SV_Target { return float4(source.Sample(linearSampler, i.uv).rgb, 1.0); }
 float4 psSwapped(Output i) : SV_Target { return float4(source.Sample(linearSampler, i.uv).bgr, 1.0); }
+
+// HDR: alpha marks the 3D scene (1: highlights are expanded) apart from the HUD, menus and
+// movies (0: they stay at paper white). Scene pixels still match the copy of the target
+// taken right after the scene composite, before the HUD was drawn over it.
+Texture2D sceneOnly : register(t1);
+cbuffer Blit : register(b0) { uint hasScene; uint swapRedBlue; uint2 unused; };
+float4 psMasked(Output i) : SV_Target {
+    float3 color = source.Sample(linearSampler, i.uv).rgb;
+    if (swapRedBlue) color = color.bgr;  // the front buffer resolve may swap red and blue, the copy does not
+    float scene = 0.0;
+    if (hasScene) scene = all(abs(color - sceneOnly.Sample(linearSampler, i.uv).rgb) <= 2.0 / 255.0) ? 1.0 : 0.0;
+    return float4(color, scene);
+}
 )";
 
 // SDR game image + menu -> HDR10. The game's output is display-referred SDR (gamma 2.2):
-// mid tones keep their brightness at paper white, highlights are expanded toward the peak
-// (by luminance, so hues stay), then Rec.709 -> Rec.2020 and the PQ curve. The menu is
-// composited in linear light at paper white.
+// mid tones keep their brightness at paper white, highlights of the 3D scene (the game
+// image's alpha) are expanded toward the peak (by luminance, so hues stay), then Rec.709 ->
+// Rec.2020 and the PQ curve, dithered to 10 bits. The menu is composited in linear light at
+// paper white.
 const char* kHdrShader = R"(
 Texture2D game : register(t0);
 Texture2D ui : register(t1);
-cbuffer Hdr : register(b0) { float paperWhite; float peak; float expansion; float unused; };
+cbuffer Hdr : register(b0) { float paperWhite; float peak; float expansion; float highlights; };
 struct Output { float4 position : SV_Position; float2 uv : TEXCOORD0; };
 static const float3x3 k709To2020 = {0.6274040, 0.3292820, 0.0433136,
                                     0.0690970, 0.9195400, 0.0113612,
@@ -49,21 +63,31 @@ float3 PQ(float3 nits) {
     float3 y = pow(saturate(nits / 10000.0), 0.1593017578125);
     return pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375);
 }
+// Interleaved gradient noise (Jimenez): a cheap, even dither pattern.
+float IGN(float2 p) { return frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715)))); }
 float4 ps(Output i) : SV_Target {
     int3 p = int3(i.position.xy, 0);
-    float3 color = pow(saturate(game.Load(p).rgb), 2.2);
+    float4 g = game.Load(p);
+    float3 color = pow(saturate(g.rgb), 2.2);
     float luminance = dot(color, float3(0.2126, 0.7152, 0.0722));
-    float boost = 1.0 + (peak / paperWhite - 1.0) * pow(luminance, expansion);
+    float boost = 1.0 + (peak / paperWhite - 1.0) * pow(luminance, expansion) * highlights * g.a;
     float3 nits = min(color * paperWhite * boost, peak);
     float4 menu = ui.Load(p);
     if (menu.a > 0.0) nits = nits * (1.0 - menu.a) + pow(saturate(menu.rgb / menu.a), 2.2) * menu.a * paperWhite;
-    return float4(PQ(mul(k709To2020, nits)), 1.0);
+    return float4(PQ(mul(k709To2020, nits)) + (IGN(i.position.xy) - 0.5) / 1023.0, 1.0);
 }
 )";
 
 template <typename T> void release(T*& object) {
     if (object) object->Release();
     object = nullptr;
+}
+
+void writeBuffer(ID3D11DeviceContext* context, ID3D11Buffer* buffer, const void* data, size_t size) {
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
+    std::memcpy(mapped.pData, data, size);
+    context->Unmap(buffer, 0);
 }
 
 ID3DBlob* compile(const char* source, const char* entry, const char* profile) {
@@ -172,6 +196,10 @@ bool D3D11Renderer::initialize(HWND target) {
     if (!vs || !ps || !swapped) return false;
     device_->CreatePixelShader(swapped->GetBufferPointer(), swapped->GetBufferSize(), nullptr, &blitSwappedPixelShader_);
     release(swapped);
+    if (ID3DBlob* masked = compile(kBlitShader, "psMasked", "ps_5_0")) {
+        device_->CreatePixelShader(masked->GetBufferPointer(), masked->GetBufferSize(), nullptr, &blitMaskedPixelShader_);
+        release(masked);
+    }
     device_->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &blitVertexShader_);
     device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &blitPixelShader_);
     release(vs);
@@ -191,6 +219,7 @@ bool D3D11Renderer::initialize(HWND target) {
     constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constants.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     device_->CreateBuffer(&constants, nullptr, &hdrConstants_);
+    device_->CreateBuffer(&constants, nullptr, &blitConstants_);
     logf("[d3d11] renderer ready");
     return true;
 }
@@ -318,7 +347,7 @@ void D3D11Renderer::updateHdr() {
         const float autoPeak = monitorPeakNits_ >= 400.0f ? monitorPeakNits_ : 1000.0f;
         host::setHdrAutoNits(int(autoPeak + 0.5f), int((std::max)(sdrWhiteNits_, 80.0f) + 0.5f));
     }
-    const bool want = host::settings().hdr && available && hdrPixelShader_;
+    const bool want = host::settings().hdr && available && hdrPixelShader_ && blitMaskedPixelShader_;
     if (want == hdr_) return;
     release(backBufferView_);
     releaseHdrTextures();
@@ -393,11 +422,14 @@ void D3D11Renderer::resizeIfNeeded() {
     if (hdr_) createHdrTextures();
 }
 
-void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue) { present(source, swapRedBlue, false); }
+void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, ID3D11ShaderResourceView* sceneOnly) {
+    presentFrame(source, swapRedBlue, sceneOnly, false);
+}
 
-void D3D11Renderer::presentAgain() { present(lastSource_, lastSwapRedBlue_, true); }
+void D3D11Renderer::presentAgain() { presentFrame(lastSource_, lastSwapRedBlue_, lastSceneOnly_, true); }
 
-void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, bool repeat) {
+void D3D11Renderer::presentFrame(ID3D11ShaderResourceView* source, bool swapRedBlue, ID3D11ShaderResourceView* sceneOnly,
+                                 bool repeat) {
     ++frame_;
     updateHdr();
     resizeIfNeeded();
@@ -408,6 +440,9 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, 
         if (lastSource_) lastSource_->Release();
         lastSource_ = source;
         lastSwapRedBlue_ = swapRedBlue;
+        if (sceneOnly) sceneOnly->AddRef();
+        if (lastSceneOnly_) lastSceneOnly_->Release();
+        lastSceneOnly_ = sceneOnly;
         // Frame rate of new game frames, averaged over half a second.
         static auto windowStart = std::chrono::steady_clock::now();
         static uint32_t frames = 0;
@@ -433,15 +468,24 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, 
         context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context_->IASetInputLayout(nullptr);
         context_->VSSetShader(blitVertexShader_, nullptr, 0);
-        context_->PSSetShader(swapRedBlue ? blitSwappedPixelShader_ : blitPixelShader_, nullptr, 0);
-        context_->PSSetShaderResources(0, 1, &source);
+        if (hdr) {
+            // The scene mask goes into alpha (kBlitShader psMasked).
+            const uint32_t constants[4] = {sceneOnly ? 1u : 0u, swapRedBlue ? 1u : 0u, 0, 0};
+            writeBuffer(context_, blitConstants_, constants, sizeof(constants));
+            context_->PSSetShader(blitMaskedPixelShader_, nullptr, 0);
+            context_->PSSetConstantBuffers(0, 1, &blitConstants_);
+        } else {
+            context_->PSSetShader(swapRedBlue ? blitSwappedPixelShader_ : blitPixelShader_, nullptr, 0);
+        }
+        ID3D11ShaderResourceView* views[2] = {source, hdr ? sceneOnly : nullptr};
+        context_->PSSetShaderResources(0, hdr ? 2 : 1, views);
         context_->PSSetSamplers(0, 1, &linearSampler_);
         context_->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
         context_->OMSetDepthStencilState(nullptr, 0);
         context_->RSSetState(nullptr);
         context_->Draw(3, 0);
-        ID3D11ShaderResourceView* none = nullptr;
-        context_->PSSetShaderResources(0, 1, &none);
+        ID3D11ShaderResourceView* none[2] = {};
+        context_->PSSetShaderResources(0, hdr ? 2 : 1, none);
     } else {
         // Nothing resolved yet: a slowly cycling color shows frame pacing.
         const float t = float(frame_) / 60.0f;
@@ -456,12 +500,11 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, 
         float paperWhite = 0.0f, peak = 0.0f;
         hdrLevels(paperWhite, peak);
         updateHdrMetadata(paperWhite, peak);
-        const float constants[4] = {paperWhite, peak, 4.0f, 0.0f};
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (SUCCEEDED(context_->Map(hdrConstants_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-            std::memcpy(mapped.pData, constants, sizeof(constants));
-            context_->Unmap(hdrConstants_, 0);
-        }
+        // Highlights 100% expands by luminance^4; higher percentages reach into the mid tones.
+        const float highlights = float(host::settings().hdrHighlights) / 100.0f;
+        const float constants[4] = {paperWhite, peak, 4.0f / (std::max)(highlights, 0.01f),
+                                    highlights > 0.0f ? 1.0f : 0.0f};
+        writeBuffer(context_, hdrConstants_, constants, sizeof(constants));
         const D3D11_VIEWPORT full{0, 0, float(width_), float(height_), 0, 1};
         context_->RSSetViewports(1, &full);
         context_->OMSetRenderTargets(1, &backBufferView_, nullptr);
@@ -559,11 +602,24 @@ void D3D11Renderer::captureIfRequested() {
                 }
             lastCaptureSuspicious_ = dark[1] * 100 > total[1] * 85 && dark[0] * 100 < total[0] * 60;
         }
+        // TENCHU_TRACE=hudmask: in HDR mode, the scene mask (alpha) instead of the image:
+        // white for the 3D scene, black for the HUD, menus and movies.
+        static const bool hudMask = traceEnabled("hudmask");
+        std::vector<uint8_t> mask(hudMask && hdr_ ? desc.Width * 4 : 0);
         if (FILE* out = _wfopen(target.c_str(), L"wb")) {
             fwrite(&file, sizeof(file), 1, out);
             fwrite(&info, sizeof(info), 1, out);
-            for (UINT y = desc.Height; y-- > 0;)
-                fwrite(static_cast<const uint8_t*>(mapped.pData) + size_t(y) * mapped.RowPitch, 4, desc.Width, out);
+            for (UINT y = desc.Height; y-- > 0;) {
+                const uint8_t* row = static_cast<const uint8_t*>(mapped.pData) + size_t(y) * mapped.RowPitch;
+                if (!mask.empty()) {
+                    for (UINT x = 0; x < desc.Width; ++x) {
+                        mask[x * 4] = mask[x * 4 + 1] = mask[x * 4 + 2] = row[x * 4 + 3];
+                        mask[x * 4 + 3] = 255;
+                    }
+                    row = mask.data();
+                }
+                fwrite(row, 4, desc.Width, out);
+            }
             fclose(out);
         }
         context_->Unmap(staging, 0);

@@ -44,6 +44,9 @@ show_fps = false
 hdr = false
 hdr_peak_nits = 0
 hdr_paper_white_nits = 0
+; How strongly highlights of the 3D scene are expanded, in percent (0 = none: the SDR
+; look at paper white; above 100 brightens mid tones too). The HUD stays at paper white.
+hdr_highlights = 100
 
 [audio]
 ; Master volume in percent, and mute.
@@ -144,6 +147,7 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "hdr") settings.hdr = parseBool(value);
             else if (key == "hdr_peak_nits") settings.hdrPeakNits = automatic(std::stoi(value), 80, 10000);
             else if (key == "hdr_paper_white_nits") settings.hdrPaperWhiteNits = automatic(std::stoi(value), 80, 1000);
+            else if (key == "hdr_highlights") settings.hdrHighlights = std::clamp(std::stoi(value), 0, 200);
         } else if (section == "audio") {
             if (key == "volume") settings.volume = std::clamp(std::stoi(value), 0, 100);
             else if (key == "mute") settings.mute = parseBool(value);
@@ -272,6 +276,7 @@ void saveSettings() {
         {"display", "hdr", text(s.hdr)},
         {"display", "hdr_peak_nits", std::to_string(s.hdrPeakNits)},
         {"display", "hdr_paper_white_nits", std::to_string(s.hdrPaperWhiteNits)},
+        {"display", "hdr_highlights", std::to_string(s.hdrHighlights)},
         {"audio", "volume", std::to_string(s.volume)},
         {"audio", "mute", text(s.mute)},
         {"input", "mouse_sensitivity", std::to_string(s.mouseSensitivity)},

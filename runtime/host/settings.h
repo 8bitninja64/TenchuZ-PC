@@ -20,6 +20,7 @@ struct Settings {
     bool hdr = false;             // HDR10 output when Windows HDR is on for the monitor
     int hdrPeakNits = 0;          // brightest highlights (0 = the display's peak brightness)
     int hdrPaperWhiteNits = 0;    // mid tones and the menu (0 = Windows' SDR content brightness)
+    int hdrHighlights = 100;      // highlight expansion of the 3D scene, percent (0 = none)
     // Game
     std::string disc;             // the disc image chosen on the first start (UTF-8)
     bool updateCheck = true;      // look for a newer release on GitHub at startup (F1 > Update)

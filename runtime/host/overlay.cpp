@@ -333,6 +333,8 @@ bool drawDisplay(Settings& st) {
             changed |= ImGui::SliderInt("Paper white (nits)", &st.hdrPaperWhiteNits, 80, 400);
         }
         if (st.hdrPeakNits && st.hdrPaperWhiteNits > st.hdrPeakNits) st.hdrPaperWhiteNits = st.hdrPeakNits;
+        // The 3D scene only: the HUD, menus and movies stay at paper white.
+        changed |= ImGui::SliderInt("Highlights", &st.hdrHighlights, 0, 200, "%d%%");
     }
     ImGui::Spacing();
     ImGui::Separator();

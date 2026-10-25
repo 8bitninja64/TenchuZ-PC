@@ -17,10 +17,14 @@ public:
     ID3D11DeviceContext* context() const { return context_; }
 
     // Shows a frame. `source` is the front buffer contents when available;
-    // `swapRedBlue` is set when it was resolved with red and blue exchanged.
-    void present(ID3D11ShaderResourceView* source, bool swapRedBlue = false);
+    // `swapRedBlue` is set when it was resolved with red and blue exchanged. `sceneOnly`
+    // (HDR output only) is the same image before the HUD was drawn, without the swap.
+    void present(ID3D11ShaderResourceView* source, bool swapRedBlue = false,
+                 ID3D11ShaderResourceView* sceneOnly = nullptr);
     // Shows the last frame again (the F1 menu over a paused game).
     void presentAgain();
+    // True while the swap chain is HDR10 (frames then want a sceneOnly image).
+    bool hdrOutput() const { return hdr_; }
     // True when Present's vsync interval holds frames at the frame rate limit.
     bool pacedByVsync() const;
     // True when the last captured frame looked like a flicker frame (trace 'flickerlog').
@@ -57,6 +61,9 @@ private:
     ID3D11ShaderResourceView* uiResource_ = nullptr;
     ID3D11PixelShader* hdrPixelShader_ = nullptr;
     ID3D11Buffer* hdrConstants_ = nullptr;
+    ID3D11PixelShader* blitMaskedPixelShader_ = nullptr;  // the game image with the scene mask in alpha
+    ID3D11Buffer* blitConstants_ = nullptr;
+    ID3D11ShaderResourceView* lastSceneOnly_ = nullptr;
     void resizeIfNeeded();
     uint32_t refreshRate() const;
     uint32_t syncInterval();
@@ -79,7 +86,8 @@ private:
     bool lastSwapRedBlue_ = false;
     bool repeating_ = false;
     float fps_ = 0.0f;  // new game frames per second (F1 menu counter)
-    void present(ID3D11ShaderResourceView* source, bool swapRedBlue, bool repeat);
+    void presentFrame(ID3D11ShaderResourceView* source, bool swapRedBlue, ID3D11ShaderResourceView* sceneOnly,
+                      bool repeat);
 };
 
 // The window the game renders into, created by the app's UI thread.

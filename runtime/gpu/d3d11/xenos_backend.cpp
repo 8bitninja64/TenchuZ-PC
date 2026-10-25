@@ -214,6 +214,11 @@ D3D11_COMPARISON_FUNC comparison(uint32_t function) {
     return D3D11_COMPARISON_FUNC(D3D11_COMPARISON_NEVER + (function & 7));
 }
 
+// The scene composite (DOF blur and bloom over the resolved scene, a full-screen rectangle
+// into the 1280-pitch target): the last 3D draw of a gameplay frame; the HUD follows it
+// in the same target, then the target is resolved to the front buffer.
+constexpr uint64_t kSceneCompositeShader = 0x7582CB38B8D839B4ull;
+
 }  // namespace
 
 struct XenosBackend::Impl {
@@ -1587,6 +1592,7 @@ struct XenosBackend::Impl {
             release(target);
         }
         context->Draw(UINT(vertexCount), 0);
+        if (psHash == kSceneCompositeShader && renderer.hdrOutput()) copySceneOnly(*firstTarget, hostScissor);
         addTime(hostTime[5], drawStart);
         if (statistics) {
             context->End(statistics);
@@ -1834,6 +1840,41 @@ struct XenosBackend::Impl {
         release(staging);
     }
 
+    // ---- HDR: the scene before the HUD -------------------------------------------------
+    // A copy of the composite's target taken before the HUD is drawn over it: the present
+    // expands the highlights only where the front buffer still matches it, so the HUD,
+    // menus and movies (no composite) stay at paper white.
+    ID3D11Texture2D* sceneOnly = nullptr;
+    ID3D11ShaderResourceView* sceneOnlyView = nullptr;
+    uint64_t sceneOnlyFrame = ~0ull;
+
+    void copySceneOnly(const RenderTarget& target, const D3D11_RECT& scissor) {
+        // The front buffer is resolved from the target's top left corner.
+        const UINT width = (std::min)(UINT(scissor.right), target.width * renderScale);
+        const UINT height = (std::min)(UINT(scissor.bottom), target.height * renderScale);
+        if (scissor.left || scissor.top || target.samples != 1 || !width || !height) return;
+        D3D11_TEXTURE2D_DESC desc{};
+        if (sceneOnly) sceneOnly->GetDesc(&desc);
+        if (sceneOnly && (desc.Width != width || desc.Height != height || desc.Format != target.format)) {
+            release(sceneOnlyView);
+            release(sceneOnly);
+        }
+        if (!sceneOnly) {
+            desc = {};
+            desc.Width = width;
+            desc.Height = height;
+            desc.MipLevels = desc.ArraySize = 1;
+            desc.Format = target.format;
+            desc.SampleDesc.Count = 1;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (FAILED(device->CreateTexture2D(&desc, nullptr, &sceneOnly))) return;
+            device->CreateShaderResourceView(sceneOnly, nullptr, &sceneOnlyView);
+        }
+        const D3D11_BOX box{0, 0, 0, width, height, 1};
+        context->CopySubresourceRegion(sceneOnly, 0, 0, 0, 0, target.texture, 0, &box);
+        sceneOnlyFrame = frames;
+    }
+
     // ---- Swap ---------------------------------------------------------------------
     void swap(uint32_t frontBuffer) {
         forgetBoundState();  // present and dumps use the context too
@@ -1857,9 +1898,17 @@ struct XenosBackend::Impl {
                 if (entry.texture) saveTexture(entry.texture, path);
             }
         }
+        // The scene before the HUD, when this frame had a composite of the front buffer's size.
+        ID3D11ShaderResourceView* scene = nullptr;
+        if (it != resolved.end() && sceneOnly && sceneOnlyFrame == frames) {
+            D3D11_TEXTURE2D_DESC desc{};
+            sceneOnly->GetDesc(&desc);
+            if (desc.Width == it->second.width * renderScale && desc.Height == it->second.height * renderScale)
+                scene = sceneOnlyView;
+        }
         const auto presentStart = stamp();
         renderer.present(it != resolved.end() ? it->second.view : nullptr,
-                         it != resolved.end() && it->second.swapped);
+                         it != resolved.end() && it->second.swapped, scene);
         TZ_TRACE("swap", "[d3d11] swap %llu %08X (%s), tiles %u/%u, resolves %u, %llu draws, dropped %llu/%llu/%llu/%llu/%llu/%llu/%llu",
                  (unsigned long long)frames, frontBuffer, it != resolved.end() ? "resolved" : "missing", tileDraws[0],
                  tileDraws[1], resolves, (unsigned long long)draws,
