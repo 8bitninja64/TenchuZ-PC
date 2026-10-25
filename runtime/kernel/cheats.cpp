@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <mutex>
@@ -320,8 +321,10 @@ TZ_OVERRIDE(82402AF8) {
 
 // Costume for a character model (r3 the costume object, r4 the 192-byte descriptor it copies,
 // e.g. the profile's own at PROFILE+672). Nude Ninja hands it the player's costume with the
-// stock bare-skin parts (index 0 of arms, torso and legs: the full-length legs cover the
-// hips) and no hood or waist cloth (-1 skips a slot), then puts the saved values back.
+// stock bare-skin parts (index 0 of arms, torso and legs: the male's full-length legs cover
+// the hips) and no hood or waist cloth (-1 skips a slot), then puts the saved values back. The
+// female's bare legs leave part of the hips transparent (the waist piece normally covers it):
+// she keeps waist piece 0, plain white underwear.
 // Descriptor words: +0x04 hood, +0x08 arms, +0x0C torso, +0x10 waist cloth, +0x14 legs; the
 // variants of those slots at +0x1C..+0x2C.
 TZ_OVERRIDE(8234BDD0) {
@@ -330,12 +333,28 @@ TZ_OVERRIDE(8234BDD0) {
         __imp__sub_8234BDD0(ctx, base);
         return;
     }
-    static constexpr uint32_t kBare[][2] = {{0x04, 0xFFFFFFFF}, {0x08, 0}, {0x0C, 0}, {0x10, 0xFFFFFFFF}, {0x14, 0},
-                                           {0x1C, 0}, {0x20, 0}, {0x24, 0}, {0x28, 0}, {0x2C, 0}};
+    static uint32_t kBare[][2] = {{0x04, 0xFFFFFFFF}, {0x08, 0}, {0x0C, 0}, {0x10, 0xFFFFFFFF}, {0x14, 0},
+                                 {0x1C, 0}, {0x20, 0}, {0x24, 0}, {0x28, 0}, {0x2C, 0}};
+    // Debugging: TENCHU_NUDE_SLOTS=off=value,... (hex) replaces entries of the table.
+    static const bool overridden = [] {
+        char text[256]{};
+        if (!GetEnvironmentVariableA("TENCHU_NUDE_SLOTS", text, sizeof(text))) return false;
+        for (char* item = std::strtok(text, ","); item; item = std::strtok(nullptr, ",")) {
+            unsigned offset = 0, value = 0;
+            if (sscanf(item, "%x=%x", &offset, &value) != 2) continue;
+            for (auto& slot : kBare)
+                if (slot[0] == offset) slot[1] = value;
+        }
+        return true;
+    }();
+    TZ_TRACE("cheats", "[cheats] nude: gender %u, saved hood %X arms %X torso %X waist %X legs %X", load32(source + 0x8C),
+             load32(source + 4), load32(source + 8), load32(source + 0xC), load32(source + 0x10), load32(source + 0x14));
+    const bool female = load32(source + 0x8C) == 1;
     uint32_t saved[std::size(kBare)];
     for (size_t i = 0; i < std::size(kBare); ++i) {
         saved[i] = load32(source + kBare[i][0]);
-        store32(source + kBare[i][0], kBare[i][1]);
+        const bool underwear = female && kBare[i][0] == 0x10 && !overridden;
+        store32(source + kBare[i][0], underwear ? 0 : kBare[i][1]);
     }
     __imp__sub_8234BDD0(ctx, base);  // copies the descriptor into the costume object
     for (size_t i = 0; i < std::size(kBare); ++i) store32(source + kBare[i][0], saved[i]);

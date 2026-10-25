@@ -349,6 +349,18 @@ int wmain(int argc, wchar_t** argv) {
 #else
 int main(int argc, char** argv) {
     installCrashHandler();
+    // Started without a terminal (Steam, a file manager, Game Mode): everything logged, DXVK's
+    // messages included, goes to TenchuZ.log in the user folder (overwritten at each start).
+    if (!isatty(STDERR_FILENO)) {
+        std::error_code error;
+        const auto directory = tz::userDataDirectory();
+        std::filesystem::create_directories(directory, error);
+        const std::string path = tz::utf8(directory / "TenchuZ.log");
+        if (std::freopen(path.c_str(), "w", stderr)) {
+            setvbuf(stderr, nullptr, _IOLBF, 0);
+            dup2(STDERR_FILENO, STDOUT_FILENO);
+        }
+    }
     // DXVK-native presents to SDL3 windows.
     setenv("DXVK_WSI_DRIVER", "SDL3", 0);
     std::vector<std::wstring> wide;

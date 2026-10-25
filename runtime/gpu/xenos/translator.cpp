@@ -512,7 +512,7 @@ struct Emitter {
             break;
         }
         case 33: case 34: case 35: {  // 32, 32_32, 32_32_32_32 integer
-            const int count = int(fetch.vertexFormat()) - 32;
+            const int count = fetch.vertexFormat() == 35 ? 4 : int(fetch.vertexFormat()) - 32;
             std::string parts[4] = {"0.0", "0.0", "0.0", "1.0"};
             for (int i = 0; i < count; ++i) {
                 line("uint w" + std::to_string(i) + " = " + word(i) + ";");
@@ -523,7 +523,8 @@ struct Emitter {
             break;
         }
         case 36: case 37: case 38: case 57: {  // 32_FLOAT .. 32_32_32_32_FLOAT
-            const int count = fetch.vertexFormat() == 57 ? 3 : int(fetch.vertexFormat()) - 35;
+            // 38 is 32_32_32_32_FLOAT (four floats: a clear color's alpha), 57 32_32_32_FLOAT.
+            const int count = fetch.vertexFormat() == 57 ? 3 : fetch.vertexFormat() == 38 ? 4 : int(fetch.vertexFormat()) - 35;
             std::string parts[4] = {"0.0", "0.0", "0.0", "1.0"};
             for (int i = 0; i < count; ++i) parts[i] = "asfloat(" + word(i) + ")";
             value = "float4(" + parts[0] + ", " + parts[1] + ", " + parts[2] + ", " + parts[3] + ")";
