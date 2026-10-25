@@ -193,29 +193,46 @@ bool D3D11Renderer::pacedByVsync() const {
            refresh_ % uint32_t(limit) == 0 && refresh_ / uint32_t(limit) <= 4;
 }
 
-// Whether Windows HDR is on for the monitor showing the window. A new factory each time:
-// a factory's outputs keep the color space they had when it was created.
-bool D3D11Renderer::monitorHdr() const {
-    IDXGIFactory1* factory = nullptr;
-    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) return false;
+// Whether Windows HDR is on for the monitor showing the window. A factory's outputs keep
+// the color space they had when it was created, so a stale factory (IsCurrent is false
+// after HDR toggles and display changes) is replaced; otherwise the outputs are enumerated
+// again only when the window moved to another monitor.
+bool D3D11Renderer::monitorHdr() {
     const HMONITOR monitor = MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST);
-    bool hdr = false;
+    const bool current = outputFactory_ && outputFactory_->IsCurrent();
+    if (current && monitor == outputMonitor_) return monitorHdr_;
+    if (!current) {
+        release(outputFactory_);
+        if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&outputFactory_)))) return false;
+    }
+    outputMonitor_ = monitor;
+    monitorHdr_ = false;
     IDXGIAdapter1* adapter = nullptr;
-    for (UINT a = 0; factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
+    for (UINT a = 0; outputFactory_->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
         IDXGIOutput* output = nullptr;
         for (UINT o = 0; adapter->EnumOutputs(o, &output) != DXGI_ERROR_NOT_FOUND; ++o) {
             IDXGIOutput6* output6 = nullptr;
             DXGI_OUTPUT_DESC1 desc{};
             if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6), reinterpret_cast<void**>(&output6))) &&
                 SUCCEEDED(output6->GetDesc1(&desc)) && desc.Monitor == monitor)
-                hdr = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+                monitorHdr_ = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
             release(output6);
             release(output);
         }
         release(adapter);
     }
-    release(factory);
-    return hdr;
+    return monitorHdr_;
+}
+
+// After every present the back buffer is still bound (the blit, the HDR pass and the
+// menu leave it there): during play the next frame's draws replace it, but the F1 menu
+// re-presents with nothing in between, and DXGI refuses ResizeBuffers while a view of a
+// buffer is bound (HDR and fullscreen toggles from the menu failed).
+void D3D11Renderer::unbindBackBuffer() {
+    context_->OMSetRenderTargets(0, nullptr, nullptr);
+    ID3D11ShaderResourceView* none[2] = {};
+    context_->PSSetShaderResources(0, 2, none);
+    context_->Flush();  // the flip model releases buffers lazily
 }
 
 // Switches the swap chain between SDR and HDR10 when the setting or the monitor changes
@@ -233,6 +250,7 @@ void D3D11Renderer::updateHdr() {
     if (want == hdr_) return;
     release(backBufferView_);
     releaseHdrTextures();
+    unbindBackBuffer();
     const DXGI_FORMAT format = want ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
     if (FAILED(swapChain_->ResizeBuffers(0, 0, 0, format, 0))) {
         logf("[d3d11] cannot switch the swap chain to %s", want ? "HDR10" : "SDR");
@@ -285,7 +303,9 @@ void D3D11Renderer::resizeIfNeeded() {
     if (backBufferView_ && width == width_ && height == height_) return;
     release(backBufferView_);
     releaseHdrTextures();
-    swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    unbindBackBuffer();
+    if (FAILED(swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0)))
+        logf("[d3d11] cannot resize the swap chain to %ux%u", width, height);
     ID3D11Texture2D* backBuffer = nullptr;
     swapChain_->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBuffer));
     device_->CreateRenderTargetView(backBuffer, nullptr, &backBufferView_);

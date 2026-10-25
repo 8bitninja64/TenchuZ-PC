@@ -31,10 +31,17 @@ private:
     // image and the F1 menu are drawn into SDR textures, then expanded into the HDR back
     // buffer (inverse tone map, Rec.2020, PQ). Otherwise frames go to the back buffer as before.
     void updateHdr();
-    bool monitorHdr() const;
+    bool monitorHdr();
     void createHdrTextures();
     void releaseHdrTextures();
+    // ResizeBuffers fails while a view of a swap chain buffer is still bound.
+    void unbindBackBuffer();
     bool hdr_ = false;  // the swap chain is HDR10 now
+    // Output enumeration for monitorHdr, kept until DXGI marks the factory stale or the
+    // window moves to another monitor (enumerating every adapter costs milliseconds).
+    IDXGIFactory1* outputFactory_ = nullptr;
+    HMONITOR outputMonitor_ = nullptr;
+    bool monitorHdr_ = false;
     DXGI_FORMAT backBufferFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
     ID3D11Texture2D* sdr_ = nullptr;  // the game image (SDR, window size)
     ID3D11RenderTargetView* sdrView_ = nullptr;
