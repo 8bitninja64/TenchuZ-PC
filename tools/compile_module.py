@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import os
 from pathlib import Path
 import shlex
@@ -47,6 +48,19 @@ def physical_memory_gb() -> float:
     return status.total / (1 << 30)
 
 
+def content_hash(sources: list[Path], include_dirs: list[Path], compiler: list[str]) -> str:
+    """What the module is compiled from: every source, every header the includes can reach and
+    the compiler command. An update that changes only the scripts around the build leaves it
+    the same, and the module built before is kept."""
+    digest = hashlib.sha256()
+    digest.update(repr((compiler, FLAGS if WINDOWS else LINUX_FLAGS)).encode())
+    files = sorted(set(sources) | {header for directory in include_dirs for header in directory.rglob("*.h")})
+    for path in files:
+        digest.update(path.name.encode() + b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def unpack(archive: Path, directory: Path) -> int:
     """Unpacks a .tar.xz with Python's tarfile (systems whose tar has no xz)."""
     import tarfile
@@ -73,6 +87,13 @@ def main() -> int:
     sources = [args.gen / line.strip()
                for line in (args.gen / "sources.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
     sources += args.extra
+    compiler = ["clang-cl"] if WINDOWS else shlex.split(os.environ.get("CXX", "clang++"))
+    content = content_hash(sources, [args.gen] + args.include, compiler)
+    stamp = args.out.with_name(args.out.name + ".content")
+    if args.out.exists() and stamp.exists() and stamp.read_text().strip() == content:
+        print(f"# The game code is unchanged: keeping {args.out.name}", flush=True)
+        return 0
+    stamp.unlink(missing_ok=True)
     # Largest first: the long units start early and the tail stays short.
     sources.sort(key=lambda path: path.stat().st_size, reverse=True)
     args.obj.mkdir(parents=True, exist_ok=True)
@@ -85,7 +106,6 @@ def main() -> int:
     lock = threading.Lock()
     done = [0]
 
-    compiler = shlex.split(os.environ.get("CXX", "clang++"))
     suffix = ".obj" if WINDOWS else ".o"
 
     def compile_one(source: Path) -> None:
@@ -125,6 +145,7 @@ def main() -> int:
             return 1
         args.out.parent.mkdir(parents=True, exist_ok=True)
         os.replace(temporary, args.out)
+        stamp.write_text(content)
         return 0
     temporary = args.out.with_suffix(".tmp.dll")
     response = args.obj / "link.rsp"
@@ -140,6 +161,7 @@ def main() -> int:
         leftover.unlink(missing_ok=True)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     os.replace(temporary, args.out)
+    stamp.write_text(content)
     return 0
 
 

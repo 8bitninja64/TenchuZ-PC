@@ -29,20 +29,27 @@ namespace {
 constexpr char kSupportedXex[] = "c727debeaad474dfcf8517202eebc388f9e51705ce3b01499486fa5ff47f9f06";
 constexpr wchar_t kTitle[] = L"Tenchu Z Recomp";
 
-// The files of a release that make_module.ps1 builds the module from: a module built by an
-// older release is rebuilt after an update. Missing files mean a development build, which
-// never builds modules itself (tools/build.ps1 does).
+// The files of a release that decide what the game module is built from: a module built by
+// an older release is rebuilt when one of them changed. The generator counts by its source (the
+// pinned upstream commit in setup_generator.py and the patch series), not by its executable,
+// which differs in every release build even when nothing changed (a PE build timestamp); the
+// scripts that only run the build are not part of it. Missing files mean a development build,
+// which never builds modules itself (tools/build.ps1 does).
 constexpr const char* kKitFiles[] = {
-#ifdef _WIN32
-    "tools/XenonRecomp.exe", "tools/make_module.ps1", "tools/vsenv.ps1", "tools/python.ps1",
-#else
-    "tools/XenonRecomp", "tools/make_module.sh",
-#endif
+    "tools/setup_generator.py", "tools/patches/xenonrecomp-darkness.patch",
+    "tools/patches/xenonrecomp-corrections.patch", "tools/patches/xenonrecomp-tenchuz.patch",
     "tools/recompile.py", "tools/xex_image.py", "tools/compile_module.py", "tools/xbox/xboxkrnl_table.inc",
     "tools/xbox/xam_table.inc", "config/tenchuz.toml", "config/tenchuz_switch_tables.toml",
     "config/tenchuz_switch_tables_manual.toml", "config/overrides.txt", "runtime/guest/ppc_context.template.h",
     "runtime/guest/ppc_config.h", "runtime/guest/module_abi.h", "runtime/guest/module_rt.cpp",
     "third_party/simde/x86/avx.h"};
+// Needed to build a module, not part of the stamp.
+constexpr const char* kKitTools[] = {
+#ifdef _WIN32
+    "tools/XenonRecomp.exe", "tools/make_module.ps1", "tools/vsenv.ps1", "tools/python.ps1"};
+#else
+    "tools/XenonRecomp", "tools/make_module.sh"};
+#endif
 
 std::filesystem::path executableDirectory() {
     wchar_t executable[MAX_PATH]{};
@@ -91,6 +98,9 @@ std::string kitStamp() {
     auto mix = [&](const char* bytes, size_t size) {
         for (size_t i = 0; i < size; ++i) hash = (hash ^ uint8_t(bytes[i])) * 1099511628211ull;
     };
+    std::error_code error;
+    for (const char* name : kKitTools)
+        if (!std::filesystem::exists(executableDirectory() / std::filesystem::u8path(name), error)) return {};
     for (const char* name : kKitFiles) {
         std::ifstream file(executableDirectory() / std::filesystem::u8path(name), std::ios::binary);
         if (!file) return {};
@@ -314,6 +324,10 @@ bool loadModule(const GameSource& source) {
     const auto built = user / kModuleName;
     const auto stampFile = user / (std::wstring(kModuleName) + L".stamp");
     if (readText(stampFile) == stamp && tryModule(built, xexHash, false)) return true;
+    // A module from an earlier release: rebuilt without asking (compile_module.py keeps it when
+    // the update did not change the game code, in seconds).
+    std::error_code existing;
+    const bool updating = std::filesystem::exists(built, existing);
 
     // One build at a time.
     const auto work = user / L"module_build";
@@ -332,7 +346,7 @@ bool loadModule(const GameSource& source) {
     }
     std::filesystem::remove(stampFile, error);
     if (!firststart::build(utf8(executableDirectory() / "tools" / "make_module.sh"), utf8(xexPath), utf8(built),
-                           !GetEnvironmentVariableW(L"TENCHU_AUTO_BUILD", nullptr, 0)))
+                           !updating && !GetEnvironmentVariableW(L"TENCHU_AUTO_BUILD", nullptr, 0)))
         return false;
     if (!tryModule(built, xexHash, true)) return false;
     std::ofstream(stampFile, std::ios::binary | std::ios::trunc) << stamp;
@@ -347,7 +361,7 @@ bool loadModule(const GameSource& source) {
     }
     struct Unlock { HANDLE handle; ~Unlock() { CloseHandle(handle); } } unlock{lock};
 
-    if (!GetEnvironmentVariableW(L"TENCHU_AUTO_BUILD", nullptr, 0) &&
+    if (!updating && !GetEnvironmentVariableW(L"TENCHU_AUTO_BUILD", nullptr, 0) &&
         MessageBoxW(nullptr,
                     L"Tenchu Z needs to compile the game code from your disc. This is done once and takes "
                     L"a few minutes (about 2 on an 8-core PC, longer on fewer cores).\n\n"
