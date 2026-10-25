@@ -1,4 +1,5 @@
 #include "control.h"
+#include "cheats.h"
 
 #include <windows.h>
 
@@ -163,6 +164,13 @@ void execute(Controller& c, Clock::time_point now) {
         } else if (command == "burst") {
             stream >> c.burstRemaining >> c.burstDirectory;
             c.burstIndex = 0;
+        } else if (command == "cheat") {
+            // cheat <id> [on|off]: F1 > Cheats (kernel/cheats.h); actions run with "on".
+            std::string id, state = "on";
+            stream >> id >> state;
+            const int cheat = cheats::find(id);
+            if (cheat < 0) logf("[control] unknown cheat %s", id.c_str());
+            else cheats::set(cheat, state != "off");
         } else if (command == "traceframe" || command == "dumpframe" || command == "profile") {
             c.flags.insert(command);
         } else if (command == "peek") {

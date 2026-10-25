@@ -5,6 +5,7 @@
 #include "host/settings.h"
 #include "host/update_check.h"
 #include "kernel/kernel.h"
+#include "kernel/cheats.h"
 #include "kernel/control.h"
 
 #include <imgui.h>
@@ -50,8 +51,8 @@ bool g_padCaptureArmed = false;
 ULONGLONG g_padCaptureSince = 0;
 std::atomic<bool> g_popupOpen{false};
 
-enum Section { kDisplay, kAudio, kControls, kMissions, kUpdate, kAbout, kSectionCount };
-const char* kSectionNames[kSectionCount] = {"Display", "Audio", "Controls", "Missions", "Update", "About"};
+enum Section { kDisplay, kAudio, kControls, kMissions, kCheats, kUpdate, kAbout, kSectionCount };
+const char* kSectionNames[kSectionCount] = {"Display", "Audio", "Controls", "Missions", "Cheats", "Update", "About"};
 int g_section = 0;
 // Two panes: choosing a section moves the highlight into its options; B
 // (Backspace) moves it back to the list. Only F1, Esc or Back+Start close the menu.
@@ -508,6 +509,43 @@ void drawMissions() {
     ImGui::TextDisabled("The original save is kept next to it as tenchu.bin.bak.");
 }
 
+// Cheats (kernel/cheats.h): toggles, then one-time actions, each with its explanation.
+void drawCheats() {
+    ImGui::TextWrapped("Trainer cheats. They act while you play (a mission or the hideout) and are all off "
+                       "again at the next start. Actions apply to the current game.");
+    ImGui::Spacing();
+    bool focused = false;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int i = 0; i < cheats::count(); ++i) {
+            const cheats::Info& cheat = cheats::info(i);
+            if (cheat.action != (pass == 1)) continue;
+            if (!focused) focusFirstOption();
+            focused = true;
+            ImGui::PushID(i);
+            if (cheat.action) {
+                if (ImGui::Button(cheat.name)) cheats::set(i, true);
+            } else {
+                bool on = cheats::enabled(i);
+                if (ImGui::Checkbox(cheat.name, &on)) cheats::set(i, on);
+            }
+            ImGui::Indent();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::TextWrapped("%s", cheat.help);
+            ImGui::PopStyleColor();
+            ImGui::Unindent();
+            ImGui::PopID();
+        }
+        if (pass == 0) {
+            ImGui::Spacing();
+            ImGui::Separator();
+        }
+    }
+    if (const std::string message = cheats::message(); !message.empty()) {
+        ImGui::Spacing();
+        ImGui::TextColored(kGold, "%s", message.c_str());
+    }
+}
+
 // Update: this version, the latest GitHub release, and installing it (update_check.h).
 bool drawUpdate(Settings& st) {
     namespace update = tz::host::update;
@@ -674,6 +712,7 @@ void drawMenu() {
     case kAudio: changed |= drawAudio(st); break;
     case kControls: changed |= drawControls(st); break;
     case kMissions: drawMissions(); break;
+    case kCheats: drawCheats(); break;
     case kUpdate: changed |= drawUpdate(st); break;
     case kAbout: drawAbout(); break;
     }

@@ -11,6 +11,16 @@
 822A55B8  # main menu
 822A24B8
 
+# runtime/kernel/cheats.cpp (F1 > Cheats)
+822D8C20  # damage routine: infinite health, one-hit kills
+82309910  # AI sight check: invisible
+822F2988  # AI think: invisible (contact timer)
+8228F3C0  # noise events: silent ninja
+82363458  # use the selected item: infinite items
+8233F240  # player top run speed: fast run
+8229A940  # spend money: free shopping
+82402AF8  # mission score: Grand Master rank
+
 # runtime/kernel/diagnostics.cpp
 82413CB0
 8241BDE0  # Present: presentation interval

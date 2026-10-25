@@ -63,6 +63,7 @@ add_library(TenchuRuntime OBJECT
     runtime/kernel/imports_net.cpp
     runtime/kernel/diagnostics.cpp
     runtime/kernel/native_overrides.cpp
+    runtime/kernel/cheats.cpp
     runtime/kernel/mmio_fault.cpp
     runtime/kernel/host_registry.cpp
     runtime/kernel/module_loader.cpp

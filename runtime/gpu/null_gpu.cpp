@@ -2,6 +2,7 @@
 // the XDK Direct3D library to run (ring buffer, fences, interrupts, vblank)
 // without drawing anything.
 #include "kernel/kernel.h"
+#include "kernel/cheats.h"
 #include "audio/xma.h"
 #include "host/settings.h"
 #include "host/overlay.h"
@@ -915,9 +916,15 @@ TZ_IMPORT(VdSwap) {
         fflush(stderr);
         ExitProcess(0);
     }
+    // Cheats act here, between two frames (and while the menu pauses the game, so its
+    // actions apply at once).
+    cheats::applyFrame();
     // The F1 menu pauses the game here, between two frames; the command processor
     // keeps presenting the last one under the menu.
-    while (host::overlay::isOpen()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    while (host::overlay::isOpen()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        cheats::applyFrame();
+    }
     ctx.r3.u64 = 0;
 }
 

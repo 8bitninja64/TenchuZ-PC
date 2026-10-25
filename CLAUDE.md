@@ -222,6 +222,20 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   (823DC650) without attribute bits 0x44, and the hit within 1100 of bone 24; it stores the
   hook point at player+4416/+5200 (player = *0x82B58A58). Lit reticle tint 0xFFFFFFFF, dim
   0xFFA0A0A0. States: 34 throw, 35 zip, 15 fall (hook points mid-wall end in a fall).
+- Cheats (runtime/kernel/cheats.cpp, F1 > Cheats; control-file "cheat <id> on|off"): characters
+  keep life at +0x118C (max +0x1188, guard gauge +0x1190, poison +0x11CC.. +0x11D8, type +0xA0
+  with bit 0x1000 = player); every hit goes through the damage routine sub_822D8C20 (r3 target,
+  f1 damage, r5 attacker; items carry the owner id at +0xCC). AI list u32[64] 0x82B57930, count
+  0x82B58E6C; AI state +0x1420 (3 patrol, 6 noise, 7 spotted, 10 combat), sight check
+  sub_82309910, think sub_822F2988 (contact timer +0x1458), noise sub_8228F3C0. MGR =
+  *0x82B57814 (game data): profile MGR+0xA0 (money +0x1E8 from MGR, skill masks MGR+0x440/0x444,
+  costume masks MGR+0x1F0/0x230, mission stats MGR+0x400), inventory MGR+0x470 (entries
+  {id 0x10000+i, stock, flags} at +8, carried ids +536 / counts +708). Jump table 0x829D4998
+  (32-byte rows, height at +0x1C), gravity 0x8200E600, grapple zip 0x820242D4 and hit distance
+  0x820242BC. Player states: 0 idle, 11/12 jump, 15 fall, 34/35 grapple, 36 swimming. Jumping is
+  disabled in the hideout. Verified in game: health (combat at 140/140 vs 140 -> 0 without),
+  actions, jump (rise 232 -> 402), run (top speed x1.75), data patches. Mission 1 test bot:
+  scratchpad bot.py style (peek positions, steer the stick from observed motion).
 - Resolved textures are allocated padded (resolve widths round up): fetches scale UVs by
   fetch size / host size (g_textureScale), or blur chains drift (lantern bloom offset).
 - Saved profile settings once had all volumes at 0 from button-mashing tests: if the

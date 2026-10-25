@@ -109,8 +109,13 @@ RTX 3070 laptop; menus and the hideout run far higher.
 
 - **F1** (or **Back + Start** on a controller): settings menu, which pauses the game:
   display (frame rate limit, resolution, FPS counter), audio volume, controls
-  (controller and keyboard remapping, mouse), unlocking all missions in your save, and
-  updates. A controller works it too: LB/RB switch sections, A selects, B goes back.
+  (controller and keyboard remapping, mouse), unlocking all missions in your save, cheats,
+  and updates. A controller works it too: LB/RB switch sections, A selects, B goes back.
+- **Cheats** (F1 > Cheats; all off at every start): infinite health, one-hit kills, invisible
+  to enemies, silent ninja, infinite items, cure poison, unbreakable guard, super jump, fast
+  run, low gravity, fast and long grapple, soft landing, free shopping, Grand Master rank,
+  perfect stealth record; and actions: max money, unlock all skills, fill item stock, unlock
+  all costumes.
 - **Alt+Enter** or **F11**: toggle borderless fullscreen.
 - Controller: any pad SDL3 recognizes, buttons by position as on an Xbox pad; the first
   connected pad is player 1. Layouts come from `gamecontrollerdb.txt` next to the

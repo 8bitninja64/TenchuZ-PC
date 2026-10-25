@@ -163,3 +163,24 @@ after_instruction = true
 name = "WavePhaseStepMidAsmHook"
 address = 0x823C33B0
 registers = ["f0"]
+
+# Cheats (runtime/kernel/cheats.cpp): the grapple's ray length after its load in
+# sub_82363860 (the constant is shared with AI sight), and the fall height above which the
+# player staggers on landing (player fall state and state 160; shared constant).
+[[midasm_hook]]
+name = "GrappleRayLengthMidAsmHook"
+address = 0x82363914
+registers = ["f0"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "SoftLandingMidAsmHook"
+address = 0x823618BC
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "SoftLandingMidAsmHook"
+address = 0x8236109C
+registers = ["f13"]
+after_instruction = true

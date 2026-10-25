@@ -19,6 +19,7 @@
 //                          configured with -DTENCHU_ENTRY_COUNTS=ON)
 //   watchw <addr>          hardware watchpoint: log the guest code writing those 4 bytes
 //   clock                  log host milliseconds (timing measurements)
+//   cheat <id> [on|off]    F1 > Cheats (ids in kernel/cheats.cpp); actions run with on
 //   quit                   exit the process
 #include <cstdint>
 #include <string>
