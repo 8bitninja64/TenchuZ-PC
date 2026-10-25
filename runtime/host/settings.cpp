@@ -39,11 +39,36 @@ frame_rate_limit = 60
 ; Frame rate counter in the top left corner (also in the F1 menu).
 show_fps = false
 ; HDR10 output on monitors with Windows HDR turned on: highlights are expanded up to
-; hdr_peak_nits (set it to your display's peak); mid tones and the F1 menu sit at
-; hdr_paper_white_nits.
+; hdr_peak_nits (0 = the display's own peak); mid tones and the F1 menu sit at
+; hdr_paper_white_nits (0 = Windows' "SDR content brightness").
 hdr = false
-hdr_peak_nits = 1000
-hdr_paper_white_nits = 200
+hdr_peak_nits = 0
+hdr_paper_white_nits = 0
+; How strongly highlights of the 3D scene are expanded, in percent (0 = none: the SDR
+; look at paper white; above 100 brightens mid tones too). The HUD stays at paper white.
+hdr_highlights = 100
+; Filter that enlarges the game image to a larger window: bicubic (sharper) or bilinear.
+; An internal resolution above the window size is always averaged down (no shimmer).
+upscale_filter = bicubic
+
+[graphics]
+; Ambient occlusion: soft shadows in corners, under eaves and around objects standing on
+; the ground, from the depth of the 3D scene (the HUD is not affected). Strength in
+; percent, radius in game units (about centimeters).
+ambient_occlusion = false
+ao_strength = 100
+ao_radius = 80
+; Experimental, with ambient occlusion: light bounced off nearby surfaces tints what
+; faces them (color bleeding near bright walls and lanterns).
+indirect_light = false
+; Contrast-adaptive sharpening of the 3D scene in percent (0 = off).
+sharpening = 0
+; At resolution_scale 2 and above, bloom samples the scene averaged to 720p like the
+; original, instead of sparkling on small highlights.
+stable_bloom = true
+; Multisample anti-aliasing of the 3D scene: 2 (the original), 4 or 8 samples. Applied
+; at the next start; more samples need more video memory (at most 4 from resolution_scale 3).
+msaa = 2
 
 [audio]
 ; Master volume in percent, and mute.
@@ -124,6 +149,9 @@ std::string content(const std::string& line) {
 
 bool parseBool(const std::string& value) { return value == "true" || value == "1" || value == "yes" || value == "on"; }
 
+// A value where 0 (or less) means automatic, else clamped to [low, high].
+int automatic(int value, int low, int high) { return value <= 0 ? 0 : std::clamp(value, low, high); }
+
 void apply(Settings& settings, const std::string& section, const std::string& key, const std::string& value) {
     try {
         if (section == "game") {
@@ -139,8 +167,21 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "frame_rate_limit") settings.frameRateLimit = (std::max)(0, std::stoi(value));
             else if (key == "show_fps") settings.showFps = parseBool(value);
             else if (key == "hdr") settings.hdr = parseBool(value);
-            else if (key == "hdr_peak_nits") settings.hdrPeakNits = std::clamp(std::stoi(value), 80, 10000);
-            else if (key == "hdr_paper_white_nits") settings.hdrPaperWhiteNits = std::clamp(std::stoi(value), 80, 1000);
+            else if (key == "hdr_peak_nits") settings.hdrPeakNits = automatic(std::stoi(value), 80, 10000);
+            else if (key == "hdr_paper_white_nits") settings.hdrPaperWhiteNits = automatic(std::stoi(value), 80, 1000);
+            else if (key == "hdr_highlights") settings.hdrHighlights = std::clamp(std::stoi(value), 0, 200);
+            else if (key == "upscale_filter") settings.upscaleBicubic = value != "bilinear";
+        } else if (section == "graphics") {
+            if (key == "ambient_occlusion") settings.ambientOcclusion = parseBool(value);
+            else if (key == "ao_strength") settings.aoStrength = std::clamp(std::stoi(value), 0, 200);
+            else if (key == "ao_radius") settings.aoRadius = std::clamp(std::stoi(value), 10, 400);
+            else if (key == "indirect_light") settings.indirectLight = parseBool(value);
+            else if (key == "sharpening") settings.sharpening = std::clamp(std::stoi(value), 0, 100);
+            else if (key == "stable_bloom") settings.stableBloom = parseBool(value);
+            else if (key == "msaa") {
+                const int samples = std::stoi(value);
+                settings.msaa = samples >= 8 ? 8 : samples >= 4 ? 4 : 2;
+            }
         } else if (section == "audio") {
             if (key == "volume") settings.volume = std::clamp(std::stoi(value), 0, 100);
             else if (key == "mute") settings.mute = parseBool(value);
@@ -221,9 +262,16 @@ void noteFrontEndFrame() { frontEndFrameAt.store(nowMs(), std::memory_order_rela
 
 namespace {
 std::atomic<bool> hdrDisplay{false};
+std::atomic<int> hdrAutoPeak{1000}, hdrAutoPaperWhite{200};
 }
 bool hdrAvailable() { return hdrDisplay.load(std::memory_order_relaxed); }
 void setHdrAvailable(bool available) { hdrDisplay.store(available, std::memory_order_relaxed); }
+void setHdrAutoNits(int peak, int paperWhite) {
+    hdrAutoPeak.store(peak, std::memory_order_relaxed);
+    hdrAutoPaperWhite.store(paperWhite, std::memory_order_relaxed);
+}
+int hdrAutoPeakNits() { return hdrAutoPeak.load(std::memory_order_relaxed); }
+int hdrAutoPaperWhiteNits() { return hdrAutoPaperWhite.load(std::memory_order_relaxed); }
 
 int activeFrameRateLimit() {
     const int limit = settings().frameRateLimit;
@@ -262,6 +310,15 @@ void saveSettings() {
         {"display", "hdr", text(s.hdr)},
         {"display", "hdr_peak_nits", std::to_string(s.hdrPeakNits)},
         {"display", "hdr_paper_white_nits", std::to_string(s.hdrPaperWhiteNits)},
+        {"display", "hdr_highlights", std::to_string(s.hdrHighlights)},
+        {"display", "upscale_filter", s.upscaleBicubic ? "bicubic" : "bilinear"},
+        {"graphics", "ambient_occlusion", text(s.ambientOcclusion)},
+        {"graphics", "ao_strength", std::to_string(s.aoStrength)},
+        {"graphics", "ao_radius", std::to_string(s.aoRadius)},
+        {"graphics", "indirect_light", text(s.indirectLight)},
+        {"graphics", "sharpening", std::to_string(s.sharpening)},
+        {"graphics", "stable_bloom", text(s.stableBloom)},
+        {"graphics", "msaa", std::to_string(s.msaa)},
         {"audio", "volume", std::to_string(s.volume)},
         {"audio", "mute", text(s.mute)},
         {"input", "mouse_sensitivity", std::to_string(s.mouseSensitivity)},

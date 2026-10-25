@@ -23,7 +23,7 @@ hideout and missions with D3D11 rendering at the original 30 fps.
 | Audio | XAudio2 output; XMA decoder hardware emulated with FFmpeg |
 | Movies | the game's own WMV player, real time |
 | Input | any controller via SDL3 (Xbox, PlayStation, Switch, 8BitDo...), keyboard and mouse (rebindable) |
-| Modern features | 60 fps and higher, resolution scaling up to 4x (4K = scale 3), borderless fullscreen |
+| Modern features | 60 fps and higher, resolution scaling up to 4x (4K = scale 3), borderless fullscreen, HDR10, ambient occlusion, sharpening, MSAA up to 8x |
 
 Not done yet: widescreen beyond 16:9, achievements.
 
@@ -108,9 +108,10 @@ locked to the display. Missions currently reach about 75-80 fps unlimited on an
 RTX 3070 laptop; menus and the hideout run far higher.
 
 - **F1** (or **Back + Start** on a controller): settings menu, which pauses the game:
-  display (frame rate limit, resolution, FPS counter), audio volume, controls
-  (controller and keyboard remapping, mouse), unlocking all missions in your save, cheats,
-  and updates. A controller works it too: LB/RB switch sections, A selects, B goes back.
+  display (frame rate limit, resolution, FPS counter, HDR), graphics (ambient occlusion,
+  sharpening, anti-aliasing), audio volume, controls (controller and keyboard remapping,
+  mouse), unlocking all missions in your save, cheats, and updates. A controller works it
+  too: LB/RB switch sections, A selects, B goes back.
 - **Cheats** (F1 > Cheats; all off at every start): infinite health, one-hit kills, invisible
   to enemies, silent ninja, infinite items, cure poison, unbreakable guard, super jump, fast
   run, low gravity, fast and long grapple, soft landing, free shopping, Grand Master rank,

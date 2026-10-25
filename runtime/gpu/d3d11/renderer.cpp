@@ -4,13 +4,17 @@
 #include "kernel/control.h"
 #include "host/settings.h"
 #include <d3dcompiler.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <tuple>
+#include <vector>
 
 namespace tz::gpu {
 namespace {
@@ -30,16 +34,78 @@ Output vs(uint id : SV_VertexID) {
 }
 float4 ps(Output i) : SV_Target { return float4(source.Sample(linearSampler, i.uv).rgb, 1.0); }
 float4 psSwapped(Output i) : SV_Target { return float4(source.Sample(linearSampler, i.uv).bgr, 1.0); }
+
+Texture2D sceneOnly : register(t1);
+cbuffer Blit : register(b0) {
+    uint hasScene;        // HDR: sceneOnly holds the image before the HUD
+    uint swapRedBlue;     // the front buffer resolve swapped red and blue
+    uint filter;          // 0 bilinear, 1 Catmull-Rom (upscaling), 2 box (downscaling)
+    uint taps;            // box: samples per axis
+    float2 sourceSize;    // texels
+    float2 footprint;     // source texels per window pixel
+};
+// Catmull-Rom (bicubic) from 9 bilinear samples: the 4x4 kernel's two middle weights per
+// axis merge into one sample between them (after Phill Djonov and Matt Pettineo). Sharper
+// than bilinear when the window is larger than the image.
+float3 CatmullRom(float2 uv) {
+    float2 position = uv * sourceSize, center = floor(position - 0.5) + 0.5, f = position - center;
+    float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);
+    float2 w12 = w1 + w2;
+    float2 t0 = (center - 1.0) / sourceSize, t12 = (center + w2 / w12) / sourceSize, t3 = (center + 2.0) / sourceSize;
+    float3 row0 = source.SampleLevel(linearSampler, float2(t0.x, t0.y), 0).rgb * w0.x +
+                  source.SampleLevel(linearSampler, float2(t12.x, t0.y), 0).rgb * w12.x +
+                  source.SampleLevel(linearSampler, float2(t3.x, t0.y), 0).rgb * w3.x;
+    float3 row12 = source.SampleLevel(linearSampler, float2(t0.x, t12.y), 0).rgb * w0.x +
+                   source.SampleLevel(linearSampler, float2(t12.x, t12.y), 0).rgb * w12.x +
+                   source.SampleLevel(linearSampler, float2(t3.x, t12.y), 0).rgb * w3.x;
+    float3 row3 = source.SampleLevel(linearSampler, float2(t0.x, t3.y), 0).rgb * w0.x +
+                  source.SampleLevel(linearSampler, float2(t12.x, t3.y), 0).rgb * w12.x +
+                  source.SampleLevel(linearSampler, float2(t3.x, t3.y), 0).rgb * w3.x;
+    return saturate(row0 * w0.y + row12 * w12.y + row3 * w3.y);  // the negative lobes overshoot at edges
+}
+// Box filter: the mean of taps x taps bilinear samples spread over the window pixel's
+// footprint. Internal resolutions above the window size stop shimmering.
+float3 Box(float2 uv) {
+    float2 step = footprint / (sourceSize * taps), start = uv - step * (taps - 1) * 0.5;
+    float3 sum = 0.0;
+    for (uint y = 0; y < taps; ++y)
+        for (uint x = 0; x < taps; ++x) sum += source.SampleLevel(linearSampler, start + step * float2(x, y), 0).rgb;
+    return sum / (taps * taps);
+}
+float3 Scaled(float2 uv) {
+    float3 color;
+    if (filter == 1) color = CatmullRom(uv);
+    else if (filter == 2) color = Box(uv);
+    else color = source.SampleLevel(linearSampler, uv, 0).rgb;
+    return swapRedBlue ? color.bgr : color;
+}
+float4 psScaled(Output i) : SV_Target { return float4(Scaled(i.uv), 1.0); }
+
+// HDR: alpha marks the 3D scene (1: highlights are expanded) apart from the HUD, menus and
+// movies (0: they stay at paper white). Scene pixels still match the copy of the target
+// taken right after the scene composite, before the HUD was drawn over it (both compared
+// with the same bilinear samples, whatever the scaling filter).
+float4 psMasked(Output i) : SV_Target {
+    float scene = 0.0;
+    if (hasScene) {
+        float3 shown = source.SampleLevel(linearSampler, i.uv, 0).rgb;
+        if (swapRedBlue) shown = shown.bgr;  // the front buffer resolve may swap red and blue, the copy does not
+        scene = all(abs(shown - sceneOnly.SampleLevel(linearSampler, i.uv, 0).rgb) <= 2.0 / 255.0) ? 1.0 : 0.0;
+    }
+    return float4(Scaled(i.uv), scene);
+}
 )";
 
 // SDR game image + menu -> HDR10. The game's output is display-referred SDR (gamma 2.2):
-// mid tones keep their brightness at paper white, highlights are expanded toward the peak
-// (by luminance, so hues stay), then Rec.709 -> Rec.2020 and the PQ curve. The menu is
-// composited in linear light at paper white.
+// mid tones keep their brightness at paper white, highlights of the 3D scene (the game
+// image's alpha) are expanded toward the peak (by luminance, so hues stay), then Rec.709 ->
+// Rec.2020 and the PQ curve, dithered to 10 bits. The menu is composited in linear light at
+// paper white.
 const char* kHdrShader = R"(
 Texture2D game : register(t0);
 Texture2D ui : register(t1);
-cbuffer Hdr : register(b0) { float paperWhite; float peak; float expansion; float unused; };
+cbuffer Hdr : register(b0) { float paperWhite; float peak; float expansion; float highlights; };
 struct Output { float4 position : SV_Position; float2 uv : TEXCOORD0; };
 static const float3x3 k709To2020 = {0.6274040, 0.3292820, 0.0433136,
                                     0.0690970, 0.9195400, 0.0113612,
@@ -48,21 +114,51 @@ float3 PQ(float3 nits) {
     float3 y = pow(saturate(nits / 10000.0), 0.1593017578125);
     return pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375);
 }
+// Interleaved gradient noise (Jimenez): a cheap, even dither pattern.
+float IGN(float2 p) { return frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715)))); }
 float4 ps(Output i) : SV_Target {
     int3 p = int3(i.position.xy, 0);
-    float3 color = pow(saturate(game.Load(p).rgb), 2.2);
+    float4 g = game.Load(p);
+    float3 color = pow(saturate(g.rgb), 2.2);
     float luminance = dot(color, float3(0.2126, 0.7152, 0.0722));
-    float boost = 1.0 + (peak / paperWhite - 1.0) * pow(luminance, expansion);
+    float boost = 1.0 + (peak / paperWhite - 1.0) * pow(luminance, expansion) * highlights * g.a;
     float3 nits = min(color * paperWhite * boost, peak);
     float4 menu = ui.Load(p);
     if (menu.a > 0.0) nits = nits * (1.0 - menu.a) + pow(saturate(menu.rgb / menu.a), 2.2) * menu.a * paperWhite;
-    return float4(PQ(mul(k709To2020, nits)), 1.0);
+    return float4(PQ(mul(k709To2020, nits)) + (IGN(i.position.xy) - 0.5) / 1023.0, 1.0);
 }
 )";
 
 template <typename T> void release(T*& object) {
     if (object) object->Release();
     object = nullptr;
+}
+
+// Layout of cbuffer Blit in kBlitShader.
+struct BlitConstants {
+    uint32_t hasScene, swapRedBlue, filter, taps;
+    float sourceSize[2], footprint[2];
+};
+
+// Size of the texture behind a shader resource view.
+void viewSize(ID3D11ShaderResourceView* view, UINT& width, UINT& height) {
+    ID3D11Resource* resource = nullptr;
+    ID3D11Texture2D* texture = nullptr;
+    D3D11_TEXTURE2D_DESC desc{};
+    view->GetResource(&resource);
+    if (resource && SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture))))
+        texture->GetDesc(&desc);
+    release(texture);
+    release(resource);
+    width = desc.Width;
+    height = desc.Height;
+}
+
+void writeBuffer(ID3D11DeviceContext* context, ID3D11Buffer* buffer, const void* data, size_t size) {
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
+    std::memcpy(mapped.pData, data, size);
+    context->Unmap(buffer, 0);
 }
 
 ID3DBlob* compile(const char* source, const char* entry, const char* profile) {
@@ -75,6 +171,69 @@ ID3DBlob* compile(const char* source, const char* entry, const char* profile) {
     }
     release(errors);
     return code;
+}
+
+// Windows' "SDR content brightness" for a monitor in HDR mode, in nits (200 if unknown).
+float windowsSdrWhiteNits(HMONITOR monitor) {
+    MONITORINFOEXW info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info)) return 200.0f;
+    UINT32 pathCount = 0, modeCount = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS) return 200.0f;
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr) !=
+        ERROR_SUCCESS)
+        return 200.0f;
+    paths.resize(pathCount);
+    for (const auto& path : paths) {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+        source.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(source), path.sourceInfo.adapterId,
+                         path.sourceInfo.id};
+        if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS ||
+            wcscmp(source.viewGdiDeviceName, info.szDevice) != 0)
+            continue;
+        DISPLAYCONFIG_SDR_WHITE_LEVEL white{};
+        white.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, sizeof(white), path.targetInfo.adapterId,
+                        path.targetInfo.id};
+        // SDRWhiteLevel is in thousandths of 80 nits (1000 = 80 nits).
+        if (DisplayConfigGetDeviceInfo(&white.header) == ERROR_SUCCESS && white.SDRWhiteLevel)
+            return float(white.SDRWhiteLevel) / 1000.0f * 80.0f;
+    }
+    return 200.0f;
+}
+
+// Windows' SDR brightness slider does not make the DXGI factory stale, so its value is
+// polled while HDR output uses it, on a thread of its own: QueryDisplayConfig can take
+// milliseconds, as long as a frame at high rates.
+std::atomic<HMONITOR> sdrWhiteMonitor{nullptr};  // the monitor to poll; nullptr: none
+std::mutex sdrWhiteMutex;
+HMONITOR sdrWhitePolledMonitor = nullptr;  // the last result and its monitor
+float sdrWhitePolled = 0.0f;
+
+void pollSdrWhite(HMONITOR monitor) {
+    sdrWhiteMonitor = monitor;
+    if (!monitor) return;
+    static std::once_flag started;
+    std::call_once(started, [] {
+        std::thread([] {
+            for (;;) {
+                if (const HMONITOR polled = sdrWhiteMonitor.load()) {
+                    const float nits = windowsSdrWhiteNits(polled);
+                    std::lock_guard lock(sdrWhiteMutex);
+                    sdrWhitePolledMonitor = polled;
+                    sdrWhitePolled = nits;
+                }
+                Sleep(2000);
+            }
+        }).detach();
+    });
+}
+
+// The last polled SDR white level of a monitor, or 0.
+float polledSdrWhite(HMONITOR monitor) {
+    std::lock_guard lock(sdrWhiteMutex);
+    return sdrWhitePolledMonitor == monitor ? sdrWhitePolled : 0.0f;
 }
 
 }  // namespace
@@ -141,6 +300,14 @@ bool D3D11Renderer::initialize(HWND target) {
     if (!vs || !ps || !swapped) return false;
     device_->CreatePixelShader(swapped->GetBufferPointer(), swapped->GetBufferSize(), nullptr, &blitSwappedPixelShader_);
     release(swapped);
+    if (ID3DBlob* masked = compile(kBlitShader, "psMasked", "ps_5_0")) {
+        device_->CreatePixelShader(masked->GetBufferPointer(), masked->GetBufferSize(), nullptr, &blitMaskedPixelShader_);
+        release(masked);
+    }
+    if (ID3DBlob* scaled = compile(kBlitShader, "psScaled", "ps_5_0")) {
+        device_->CreatePixelShader(scaled->GetBufferPointer(), scaled->GetBufferSize(), nullptr, &blitScaledPixelShader_);
+        release(scaled);
+    }
     device_->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &blitVertexShader_);
     device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &blitPixelShader_);
     release(vs);
@@ -160,6 +327,8 @@ bool D3D11Renderer::initialize(HWND target) {
     constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constants.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     device_->CreateBuffer(&constants, nullptr, &hdrConstants_);
+    constants.ByteWidth = sizeof(BlitConstants);
+    device_->CreateBuffer(&constants, nullptr, &blitConstants_);
     logf("[d3d11] renderer ready");
     return true;
 }
@@ -193,29 +362,79 @@ bool D3D11Renderer::pacedByVsync() const {
            refresh_ % uint32_t(limit) == 0 && refresh_ / uint32_t(limit) <= 4;
 }
 
-// Whether Windows HDR is on for the monitor showing the window. A new factory each time:
-// a factory's outputs keep the color space they had when it was created.
-bool D3D11Renderer::monitorHdr() const {
-    IDXGIFactory1* factory = nullptr;
-    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) return false;
+// Whether Windows HDR is on for the monitor showing the window. A factory's outputs keep
+// the color space they had when it was created, so a stale factory (IsCurrent is false
+// after HDR toggles and display changes) is replaced; otherwise the outputs are enumerated
+// again only when the window moved to another monitor.
+bool D3D11Renderer::monitorHdr() {
     const HMONITOR monitor = MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST);
-    bool hdr = false;
+    const bool current = outputFactory_ && outputFactory_->IsCurrent();
+    if (current && monitor == outputMonitor_) return monitorHdr_;
+    if (!current) {
+        release(outputFactory_);
+        if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&outputFactory_)))) return false;
+    }
+    outputMonitor_ = monitor;
+    monitorHdr_ = false;
+    monitorPeakNits_ = 0.0f;
     IDXGIAdapter1* adapter = nullptr;
-    for (UINT a = 0; factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
+    for (UINT a = 0; outputFactory_->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
         IDXGIOutput* output = nullptr;
         for (UINT o = 0; adapter->EnumOutputs(o, &output) != DXGI_ERROR_NOT_FOUND; ++o) {
             IDXGIOutput6* output6 = nullptr;
             DXGI_OUTPUT_DESC1 desc{};
             if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6), reinterpret_cast<void**>(&output6))) &&
-                SUCCEEDED(output6->GetDesc1(&desc)) && desc.Monitor == monitor)
-                hdr = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+                SUCCEEDED(output6->GetDesc1(&desc)) && desc.Monitor == monitor) {
+                monitorHdr_ = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+                monitorPeakNits_ = desc.MaxLuminance;
+            }
             release(output6);
             release(output);
         }
         release(adapter);
     }
-    release(factory);
-    return hdr;
+    if (monitorHdr_) sdrWhiteNits_ = windowsSdrWhiteNits(monitor);
+    return monitorHdr_;
+}
+
+void D3D11Renderer::hdrLevels(float& paperWhite, float& peak) const {
+    const host::Settings& s = host::settings();
+    // EDID peaks below 400 nits are usually wrong (HDR400 is the lowest certification).
+    peak = s.hdrPeakNits > 0 ? float(s.hdrPeakNits) : monitorPeakNits_ >= 400.0f ? monitorPeakNits_ : 1000.0f;
+    paperWhite = (std::max)(s.hdrPaperWhiteNits > 0 ? float(s.hdrPaperWhiteNits) : sdrWhiteNits_, 80.0f);
+    peak = (std::max)(peak, paperWhite);
+}
+
+// HDR10 metadata for displays that tone-map by it: SDR content (Rec.709 primaries, D65)
+// expanded up to the peak, averaging around paper white.
+void D3D11Renderer::updateHdrMetadata(float paperWhite, float peak) {
+    if (paperWhite == metadataPaperWhite_ && peak == metadataPeak_) return;
+    metadataPaperWhite_ = paperWhite;
+    metadataPeak_ = peak;
+    IDXGISwapChain4* swapChain4 = nullptr;
+    if (FAILED(swapChain_->QueryInterface(__uuidof(IDXGISwapChain4), reinterpret_cast<void**>(&swapChain4)))) return;
+    DXGI_HDR_METADATA_HDR10 metadata{};
+    // Chromaticity coordinates scaled by 50000.
+    const UINT16 primaries[8] = {32000, 16500, 15000, 30000, 7500, 3000, 15635, 16450};
+    std::memcpy(metadata.RedPrimary, primaries, sizeof(primaries));  // red, green, blue, white point
+    metadata.MaxMasteringLuminance = UINT(peak);
+    metadata.MinMasteringLuminance = 1;  // 0.0001 nits
+    metadata.MaxContentLightLevel = UINT16(peak);
+    metadata.MaxFrameAverageLightLevel = UINT16(paperWhite);
+    if (FAILED(swapChain4->SetHDRMetaData(DXGI_HDR_METADATA_TYPE_HDR10, sizeof(metadata), &metadata)))
+        TZ_TRACE("hdr", "[d3d11] HDR10 metadata refused");
+    release(swapChain4);
+}
+
+// After every present the back buffer is still bound (the blit, the HDR pass and the
+// menu leave it there): during play the next frame's draws replace it, but the F1 menu
+// re-presents with nothing in between, and DXGI refuses ResizeBuffers while a view of a
+// buffer is bound (HDR and fullscreen toggles from the menu failed).
+void D3D11Renderer::unbindBackBuffer() {
+    context_->OMSetRenderTargets(0, nullptr, nullptr);
+    ID3D11ShaderResourceView* none[2] = {};
+    context_->PSSetShaderResources(0, 2, none);
+    context_->Flush();  // the flip model releases buffers lazily
 }
 
 // Switches the swap chain between SDR and HDR10 when the setting or the monitor changes
@@ -224,15 +443,26 @@ void D3D11Renderer::updateHdr() {
     static bool available = false;
     if (frame_ % 120 == 1) {
         static const bool force = traceEnabled("forcehdr");  // the HDR path on any monitor (testing)
-        const bool now = force || monitorHdr();
-        if (now != available || frame_ == 1) logf("[d3d11] monitor HDR %s", now ? "on" : "off");
+        const bool now = monitorHdr() || force;
+        if (now != available || frame_ == 1)
+            logf("[d3d11] monitor HDR %s (peak %.0f nits, SDR white %.0f nits)", now ? "on" : "off", monitorPeakNits_,
+                 sdrWhiteNits_);
         available = now;
         host::setHdrAvailable(available);
+        // Follow Windows' SDR brightness slider while automatic paper white uses it.
+        const bool followSdrWhite = hdr_ && host::settings().hdrPaperWhiteNits == 0 && monitorHdr_;
+        if (const float polled = followSdrWhite ? polledSdrWhite(outputMonitor_) : 0.0f; polled > 0.0f)
+            sdrWhiteNits_ = polled;
+        pollSdrWhite(followSdrWhite ? outputMonitor_ : nullptr);
+        // What "auto" stands for, shown in the F1 menu.
+        const float autoPeak = monitorPeakNits_ >= 400.0f ? monitorPeakNits_ : 1000.0f;
+        host::setHdrAutoNits(int(autoPeak + 0.5f), int((std::max)(sdrWhiteNits_, 80.0f) + 0.5f));
     }
-    const bool want = host::settings().hdr && available && hdrPixelShader_;
+    const bool want = host::settings().hdr && available && hdrPixelShader_ && blitMaskedPixelShader_;
     if (want == hdr_) return;
     release(backBufferView_);
     releaseHdrTextures();
+    unbindBackBuffer();
     const DXGI_FORMAT format = want ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
     if (FAILED(swapChain_->ResizeBuffers(0, 0, 0, format, 0))) {
         logf("[d3d11] cannot switch the swap chain to %s", want ? "HDR10" : "SDR");
@@ -247,6 +477,12 @@ void D3D11Renderer::updateHdr() {
         (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
         swapChain3->SetColorSpace1(space);
     release(swapChain3);
+    // HDR10 metadata goes with each change of the levels (present); SDR has none.
+    metadataPaperWhite_ = metadataPeak_ = -1.0f;
+    IDXGISwapChain4* swapChain4 = nullptr;
+    if (!want && SUCCEEDED(swapChain_->QueryInterface(__uuidof(IDXGISwapChain4), reinterpret_cast<void**>(&swapChain4))))
+        swapChain4->SetHDRMetaData(DXGI_HDR_METADATA_TYPE_NONE, 0, nullptr);
+    release(swapChain4);
     backBufferFormat_ = format;
     hdr_ = want;
     width_ = height_ = 0;  // resizeIfNeeded recreates the views
@@ -285,7 +521,9 @@ void D3D11Renderer::resizeIfNeeded() {
     if (backBufferView_ && width == width_ && height == height_) return;
     release(backBufferView_);
     releaseHdrTextures();
-    swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    unbindBackBuffer();
+    if (FAILED(swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0)))
+        logf("[d3d11] cannot resize the swap chain to %ux%u", width, height);
     ID3D11Texture2D* backBuffer = nullptr;
     swapChain_->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBuffer));
     device_->CreateRenderTargetView(backBuffer, nullptr, &backBufferView_);
@@ -295,11 +533,14 @@ void D3D11Renderer::resizeIfNeeded() {
     if (hdr_) createHdrTextures();
 }
 
-void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue) { present(source, swapRedBlue, false); }
+void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, ID3D11ShaderResourceView* sceneOnly) {
+    presentFrame(source, swapRedBlue, sceneOnly, false);
+}
 
-void D3D11Renderer::presentAgain() { present(lastSource_, lastSwapRedBlue_, true); }
+void D3D11Renderer::presentAgain() { presentFrame(lastSource_, lastSwapRedBlue_, lastSceneOnly_, true); }
 
-void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, bool repeat) {
+void D3D11Renderer::presentFrame(ID3D11ShaderResourceView* source, bool swapRedBlue, ID3D11ShaderResourceView* sceneOnly,
+                                 bool repeat) {
     ++frame_;
     updateHdr();
     resizeIfNeeded();
@@ -310,6 +551,9 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, 
         if (lastSource_) lastSource_->Release();
         lastSource_ = source;
         lastSwapRedBlue_ = swapRedBlue;
+        if (sceneOnly) sceneOnly->AddRef();
+        if (lastSceneOnly_) lastSceneOnly_->Release();
+        lastSceneOnly_ = sceneOnly;
         // Frame rate of new game frames, averaged over half a second.
         static auto windowStart = std::chrono::steady_clock::now();
         static uint32_t frames = 0;
@@ -335,15 +579,38 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, 
         context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context_->IASetInputLayout(nullptr);
         context_->VSSetShader(blitVertexShader_, nullptr, 0);
-        context_->PSSetShader(swapRedBlue ? blitSwappedPixelShader_ : blitPixelShader_, nullptr, 0);
-        context_->PSSetShaderResources(0, 1, &source);
+        // Scaling: a box filter when the image is larger than its place in the window (internal
+        // resolution above the window size), Catmull-Rom ([display] upscale_filter) when smaller.
+        UINT sourceWidth = 0, sourceHeight = 0;
+        viewSize(source, sourceWidth, sourceHeight);
+        BlitConstants constants{sceneOnly ? 1u : 0u, swapRedBlue ? 1u : 0u, 0, 1,
+                                {float(sourceWidth), float(sourceHeight)},
+                                {float(sourceWidth) / width, float(sourceHeight) / height}};
+        const float footprint = (std::max)(constants.footprint[0], constants.footprint[1]);
+        if (footprint > 1.001f) {
+            constants.filter = 2;
+            constants.taps = std::clamp(uint32_t(std::ceil(footprint - 0.001f)), 2u, 8u);
+        } else if (footprint < 0.999f && host::settings().upscaleBicubic) {
+            constants.filter = 1;
+        }
+        if (!blitScaledPixelShader_) constants.filter = 0;
+        if (hdr || constants.filter) {
+            // The scene mask goes into alpha in HDR mode (kBlitShader psMasked).
+            writeBuffer(context_, blitConstants_, &constants, sizeof(constants));
+            context_->PSSetShader(hdr ? blitMaskedPixelShader_ : blitScaledPixelShader_, nullptr, 0);
+            context_->PSSetConstantBuffers(0, 1, &blitConstants_);
+        } else {
+            context_->PSSetShader(swapRedBlue ? blitSwappedPixelShader_ : blitPixelShader_, nullptr, 0);
+        }
+        ID3D11ShaderResourceView* views[2] = {source, hdr ? sceneOnly : nullptr};
+        context_->PSSetShaderResources(0, hdr ? 2 : 1, views);
         context_->PSSetSamplers(0, 1, &linearSampler_);
         context_->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
         context_->OMSetDepthStencilState(nullptr, 0);
         context_->RSSetState(nullptr);
         context_->Draw(3, 0);
-        ID3D11ShaderResourceView* none = nullptr;
-        context_->PSSetShaderResources(0, 1, &none);
+        ID3D11ShaderResourceView* none[2] = {};
+        context_->PSSetShaderResources(0, hdr ? 2 : 1, none);
     } else {
         // Nothing resolved yet: a slowly cycling color shows frame pacing.
         const float t = float(frame_) / 60.0f;
@@ -355,14 +622,14 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, 
         const float clear[4] = {0, 0, 0, 0};
         context_->ClearRenderTargetView(uiView_, clear);
         host::overlay::render(uiView_, fps_);
-        const host::Settings& s = host::settings();
-        const float constants[4] = {float((std::max)(s.hdrPaperWhiteNits, 80)),
-                                    float((std::max)(s.hdrPeakNits, s.hdrPaperWhiteNits)), 4.0f, 0.0f};
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (SUCCEEDED(context_->Map(hdrConstants_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-            std::memcpy(mapped.pData, constants, sizeof(constants));
-            context_->Unmap(hdrConstants_, 0);
-        }
+        float paperWhite = 0.0f, peak = 0.0f;
+        hdrLevels(paperWhite, peak);
+        updateHdrMetadata(paperWhite, peak);
+        // Highlights 100% expands by luminance^4; higher percentages reach into the mid tones.
+        const float highlights = float(host::settings().hdrHighlights) / 100.0f;
+        const float constants[4] = {paperWhite, peak, 4.0f / (std::max)(highlights, 0.01f),
+                                    highlights > 0.0f ? 1.0f : 0.0f};
+        writeBuffer(context_, hdrConstants_, constants, sizeof(constants));
         const D3D11_VIEWPORT full{0, 0, float(width_), float(height_), 0, 1};
         context_->RSSetViewports(1, &full);
         context_->OMSetRenderTargets(1, &backBufferView_, nullptr);
@@ -460,11 +727,24 @@ void D3D11Renderer::captureIfRequested() {
                 }
             lastCaptureSuspicious_ = dark[1] * 100 > total[1] * 85 && dark[0] * 100 < total[0] * 60;
         }
+        // TENCHU_TRACE=hudmask: in HDR mode, the scene mask (alpha) instead of the image:
+        // white for the 3D scene, black for the HUD, menus and movies.
+        static const bool hudMask = traceEnabled("hudmask");
+        std::vector<uint8_t> mask(hudMask && hdr_ ? desc.Width * 4 : 0);
         if (FILE* out = _wfopen(target.c_str(), L"wb")) {
             fwrite(&file, sizeof(file), 1, out);
             fwrite(&info, sizeof(info), 1, out);
-            for (UINT y = desc.Height; y-- > 0;)
-                fwrite(static_cast<const uint8_t*>(mapped.pData) + size_t(y) * mapped.RowPitch, 4, desc.Width, out);
+            for (UINT y = desc.Height; y-- > 0;) {
+                const uint8_t* row = static_cast<const uint8_t*>(mapped.pData) + size_t(y) * mapped.RowPitch;
+                if (!mask.empty()) {
+                    for (UINT x = 0; x < desc.Width; ++x) {
+                        mask[x * 4] = mask[x * 4 + 1] = mask[x * 4 + 2] = row[x * 4 + 3];
+                        mask[x * 4 + 3] = 255;
+                    }
+                    row = mask.data();
+                }
+                fwrite(row, 4, desc.Width, out);
+            }
             fclose(out);
         }
         context_->Unmap(staging, 0);

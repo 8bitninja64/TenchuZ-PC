@@ -12,6 +12,7 @@
 #include <backends/imgui_impl_dx11.h>
 #include <backends/imgui_impl_win32.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -51,8 +52,9 @@ bool g_padCaptureArmed = false;
 ULONGLONG g_padCaptureSince = 0;
 std::atomic<bool> g_popupOpen{false};
 
-enum Section { kDisplay, kAudio, kControls, kMissions, kCheats, kUpdate, kAbout, kSectionCount };
-const char* kSectionNames[kSectionCount] = {"Display", "Audio", "Controls", "Missions", "Cheats", "Update", "About"};
+enum Section { kDisplay, kGraphics, kAudio, kControls, kMissions, kCheats, kUpdate, kAbout, kSectionCount };
+const char* kSectionNames[kSectionCount] = {"Display", "Graphics", "Audio", "Controls", "Missions",
+                                            "Cheats",  "Update",   "About"};
 int g_section = 0;
 // Two panes: choosing a section moves the highlight into its options; B
 // (Backspace) moves it back to the list. Only F1, Esc or Back+Start close the menu.
@@ -309,9 +311,42 @@ bool drawDisplay(Settings& st) {
     if (st.hdr && !hdrAvailable())
         ImGui::TextColored(kGold, "This monitor is not in HDR mode: turn on \"Use HDR\" in Windows display settings.");
     if (st.hdr) {
-        changed |= ImGui::SliderInt("Peak brightness (nits)", &st.hdrPeakNits, 400, 4000);
-        changed |= ImGui::SliderInt("Paper white (nits)", &st.hdrPaperWhiteNits, 80, 400);
-        if (st.hdrPaperWhiteNits > st.hdrPeakNits) st.hdrPaperWhiteNits = st.hdrPeakNits;
+        // 0 = auto: the display's peak and Windows' "SDR content brightness" (renderer.cpp).
+        bool autoPeak = st.hdrPeakNits == 0;
+        if (ImGui::Checkbox("Auto peak brightness", &autoPeak)) {
+            st.hdrPeakNits = autoPeak ? 0 : std::clamp(hdrAutoPeakNits(), 400, 4000);
+            changed = true;
+        }
+        if (autoPeak) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(display: %d nits)", hdrAutoPeakNits());
+        } else {
+            changed |= ImGui::SliderInt("Peak brightness (nits)", &st.hdrPeakNits, 400, 4000);
+        }
+        bool autoPaperWhite = st.hdrPaperWhiteNits == 0;
+        if (ImGui::Checkbox("Auto paper white", &autoPaperWhite)) {
+            st.hdrPaperWhiteNits = autoPaperWhite ? 0 : std::clamp(hdrAutoPaperWhiteNits(), 80, 400);
+            changed = true;
+        }
+        if (autoPaperWhite) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(Windows SDR brightness: %d nits)", hdrAutoPaperWhiteNits());
+        } else {
+            changed |= ImGui::SliderInt("Paper white (nits)", &st.hdrPaperWhiteNits, 80, 400);
+        }
+        if (st.hdrPeakNits && st.hdrPaperWhiteNits > st.hdrPeakNits) st.hdrPaperWhiteNits = st.hdrPeakNits;
+        // The 3D scene only: the HUD, menus and movies stay at paper white.
+        changed |= ImGui::SliderInt("Highlights", &st.hdrHighlights, 0, 200, "%d%%");
+    }
+    // Enlarging the image to a bigger window (an internal resolution above it is averaged).
+    static const char* const filters[] = {"Bicubic (sharper)", "Bilinear"};
+    if (ImGui::BeginCombo("Upscaling filter", filters[st.upscaleBicubic ? 0 : 1])) {
+        for (int i = 0; i < 2; ++i)
+            if (ImGui::Selectable(filters[i], st.upscaleBicubic == (i == 0))) {
+                st.upscaleBicubic = i == 0;
+                changed = true;
+            }
+        ImGui::EndCombo();
     }
     ImGui::Spacing();
     ImGui::Separator();
@@ -343,6 +378,40 @@ bool drawDisplay(Settings& st) {
         }
         ImGui::EndCombo();
     }
+    return changed;
+}
+
+// Effects the original does not have (gpu/d3d11/post_effects.h): on the 3D scene only,
+// before the HUD is drawn; they apply live.
+bool drawGraphics(Settings& st) {
+    bool changed = false;
+    focusFirstOption();
+    changed |= ImGui::Checkbox("Ambient occlusion", &st.ambientOcclusion);
+    if (st.ambientOcclusion) {
+        changed |= ImGui::SliderInt("Occlusion strength", &st.aoStrength, 0, 200, "%d%%");
+        changed |= ImGui::SliderInt("Occlusion radius", &st.aoRadius, 10, 400, "%d units");
+        changed |= ImGui::Checkbox("Indirect light (experimental)", &st.indirectLight);
+    }
+    ImGui::TextDisabled("Soft shadows in corners, under eaves and around objects on the ground.");
+    changed |= ImGui::SliderInt("Sharpening", &st.sharpening, 0, 100, st.sharpening ? "%d%%" : "Off");
+    changed |= ImGui::Checkbox("Stable bloom", &st.stableBloom);
+    ImGui::TextDisabled("Above 720p internal resolution: bloom from the original footprint, no sparkle.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextDisabled("Applied on the next start:");
+    static const std::pair<int, const char*> msaa[] = {{2, "2x (original)"}, {4, "4x"}, {8, "8x"}};
+    const char* samples = msaa[0].second;
+    for (const auto& [value, label] : msaa)
+        if (value == st.msaa) samples = label;
+    if (ImGui::BeginCombo("Anti-aliasing (MSAA)", samples)) {
+        for (const auto& [value, label] : msaa)
+            if (ImGui::Selectable(label, value == st.msaa)) {
+                st.msaa = value;
+                changed = true;
+            }
+        ImGui::EndCombo();
+    }
+    if (st.msaa == 8 && st.resolutionScale >= 3) ImGui::TextDisabled("4x at internal resolutions of 4K and above.");
     return changed;
 }
 
@@ -709,6 +778,7 @@ void drawMenu() {
     ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.45f);
     switch (g_section) {
     case kDisplay: changed |= drawDisplay(st); break;
+    case kGraphics: changed |= drawGraphics(st); break;
     case kAudio: changed |= drawAudio(st); break;
     case kControls: changed |= drawControls(st); break;
     case kMissions: drawMissions(); break;

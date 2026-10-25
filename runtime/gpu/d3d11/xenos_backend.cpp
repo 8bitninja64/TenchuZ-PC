@@ -1,6 +1,7 @@
 #include "xenos_backend.h"
 #include "gpu/registers.h"
 #include "gpu/d3d11/texture_cache.h"
+#include "gpu/d3d11/post_effects.h"
 #include "kernel/kernel.h"
 #include "kernel/control.h"
 #include "host/settings.h"
@@ -213,6 +214,13 @@ D3D11_STENCIL_OP stencilOperation(uint32_t operation) {
 D3D11_COMPARISON_FUNC comparison(uint32_t function) {
     return D3D11_COMPARISON_FUNC(D3D11_COMPARISON_NEVER + (function & 7));
 }
+
+// The scene composite (DOF blur and bloom over the resolved scene, a full-screen rectangle
+// into the 1280-pitch target): the last 3D draw of a gameplay frame; the HUD follows it
+// in the same target, then the target is resolved to the front buffer.
+constexpr uint64_t kSceneCompositeShader = 0x7582CB38B8D839B4ull;
+// The bloom chain's first step: 16 taps of the 1280x720 scene (fetch constant 1) into 320x180.
+constexpr uint64_t kBloomShrinkShader = 0x723D9B291D342106ull;
 
 }  // namespace
 
@@ -630,6 +638,34 @@ struct XenosBackend::Impl {
         return {rect.left * s, rect.top * s, rect.right * s, rect.bottom * s};
     }
 
+    // ---- MSAA override -----------------------------------------------------------------
+    // [graphics] msaa (applied at start): the host sample count of the title's 2x targets.
+    // Target keys and guest sizes keep the title's count (the 640x1024 tile layout depends
+    // on it). Every format a target can have must support the count, else it halves.
+    const uint32_t msaaSamples = validatedMsaa();
+    uint32_t validatedMsaa() const {
+        uint32_t samples = uint32_t(host::settings().msaa);
+        // The 640-pitch tiles are 640x1024 times the scale squared: at scale 3, 8x D32S8X24
+        // depth alone takes about 380 MB.
+        if (renderScale >= 3) samples = (std::min)(samples, 4u);
+        static const DXGI_FORMAT formats[] = {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+                                              DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16_FLOAT,
+                                              DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT,
+                                              DXGI_FORMAT_D24_UNORM_S8_UINT, DXGI_FORMAT_D32_FLOAT_S8X24_UINT};
+        for (; samples > 2; samples /= 2) {
+            bool supported = true;
+            for (const DXGI_FORMAT format : formats) {
+                UINT levels = 0;
+                supported = supported && SUCCEEDED(device->CheckMultisampleQualityLevels(format, samples, &levels)) &&
+                            levels;
+            }
+            if (supported) break;
+            logf("[d3d11] %ux MSAA is not supported for every target format", samples);
+        }
+        if (samples != 2) logf("[d3d11] %ux MSAA for the title's 2x targets", samples);
+        return samples;
+    }
+
     // ---- Render targets (EDRAM) --------------------------------------------------
     // Each distinct EDRAM base/pitch/format/samples is a host render target.
     struct RenderTarget {
@@ -656,11 +692,12 @@ struct XenosBackend::Impl {
         const uint32_t height = (std::min)(2048u, 2048 / tilesPerRow * 16);
         D3D11_TEXTURE2D_DESC desc{};
         const uint32_t guestHeight = (std::max)(16u, height / (samples >= 2 ? 2 : 1));
+        const uint32_t hostSamples = samples == 2 ? msaaSamples : samples;
         desc.Width = pitch * renderScale;
         desc.Height = guestHeight * renderScale;
         desc.MipLevels = 1;
         desc.ArraySize = 1;
-        desc.SampleDesc.Count = samples;
+        desc.SampleDesc.Count = hostSamples;
         desc.Usage = D3D11_USAGE_DEFAULT;
         if (isDepth) {
             // Typeless so depth resolves can read it.
@@ -677,18 +714,18 @@ struct XenosBackend::Impl {
         if (isDepth) {
             D3D11_DEPTH_STENCIL_VIEW_DESC dsv{};
             dsv.Format = format ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_D24_UNORM_S8_UINT;
-            dsv.ViewDimension = samples > 1 ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
+            dsv.ViewDimension = hostSamples > 1 ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
             if (FAILED(device->CreateDepthStencilView(target.texture, &dsv, &target.depth)))
                 logf("[d3d11] cannot create depth view (format %u, %u samples)", format, samples);
             D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
             srv.Format = format ? DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS : DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-            srv.ViewDimension = samples > 1 ? D3D11_SRV_DIMENSION_TEXTURE2DMS : D3D11_SRV_DIMENSION_TEXTURE2D;
+            srv.ViewDimension = hostSamples > 1 ? D3D11_SRV_DIMENSION_TEXTURE2DMS : D3D11_SRV_DIMENSION_TEXTURE2D;
             srv.Texture2D.MipLevels = 1;
             if (FAILED(device->CreateShaderResourceView(target.texture, &srv, &target.depthView)))
                 logf("[d3d11] cannot create depth shader view (format %u, %u samples)", format, samples);
         } else {
             device->CreateRenderTargetView(target.texture, nullptr, &target.color);
-            if (samples > 1) {
+            if (hostSamples > 1) {
                 desc.SampleDesc.Count = 1;
                 desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
                 device->CreateTexture2D(&desc, nullptr, &target.resolveScratch);
@@ -700,10 +737,10 @@ struct XenosBackend::Impl {
         }
         target.width = pitch;
         target.height = guestHeight;
-        target.samples = samples;
+        target.samples = hostSamples;
         target.format = desc.Format;
-        TZ_TRACE("rt", "[d3d11] %s target base %u pitch %u format %u samples %u -> %ux%u", isDepth ? "depth" : "color",
-                 base, pitch, format, samples, desc.Width, desc.Height);
+        TZ_TRACE("rt", "[d3d11] %s target base %u pitch %u format %u samples %u (host %u) -> %ux%u",
+                 isDepth ? "depth" : "color", base, pitch, format, samples, hostSamples, desc.Width, desc.Height);
         return &target;
     }
 
@@ -770,6 +807,7 @@ struct XenosBackend::Impl {
     std::map<uint32_t, ID3D11RasterizerState*> rasterStates;
     std::map<uint32_t, ID3D11SamplerState*> samplers;
     TextureCache textures;
+    PostEffects postEffects;
     ID3D11Texture2D* whiteTexture = nullptr;
     ID3D11ShaderResourceView* whiteView = nullptr;
 
@@ -924,6 +962,7 @@ struct XenosBackend::Impl {
         device->CreateTexture2D(&texture, &data, &whiteTexture);
         device->CreateShaderResourceView(whiteTexture, nullptr, &whiteView);
         textures.initialize(device, context);
+        postEffects.initialize(device, context);
     }
 
     // ---- Indices -------------------------------------------------------------------
@@ -1038,6 +1077,77 @@ struct XenosBackend::Impl {
             addTime(hostTime[0], textureStart);
         }
         return count;
+    }
+
+    // The resolved texture a shader's texture binding reads (as bindTextures found it), if any.
+    ResolvedTexture* resolvedBinding(const xenos::ShaderInfo& info, UINT slot) {
+        TextureFetch fetch;
+        for (int i = 0; i < 6; ++i)
+            fetch.words[i] = reg(reg::SHADER_CONSTANT_FETCH_00_0 + info.textures[slot].fetchConstant * 6 + i);
+        auto it = resolved.find(fetch.baseAddress() & 0x1FFFFFFF);
+        return it != resolved.end() && it->second.view ? &it->second : nullptr;
+    }
+
+    // Enhanced lighting: the scene composite reads its scene (fetch constant 2) with
+    // ambient occlusion and sharpening applied (post_effects.h), computed from the depth
+    // resolve it reads through fetch constant 3. The substitute has the resolve's size and
+    // format, so the binding's texture scale stays right.
+    void substituteCompositeScene(const xenos::ShaderInfo& info, ID3D11ShaderResourceView** views, UINT count) {
+        int sceneSlot = -1, depthSlot = -1;
+        for (UINT slot = 0; slot < count; ++slot) {
+            if (info.textures[slot].fetchConstant == 2) sceneSlot = int(slot);
+            else if (info.textures[slot].fetchConstant == 3) depthSlot = int(slot);
+        }
+        ResolvedTexture* scene = sceneSlot >= 0 ? resolvedBinding(info, UINT(sceneSlot)) : nullptr;
+        ResolvedTexture* depth = depthSlot >= 0 ? resolvedBinding(info, UINT(depthSlot)) : nullptr;
+        if (!scene || !depth || views[sceneSlot] != scene->view) {
+            postEffects.skipped("the composite does not read a resolved scene and depth");
+            return;
+        }
+        auto* view = postEffects.processScene(scene->texture, scene->view, depth->texture, depth->view, resolveGeneration);
+        if (!view) return;
+        views[sceneSlot] = view;
+        forgetBoundState();  // the passes bound their own pipeline (like resolve())
+        if (dumpFrame()) {
+            CreateDirectoryA("build/resolved", nullptr);
+            saveTexture(postEffects.output(), "build/resolved/postfx_scene.bmp");
+        }
+    }
+
+    // Stable bloom ([graphics] stable_bloom): at resolution scales above 1 the bloom shrink
+    // reads the scene box-filtered back to its guest size, the footprint its taps were made
+    // for (post_effects.h). Normalized UVs, so the binding's texture scale stays right.
+    void substituteBloomSource(const xenos::ShaderInfo& info, ID3D11ShaderResourceView** views, UINT count) {
+        ResolvedTexture* scene = count ? resolvedBinding(info, 0) : nullptr;
+        if (!scene || views[0] != scene->view) return;
+        auto* view = postEffects.bloomSource(scene->view, scene->width, scene->height, renderScale, resolveGeneration);
+        if (view) {
+            views[0] = view;
+            forgetBoundState();  // the pass bound its own pipeline
+        }
+    }
+
+    // TENCHU_TRACE=postfx: names other shaders that look like a scene composite (a
+    // rectangle into a single-sample target, reading a resolved R32 depth and a resolved
+    // RGBA8 image of the same size), e.g. cutscene or underwater variants not hooked yet.
+    std::set<uint64_t> compositeCandidates;
+    void noteCompositeCandidate(uint64_t psHash, const xenos::ShaderInfo& info, UINT count) {
+        if (compositeCandidates.count(psHash)) return;
+        bool depth = false, color = false;
+        UINT width = 0, height = 0;
+        for (UINT slot = 0; slot < count; ++slot)
+            if (ResolvedTexture* texture = resolvedBinding(info, slot)) {
+                if (texture->format == DXGI_FORMAT_R32_FLOAT) depth = true;
+                else if (texture->format == DXGI_FORMAT_R8G8B8A8_UNORM) color = true;
+                else continue;
+                if (width && (texture->width != width || texture->height != height)) return;
+                width = texture->width;
+                height = texture->height;
+            }
+        if (!depth || !color) return;
+        compositeCandidates.insert(psHash);
+        logf("[postfx] pixel shader %016llX looks like a scene composite (%ux%u), not hooked",
+             (unsigned long long)psHash, width, height);
     }
 
     // ---- Draw ----------------------------------------------------------------------
@@ -1300,6 +1410,11 @@ struct XenosBackend::Impl {
         shared.positionOffset[0] = offset[0] * 2.0f / width - 1.0f;
         shared.positionOffset[1] = 1.0f - offset[1] * 2.0f / height;
         shared.positionOffset[2] = offset[2];
+        // Enhanced lighting: depth-writing draws vote for the camera projection that ambient
+        // occlusion rebuilds view positions with (post_effects.h).
+        if (depthView && (depthControl & 4) && postEffects.wantsProjection())
+            postEffects.noteProjection(reinterpret_cast<const float*>(registers) + reg::SHADER_CONSTANT_000_X, scale[2],
+                                       offset[2]);
         const uint32_t colorControl = reg(reg::RB_COLORCONTROL);
         shared.alphaTest[0] = (colorControl >> 3) & 1 ? float(colorControl & 7) : 7.0f;
         shared.alphaTest[1] = asFloat(reg(reg::RB_ALPHA_REF));
@@ -1319,6 +1434,14 @@ struct XenosBackend::Impl {
         if (textures.pipelineChanges() != texturePipelineChanges) {
             texturePipelineChanges = textures.pipelineChanges();
             forgetBoundState();
+        }
+        if (ps && psHash == kSceneCompositeShader) {
+            if (postEffects.enabled()) substituteCompositeScene(ps->info, pixelViews, pixelViewCount);
+        } else if (ps && psHash == kBloomShrinkShader) {
+            if (renderScale > 1 && host::settings().stableBloom)
+                substituteBloomSource(ps->info, pixelViews, pixelViewCount);
+        } else if (ps && rectangles && tracePostFx && firstTarget->samples == 1 && pixelViewCount >= 2) {
+            noteCompositeCandidate(psHash, ps->info, pixelViewCount);
         }
         if (!bound.sharedValid || std::memcmp(&shared, &bound.shared, sizeof(shared)) != 0) {
             bound.shared = shared;
@@ -1587,6 +1710,7 @@ struct XenosBackend::Impl {
             release(target);
         }
         context->Draw(UINT(vertexCount), 0);
+        if (psHash == kSceneCompositeShader && renderer.hdrOutput()) copySceneOnly(*firstTarget, hostScissor);
         addTime(hostTime[5], drawStart);
         if (statistics) {
             context->End(statistics);
@@ -1602,6 +1726,8 @@ struct XenosBackend::Impl {
     uint64_t frames = 0;
     uint32_t tileDraws[2] = {}, resolves = 0;  // per frame (swap trace)
     const bool flickerLog = traceEnabled("flickerlog");
+    const bool tracePostFx = traceEnabled("postfx");
+    uint64_t resolveGeneration = 0;  // counts every resolve (post effects reuse results within one)
     std::vector<std::string> frameLog, previousFrameLog;  // flickerlog: this and the last good frame
     // Draws skipped since the last swap: mode, count, shader, indices, target, upload, primitive.
     uint64_t dropped[7] = {};
@@ -1624,6 +1750,7 @@ struct XenosBackend::Impl {
         forgetBoundState();  // resolves draw with their own pipeline state
         ScopedTime timed{hostTime[2]};
         ++resolves;
+        ++resolveGeneration;
         if (flickerLog) {
             char line[160];
             snprintf(line, sizeof(line), "resolve control %08X dest %08X pitch %08X wo %08X", reg(reg::RB_COPY_CONTROL),
@@ -1834,6 +1961,41 @@ struct XenosBackend::Impl {
         release(staging);
     }
 
+    // ---- HDR: the scene before the HUD -------------------------------------------------
+    // A copy of the composite's target taken before the HUD is drawn over it: the present
+    // expands the highlights only where the front buffer still matches it, so the HUD,
+    // menus and movies (no composite) stay at paper white.
+    ID3D11Texture2D* sceneOnly = nullptr;
+    ID3D11ShaderResourceView* sceneOnlyView = nullptr;
+    uint64_t sceneOnlyFrame = ~0ull;
+
+    void copySceneOnly(const RenderTarget& target, const D3D11_RECT& scissor) {
+        // The front buffer is resolved from the target's top left corner.
+        const UINT width = (std::min)(UINT(scissor.right), target.width * renderScale);
+        const UINT height = (std::min)(UINT(scissor.bottom), target.height * renderScale);
+        if (scissor.left || scissor.top || target.samples != 1 || !width || !height) return;
+        D3D11_TEXTURE2D_DESC desc{};
+        if (sceneOnly) sceneOnly->GetDesc(&desc);
+        if (sceneOnly && (desc.Width != width || desc.Height != height || desc.Format != target.format)) {
+            release(sceneOnlyView);
+            release(sceneOnly);
+        }
+        if (!sceneOnly) {
+            desc = {};
+            desc.Width = width;
+            desc.Height = height;
+            desc.MipLevels = desc.ArraySize = 1;
+            desc.Format = target.format;
+            desc.SampleDesc.Count = 1;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (FAILED(device->CreateTexture2D(&desc, nullptr, &sceneOnly))) return;
+            device->CreateShaderResourceView(sceneOnly, nullptr, &sceneOnlyView);
+        }
+        const D3D11_BOX box{0, 0, 0, width, height, 1};
+        context->CopySubresourceRegion(sceneOnly, 0, 0, 0, 0, target.texture, 0, &box);
+        sceneOnlyFrame = frames;
+    }
+
     // ---- Swap ---------------------------------------------------------------------
     void swap(uint32_t frontBuffer) {
         forgetBoundState();  // present and dumps use the context too
@@ -1857,9 +2019,17 @@ struct XenosBackend::Impl {
                 if (entry.texture) saveTexture(entry.texture, path);
             }
         }
+        // The scene before the HUD, when this frame had a composite of the front buffer's size.
+        ID3D11ShaderResourceView* scene = nullptr;
+        if (it != resolved.end() && sceneOnly && sceneOnlyFrame == frames) {
+            D3D11_TEXTURE2D_DESC desc{};
+            sceneOnly->GetDesc(&desc);
+            if (desc.Width == it->second.width * renderScale && desc.Height == it->second.height * renderScale)
+                scene = sceneOnlyView;
+        }
         const auto presentStart = stamp();
         renderer.present(it != resolved.end() ? it->second.view : nullptr,
-                         it != resolved.end() && it->second.swapped);
+                         it != resolved.end() && it->second.swapped, scene);
         TZ_TRACE("swap", "[d3d11] swap %llu %08X (%s), tiles %u/%u, resolves %u, %llu draws, dropped %llu/%llu/%llu/%llu/%llu/%llu/%llu",
                  (unsigned long long)frames, frontBuffer, it != resolved.end() ? "resolved" : "missing", tileDraws[0],
                  tileDraws[1], resolves, (unsigned long long)draws,
@@ -1906,6 +2076,7 @@ struct XenosBackend::Impl {
         std::fill(std::begin(dropped), std::end(dropped), 0);
         ++frames;
         updateHotPages();
+        postEffects.endFrame();
         if (control::takeFlag("traceframe")) liveTraceFrame = frames;
         if (control::takeFlag("dumpframe")) liveDumpFrame = frames;
         textures.beginFrame();

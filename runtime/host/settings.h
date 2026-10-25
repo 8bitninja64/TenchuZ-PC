@@ -18,8 +18,18 @@ struct Settings {
     int frameRateLimit = 60;      // 30 = original pacing, 0 = unlimited
     bool showFps = false;         // frame rate counter in the top left corner
     bool hdr = false;             // HDR10 output when Windows HDR is on for the monitor
-    int hdrPeakNits = 1000;       // brightest highlights (the display's peak brightness)
-    int hdrPaperWhiteNits = 200;  // brightness of mid tones and the menu (SDR white)
+    int hdrPeakNits = 0;          // brightest highlights (0 = the display's peak brightness)
+    int hdrPaperWhiteNits = 0;    // mid tones and the menu (0 = Windows' SDR content brightness)
+    int hdrHighlights = 100;      // highlight expansion of the 3D scene, percent (0 = none)
+    bool upscaleBicubic = true;   // upscale_filter: bicubic (Catmull-Rom) or bilinear
+    // Graphics: effects the original does not have, on the 3D scene only (post_effects.h)
+    bool ambientOcclusion = false;  // screen-space ambient occlusion
+    int aoStrength = 100;         // percent
+    int aoRadius = 80;            // game units (about centimeters)
+    bool indirectLight = false;   // experimental color bleeding with the ambient occlusion
+    int sharpening = 0;           // contrast-adaptive sharpening, percent (0 = off)
+    int msaa = 2;                 // samples of the title's 2x MSAA targets: 2, 4 or 8 (next start)
+    bool stableBloom = true;      // bloom from the 720p footprint at resolution scales above 1
     // Game
     std::string disc;             // the disc image chosen on the first start (UTF-8)
     bool updateCheck = true;      // look for a newer release on GitHub at startup (F1 > Update)
@@ -55,5 +65,9 @@ void noteFrontEndFrame();
 // Whether Windows HDR is on for the game window's monitor (the renderer updates it).
 bool hdrAvailable();
 void setHdrAvailable(bool available);
+// What the HDR levels' "auto" (0) stands for on that monitor, in nits (the renderer updates it).
+void setHdrAutoNits(int peak, int paperWhite);
+int hdrAutoPeakNits();
+int hdrAutoPaperWhiteNits();
 
 }  // namespace tz::host
