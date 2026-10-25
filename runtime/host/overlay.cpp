@@ -11,6 +11,7 @@
 #include <backends/imgui_impl_dx11.h>
 #include <backends/imgui_impl_win32.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -308,9 +309,30 @@ bool drawDisplay(Settings& st) {
     if (st.hdr && !hdrAvailable())
         ImGui::TextColored(kGold, "This monitor is not in HDR mode: turn on \"Use HDR\" in Windows display settings.");
     if (st.hdr) {
-        changed |= ImGui::SliderInt("Peak brightness (nits)", &st.hdrPeakNits, 400, 4000);
-        changed |= ImGui::SliderInt("Paper white (nits)", &st.hdrPaperWhiteNits, 80, 400);
-        if (st.hdrPaperWhiteNits > st.hdrPeakNits) st.hdrPaperWhiteNits = st.hdrPeakNits;
+        // 0 = auto: the display's peak and Windows' "SDR content brightness" (renderer.cpp).
+        bool autoPeak = st.hdrPeakNits == 0;
+        if (ImGui::Checkbox("Auto peak brightness", &autoPeak)) {
+            st.hdrPeakNits = autoPeak ? 0 : std::clamp(hdrAutoPeakNits(), 400, 4000);
+            changed = true;
+        }
+        if (autoPeak) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(display: %d nits)", hdrAutoPeakNits());
+        } else {
+            changed |= ImGui::SliderInt("Peak brightness (nits)", &st.hdrPeakNits, 400, 4000);
+        }
+        bool autoPaperWhite = st.hdrPaperWhiteNits == 0;
+        if (ImGui::Checkbox("Auto paper white", &autoPaperWhite)) {
+            st.hdrPaperWhiteNits = autoPaperWhite ? 0 : std::clamp(hdrAutoPaperWhiteNits(), 80, 400);
+            changed = true;
+        }
+        if (autoPaperWhite) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(Windows SDR brightness: %d nits)", hdrAutoPaperWhiteNits());
+        } else {
+            changed |= ImGui::SliderInt("Paper white (nits)", &st.hdrPaperWhiteNits, 80, 400);
+        }
+        if (st.hdrPeakNits && st.hdrPaperWhiteNits > st.hdrPeakNits) st.hdrPaperWhiteNits = st.hdrPeakNits;
     }
     ImGui::Spacing();
     ImGui::Separator();

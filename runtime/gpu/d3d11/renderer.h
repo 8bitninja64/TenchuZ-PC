@@ -36,12 +36,18 @@ private:
     void releaseHdrTextures();
     // ResizeBuffers fails while a view of a swap chain buffer is still bound.
     void unbindBackBuffer();
+    // Paper white and peak in nits: the settings, or for 0 (auto) the display's values.
+    void hdrLevels(float& paperWhite, float& peak) const;
+    void updateHdrMetadata(float paperWhite, float peak);
     bool hdr_ = false;  // the swap chain is HDR10 now
     // Output enumeration for monitorHdr, kept until DXGI marks the factory stale or the
     // window moves to another monitor (enumerating every adapter costs milliseconds).
     IDXGIFactory1* outputFactory_ = nullptr;
     HMONITOR outputMonitor_ = nullptr;
     bool monitorHdr_ = false;
+    float monitorPeakNits_ = 0.0f;  // DXGI_OUTPUT_DESC1::MaxLuminance (from the EDID)
+    float sdrWhiteNits_ = 200.0f;   // Windows "SDR content brightness" for that monitor
+    float metadataPaperWhite_ = -1.0f, metadataPeak_ = -1.0f;  // last HDR10 metadata sent
     DXGI_FORMAT backBufferFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
     ID3D11Texture2D* sdr_ = nullptr;  // the game image (SDR, window size)
     ID3D11RenderTargetView* sdrView_ = nullptr;

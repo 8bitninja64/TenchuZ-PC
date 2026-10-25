@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <string>
 #include <tuple>
+#include <vector>
 
 namespace tz::gpu {
 namespace {
@@ -75,6 +76,36 @@ ID3DBlob* compile(const char* source, const char* entry, const char* profile) {
     }
     release(errors);
     return code;
+}
+
+// Windows' "SDR content brightness" for a monitor in HDR mode, in nits (200 if unknown).
+float windowsSdrWhiteNits(HMONITOR monitor) {
+    MONITORINFOEXW info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info)) return 200.0f;
+    UINT32 pathCount = 0, modeCount = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS) return 200.0f;
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr) !=
+        ERROR_SUCCESS)
+        return 200.0f;
+    paths.resize(pathCount);
+    for (const auto& path : paths) {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+        source.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof(source), path.sourceInfo.adapterId,
+                         path.sourceInfo.id};
+        if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS ||
+            wcscmp(source.viewGdiDeviceName, info.szDevice) != 0)
+            continue;
+        DISPLAYCONFIG_SDR_WHITE_LEVEL white{};
+        white.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, sizeof(white), path.targetInfo.adapterId,
+                        path.targetInfo.id};
+        // SDRWhiteLevel is in thousandths of 80 nits (1000 = 80 nits).
+        if (DisplayConfigGetDeviceInfo(&white.header) == ERROR_SUCCESS && white.SDRWhiteLevel)
+            return float(white.SDRWhiteLevel) / 1000.0f * 80.0f;
+    }
+    return 200.0f;
 }
 
 }  // namespace
@@ -207,6 +238,7 @@ bool D3D11Renderer::monitorHdr() {
     }
     outputMonitor_ = monitor;
     monitorHdr_ = false;
+    monitorPeakNits_ = 0.0f;
     IDXGIAdapter1* adapter = nullptr;
     for (UINT a = 0; outputFactory_->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
         IDXGIOutput* output = nullptr;
@@ -214,14 +246,46 @@ bool D3D11Renderer::monitorHdr() {
             IDXGIOutput6* output6 = nullptr;
             DXGI_OUTPUT_DESC1 desc{};
             if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6), reinterpret_cast<void**>(&output6))) &&
-                SUCCEEDED(output6->GetDesc1(&desc)) && desc.Monitor == monitor)
+                SUCCEEDED(output6->GetDesc1(&desc)) && desc.Monitor == monitor) {
                 monitorHdr_ = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+                monitorPeakNits_ = desc.MaxLuminance;
+            }
             release(output6);
             release(output);
         }
         release(adapter);
     }
+    if (monitorHdr_) sdrWhiteNits_ = windowsSdrWhiteNits(monitor);
     return monitorHdr_;
+}
+
+void D3D11Renderer::hdrLevels(float& paperWhite, float& peak) const {
+    const host::Settings& s = host::settings();
+    // EDID peaks below 400 nits are usually wrong (HDR400 is the lowest certification).
+    peak = s.hdrPeakNits > 0 ? float(s.hdrPeakNits) : monitorPeakNits_ >= 400.0f ? monitorPeakNits_ : 1000.0f;
+    paperWhite = (std::max)(s.hdrPaperWhiteNits > 0 ? float(s.hdrPaperWhiteNits) : sdrWhiteNits_, 80.0f);
+    peak = (std::max)(peak, paperWhite);
+}
+
+// HDR10 metadata for displays that tone-map by it: SDR content (Rec.709 primaries, D65)
+// expanded up to the peak, averaging around paper white.
+void D3D11Renderer::updateHdrMetadata(float paperWhite, float peak) {
+    if (paperWhite == metadataPaperWhite_ && peak == metadataPeak_) return;
+    metadataPaperWhite_ = paperWhite;
+    metadataPeak_ = peak;
+    IDXGISwapChain4* swapChain4 = nullptr;
+    if (FAILED(swapChain_->QueryInterface(__uuidof(IDXGISwapChain4), reinterpret_cast<void**>(&swapChain4)))) return;
+    DXGI_HDR_METADATA_HDR10 metadata{};
+    // Chromaticity coordinates scaled by 50000.
+    const UINT16 primaries[8] = {32000, 16500, 15000, 30000, 7500, 3000, 15635, 16450};
+    std::memcpy(metadata.RedPrimary, primaries, sizeof(primaries));  // red, green, blue, white point
+    metadata.MaxMasteringLuminance = UINT(peak);
+    metadata.MinMasteringLuminance = 1;  // 0.0001 nits
+    metadata.MaxContentLightLevel = UINT16(peak);
+    metadata.MaxFrameAverageLightLevel = UINT16(paperWhite);
+    if (FAILED(swapChain4->SetHDRMetaData(DXGI_HDR_METADATA_TYPE_HDR10, sizeof(metadata), &metadata)))
+        TZ_TRACE("hdr", "[d3d11] HDR10 metadata refused");
+    release(swapChain4);
 }
 
 // After every present the back buffer is still bound (the blit, the HDR pass and the
@@ -241,10 +305,18 @@ void D3D11Renderer::updateHdr() {
     static bool available = false;
     if (frame_ % 120 == 1) {
         static const bool force = traceEnabled("forcehdr");  // the HDR path on any monitor (testing)
-        const bool now = force || monitorHdr();
-        if (now != available || frame_ == 1) logf("[d3d11] monitor HDR %s", now ? "on" : "off");
+        const bool now = monitorHdr() || force;
+        if (now != available || frame_ == 1)
+            logf("[d3d11] monitor HDR %s (peak %.0f nits, SDR white %.0f nits)", now ? "on" : "off", monitorPeakNits_,
+                 sdrWhiteNits_);
         available = now;
         host::setHdrAvailable(available);
+        // Windows' SDR brightness slider does not make the factory stale: follow it while used.
+        if (hdr_ && host::settings().hdrPaperWhiteNits == 0 && monitorHdr_)
+            sdrWhiteNits_ = windowsSdrWhiteNits(outputMonitor_);
+        // What "auto" stands for, shown in the F1 menu.
+        const float autoPeak = monitorPeakNits_ >= 400.0f ? monitorPeakNits_ : 1000.0f;
+        host::setHdrAutoNits(int(autoPeak + 0.5f), int((std::max)(sdrWhiteNits_, 80.0f) + 0.5f));
     }
     const bool want = host::settings().hdr && available && hdrPixelShader_;
     if (want == hdr_) return;
@@ -265,6 +337,12 @@ void D3D11Renderer::updateHdr() {
         (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
         swapChain3->SetColorSpace1(space);
     release(swapChain3);
+    // HDR10 metadata goes with each change of the levels (present); SDR has none.
+    metadataPaperWhite_ = metadataPeak_ = -1.0f;
+    IDXGISwapChain4* swapChain4 = nullptr;
+    if (!want && SUCCEEDED(swapChain_->QueryInterface(__uuidof(IDXGISwapChain4), reinterpret_cast<void**>(&swapChain4))))
+        swapChain4->SetHDRMetaData(DXGI_HDR_METADATA_TYPE_NONE, 0, nullptr);
+    release(swapChain4);
     backBufferFormat_ = format;
     hdr_ = want;
     width_ = height_ = 0;  // resizeIfNeeded recreates the views
@@ -375,9 +453,10 @@ void D3D11Renderer::present(ID3D11ShaderResourceView* source, bool swapRedBlue, 
         const float clear[4] = {0, 0, 0, 0};
         context_->ClearRenderTargetView(uiView_, clear);
         host::overlay::render(uiView_, fps_);
-        const host::Settings& s = host::settings();
-        const float constants[4] = {float((std::max)(s.hdrPaperWhiteNits, 80)),
-                                    float((std::max)(s.hdrPeakNits, s.hdrPaperWhiteNits)), 4.0f, 0.0f};
+        float paperWhite = 0.0f, peak = 0.0f;
+        hdrLevels(paperWhite, peak);
+        updateHdrMetadata(paperWhite, peak);
+        const float constants[4] = {paperWhite, peak, 4.0f, 0.0f};
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (SUCCEEDED(context_->Map(hdrConstants_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
             std::memcpy(mapped.pData, constants, sizeof(constants));

@@ -39,11 +39,11 @@ frame_rate_limit = 60
 ; Frame rate counter in the top left corner (also in the F1 menu).
 show_fps = false
 ; HDR10 output on monitors with Windows HDR turned on: highlights are expanded up to
-; hdr_peak_nits (set it to your display's peak); mid tones and the F1 menu sit at
-; hdr_paper_white_nits.
+; hdr_peak_nits (0 = the display's own peak); mid tones and the F1 menu sit at
+; hdr_paper_white_nits (0 = Windows' "SDR content brightness").
 hdr = false
-hdr_peak_nits = 1000
-hdr_paper_white_nits = 200
+hdr_peak_nits = 0
+hdr_paper_white_nits = 0
 
 [audio]
 ; Master volume in percent, and mute.
@@ -124,6 +124,9 @@ std::string content(const std::string& line) {
 
 bool parseBool(const std::string& value) { return value == "true" || value == "1" || value == "yes" || value == "on"; }
 
+// A value where 0 (or less) means automatic, else clamped to [low, high].
+int automatic(int value, int low, int high) { return value <= 0 ? 0 : std::clamp(value, low, high); }
+
 void apply(Settings& settings, const std::string& section, const std::string& key, const std::string& value) {
     try {
         if (section == "game") {
@@ -139,8 +142,8 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "frame_rate_limit") settings.frameRateLimit = (std::max)(0, std::stoi(value));
             else if (key == "show_fps") settings.showFps = parseBool(value);
             else if (key == "hdr") settings.hdr = parseBool(value);
-            else if (key == "hdr_peak_nits") settings.hdrPeakNits = std::clamp(std::stoi(value), 80, 10000);
-            else if (key == "hdr_paper_white_nits") settings.hdrPaperWhiteNits = std::clamp(std::stoi(value), 80, 1000);
+            else if (key == "hdr_peak_nits") settings.hdrPeakNits = automatic(std::stoi(value), 80, 10000);
+            else if (key == "hdr_paper_white_nits") settings.hdrPaperWhiteNits = automatic(std::stoi(value), 80, 1000);
         } else if (section == "audio") {
             if (key == "volume") settings.volume = std::clamp(std::stoi(value), 0, 100);
             else if (key == "mute") settings.mute = parseBool(value);
@@ -221,9 +224,16 @@ void noteFrontEndFrame() { frontEndFrameAt.store(nowMs(), std::memory_order_rela
 
 namespace {
 std::atomic<bool> hdrDisplay{false};
+std::atomic<int> hdrAutoPeak{1000}, hdrAutoPaperWhite{200};
 }
 bool hdrAvailable() { return hdrDisplay.load(std::memory_order_relaxed); }
 void setHdrAvailable(bool available) { hdrDisplay.store(available, std::memory_order_relaxed); }
+void setHdrAutoNits(int peak, int paperWhite) {
+    hdrAutoPeak.store(peak, std::memory_order_relaxed);
+    hdrAutoPaperWhite.store(paperWhite, std::memory_order_relaxed);
+}
+int hdrAutoPeakNits() { return hdrAutoPeak.load(std::memory_order_relaxed); }
+int hdrAutoPaperWhiteNits() { return hdrAutoPaperWhite.load(std::memory_order_relaxed); }
 
 int activeFrameRateLimit() {
     const int limit = settings().frameRateLimit;

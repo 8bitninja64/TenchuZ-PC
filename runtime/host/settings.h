@@ -18,8 +18,8 @@ struct Settings {
     int frameRateLimit = 60;      // 30 = original pacing, 0 = unlimited
     bool showFps = false;         // frame rate counter in the top left corner
     bool hdr = false;             // HDR10 output when Windows HDR is on for the monitor
-    int hdrPeakNits = 1000;       // brightest highlights (the display's peak brightness)
-    int hdrPaperWhiteNits = 200;  // brightness of mid tones and the menu (SDR white)
+    int hdrPeakNits = 0;          // brightest highlights (0 = the display's peak brightness)
+    int hdrPaperWhiteNits = 0;    // mid tones and the menu (0 = Windows' SDR content brightness)
     // Game
     std::string disc;             // the disc image chosen on the first start (UTF-8)
     bool updateCheck = true;      // look for a newer release on GitHub at startup (F1 > Update)
@@ -55,5 +55,9 @@ void noteFrontEndFrame();
 // Whether Windows HDR is on for the game window's monitor (the renderer updates it).
 bool hdrAvailable();
 void setHdrAvailable(bool available);
+// What the HDR levels' "auto" (0) stands for on that monitor, in nits (the renderer updates it).
+void setHdrAutoNits(int peak, int paperWhite);
+int hdrAutoPeakNits();
+int hdrAutoPaperWhiteNits();
 
 }  // namespace tz::host
