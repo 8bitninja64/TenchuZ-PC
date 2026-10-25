@@ -246,6 +246,7 @@ using namespace tz::cheats;
 // player hits into 10000 (stealth kills); one-hit kills do that for every positive hit.
 TZ_OVERRIDE(822D8C20) {
     const uint32_t target = ctx.r3.u32;
+    const double damage = ctx.f1.f64;
     if (target && (enabled(kInfiniteHealth) || enabled(kOneHitKills))) {
         if (playerType(target)) {
             if (enabled(kInfiniteHealth)) ctx.f1.f64 = 0.0;
@@ -256,6 +257,8 @@ TZ_OVERRIDE(822D8C20) {
             if (byPlayer) ctx.f1.f64 = 10000.0;
         }
     }
+    TZ_TRACE("cheats", "[cheats] damage %.1f -> %.1f to %08X (type %X) by %08X (type %X)", damage, ctx.f1.f64, target,
+             target ? load32(target + 0xA0) : 0, ctx.r5.u32, ctx.r5.u32 ? load32(ctx.r5.u32 + 0xA0) : 0);
     __imp__sub_822D8C20(ctx, base);
 }
 

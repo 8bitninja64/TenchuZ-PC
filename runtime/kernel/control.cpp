@@ -188,6 +188,12 @@ void execute(Controller& c, Clock::time_point now) {
                 }
                 logf("[control] peek %08X:%s", address + uint32_t(i) * 4, text.c_str());
             }
+        } else if (command == "poke") {
+            // poke <address as for peek> <hex word>...: writes guest words (testing aid).
+            std::string where;
+            stream >> where;
+            uint32_t address = guestAddress(where);
+            for (std::string word; stream >> word; address += 4) tz::store32(address, uint32_t(strtoul(word.c_str(), nullptr, 16)));
         } else if (command == "list") {
             // list <hex head> <hex next offset> [words]: walks a linked list from *head,
             // logging each node's first words.

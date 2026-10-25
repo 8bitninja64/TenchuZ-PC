@@ -13,6 +13,7 @@
 //   profile                start the host profiler window (TENCHU_TRACE=hostprof)
 //   peek [*]addr[+off] [n] log n guest words at addr ('*': through the pointer at addr)
 //                          (or a pointer chain addr>off>off: each '>' loads, then adds off)
+//   poke <addr> <hex>...   write guest words at a peek-style address (testing aid)
 //   list <head> <next> [n] walk a linked list from *head (next pointer at +next), n words each
 //   findf <f> [<f>...]     log guest addresses holding these consecutive floats
 //   countstart / countstop <file>  count guest function entries in between, write them (builds

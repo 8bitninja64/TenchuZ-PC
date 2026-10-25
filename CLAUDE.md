@@ -234,8 +234,13 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   (32-byte rows, height at +0x1C), gravity 0x8200E600, grapple zip 0x820242D4 and hit distance
   0x820242BC. Player states: 0 idle, 11/12 jump, 15 fall, 34/35 grapple, 36 swimming. Jumping is
   disabled in the hideout. Verified in game: health (combat at 140/140 vs 140 -> 0 without),
-  actions, jump (rise 232 -> 402), run (top speed x1.75), data patches. Mission 1 test bot:
-  scratchpad bot.py style (peek positions, steer the stick from observed motion).
+  invisible (+ silent: a guard 80 units away stays on patrol; without: combat), actions, jump
+  (rise 232 -> 402), run (top speed x1.75, also when on before spawning), data patches; the
+  damage hook sees player attacks (TENCHU_TRACE=cheats logs every damage call). Guards block
+  most swings, so a boosted normal hit (one-hit kills) was not observed yet.
+  Testing aids: control "poke <addr> <hex>..." writes guest words; the player moves by
+  writing both +0x70 and +0xD80 (x, y, z floats). A closed-loop test bot (peek positions,
+  steer the stick from the observed motion, teleport next to a guard) drove these checks.
 - Resolved textures are allocated padded (resolve widths round up): fetches scale UVs by
   fetch size / host size (g_textureScale), or blur chains drift (lantern bloom offset).
 - Saved profile settings once had all volumes at 0 from button-mashing tests: if the
