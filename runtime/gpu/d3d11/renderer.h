@@ -62,6 +62,7 @@ private:
     ID3D11PixelShader* hdrPixelShader_ = nullptr;
     ID3D11Buffer* hdrConstants_ = nullptr;
     ID3D11PixelShader* blitMaskedPixelShader_ = nullptr;  // the game image with the scene mask in alpha
+    ID3D11PixelShader* blitScaledPixelShader_ = nullptr;  // SDR with a bicubic or box filter
     ID3D11Buffer* blitConstants_ = nullptr;
     ID3D11ShaderResourceView* lastSceneOnly_ = nullptr;
     void resizeIfNeeded();

@@ -21,6 +21,7 @@ struct Settings {
     int hdrPeakNits = 0;          // brightest highlights (0 = the display's peak brightness)
     int hdrPaperWhiteNits = 0;    // mid tones and the menu (0 = Windows' SDR content brightness)
     int hdrHighlights = 100;      // highlight expansion of the 3D scene, percent (0 = none)
+    bool upscaleBicubic = true;   // upscale_filter: bicubic (Catmull-Rom) or bilinear
     // Graphics: effects the original does not have, on the 3D scene only (post_effects.h)
     bool ambientOcclusion = false;  // screen-space ambient occlusion
     int aoStrength = 100;         // percent

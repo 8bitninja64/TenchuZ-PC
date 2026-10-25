@@ -4,6 +4,7 @@
 #include "kernel/control.h"
 #include "host/settings.h"
 #include <d3dcompiler.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -32,17 +33,65 @@ Output vs(uint id : SV_VertexID) {
 float4 ps(Output i) : SV_Target { return float4(source.Sample(linearSampler, i.uv).rgb, 1.0); }
 float4 psSwapped(Output i) : SV_Target { return float4(source.Sample(linearSampler, i.uv).bgr, 1.0); }
 
+Texture2D sceneOnly : register(t1);
+cbuffer Blit : register(b0) {
+    uint hasScene;        // HDR: sceneOnly holds the image before the HUD
+    uint swapRedBlue;     // the front buffer resolve swapped red and blue
+    uint filter;          // 0 bilinear, 1 Catmull-Rom (upscaling), 2 box (downscaling)
+    uint taps;            // box: samples per axis
+    float2 sourceSize;    // texels
+    float2 footprint;     // source texels per window pixel
+};
+// Catmull-Rom (bicubic) from 9 bilinear samples: the 4x4 kernel's two middle weights per
+// axis merge into one sample between them (after Phill Djonov and Matt Pettineo). Sharper
+// than bilinear when the window is larger than the image.
+float3 CatmullRom(float2 uv) {
+    float2 position = uv * sourceSize, center = floor(position - 0.5) + 0.5, f = position - center;
+    float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);
+    float2 w12 = w1 + w2;
+    float2 t0 = (center - 1.0) / sourceSize, t12 = (center + w2 / w12) / sourceSize, t3 = (center + 2.0) / sourceSize;
+    float3 row0 = source.SampleLevel(linearSampler, float2(t0.x, t0.y), 0).rgb * w0.x +
+                  source.SampleLevel(linearSampler, float2(t12.x, t0.y), 0).rgb * w12.x +
+                  source.SampleLevel(linearSampler, float2(t3.x, t0.y), 0).rgb * w3.x;
+    float3 row12 = source.SampleLevel(linearSampler, float2(t0.x, t12.y), 0).rgb * w0.x +
+                   source.SampleLevel(linearSampler, float2(t12.x, t12.y), 0).rgb * w12.x +
+                   source.SampleLevel(linearSampler, float2(t3.x, t12.y), 0).rgb * w3.x;
+    float3 row3 = source.SampleLevel(linearSampler, float2(t0.x, t3.y), 0).rgb * w0.x +
+                  source.SampleLevel(linearSampler, float2(t12.x, t3.y), 0).rgb * w12.x +
+                  source.SampleLevel(linearSampler, float2(t3.x, t3.y), 0).rgb * w3.x;
+    return saturate(row0 * w0.y + row12 * w12.y + row3 * w3.y);  // the negative lobes overshoot at edges
+}
+// Box filter: the mean of taps x taps bilinear samples spread over the window pixel's
+// footprint. Internal resolutions above the window size stop shimmering.
+float3 Box(float2 uv) {
+    float2 step = footprint / (sourceSize * taps), start = uv - step * (taps - 1) * 0.5;
+    float3 sum = 0.0;
+    for (uint y = 0; y < taps; ++y)
+        for (uint x = 0; x < taps; ++x) sum += source.SampleLevel(linearSampler, start + step * float2(x, y), 0).rgb;
+    return sum / (taps * taps);
+}
+float3 Scaled(float2 uv) {
+    float3 color;
+    if (filter == 1) color = CatmullRom(uv);
+    else if (filter == 2) color = Box(uv);
+    else color = source.SampleLevel(linearSampler, uv, 0).rgb;
+    return swapRedBlue ? color.bgr : color;
+}
+float4 psScaled(Output i) : SV_Target { return float4(Scaled(i.uv), 1.0); }
+
 // HDR: alpha marks the 3D scene (1: highlights are expanded) apart from the HUD, menus and
 // movies (0: they stay at paper white). Scene pixels still match the copy of the target
-// taken right after the scene composite, before the HUD was drawn over it.
-Texture2D sceneOnly : register(t1);
-cbuffer Blit : register(b0) { uint hasScene; uint swapRedBlue; uint2 unused; };
+// taken right after the scene composite, before the HUD was drawn over it (both compared
+// with the same bilinear samples, whatever the scaling filter).
 float4 psMasked(Output i) : SV_Target {
-    float3 color = source.Sample(linearSampler, i.uv).rgb;
-    if (swapRedBlue) color = color.bgr;  // the front buffer resolve may swap red and blue, the copy does not
     float scene = 0.0;
-    if (hasScene) scene = all(abs(color - sceneOnly.Sample(linearSampler, i.uv).rgb) <= 2.0 / 255.0) ? 1.0 : 0.0;
-    return float4(color, scene);
+    if (hasScene) {
+        float3 shown = source.SampleLevel(linearSampler, i.uv, 0).rgb;
+        if (swapRedBlue) shown = shown.bgr;  // the front buffer resolve may swap red and blue, the copy does not
+        scene = all(abs(shown - sceneOnly.SampleLevel(linearSampler, i.uv, 0).rgb) <= 2.0 / 255.0) ? 1.0 : 0.0;
+    }
+    return float4(Scaled(i.uv), scene);
 }
 )";
 
@@ -81,6 +130,26 @@ float4 ps(Output i) : SV_Target {
 template <typename T> void release(T*& object) {
     if (object) object->Release();
     object = nullptr;
+}
+
+// Layout of cbuffer Blit in kBlitShader.
+struct BlitConstants {
+    uint32_t hasScene, swapRedBlue, filter, taps;
+    float sourceSize[2], footprint[2];
+};
+
+// Size of the texture behind a shader resource view.
+void viewSize(ID3D11ShaderResourceView* view, UINT& width, UINT& height) {
+    ID3D11Resource* resource = nullptr;
+    ID3D11Texture2D* texture = nullptr;
+    D3D11_TEXTURE2D_DESC desc{};
+    view->GetResource(&resource);
+    if (resource && SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture))))
+        texture->GetDesc(&desc);
+    release(texture);
+    release(resource);
+    width = desc.Width;
+    height = desc.Height;
 }
 
 void writeBuffer(ID3D11DeviceContext* context, ID3D11Buffer* buffer, const void* data, size_t size) {
@@ -200,6 +269,10 @@ bool D3D11Renderer::initialize(HWND target) {
         device_->CreatePixelShader(masked->GetBufferPointer(), masked->GetBufferSize(), nullptr, &blitMaskedPixelShader_);
         release(masked);
     }
+    if (ID3DBlob* scaled = compile(kBlitShader, "psScaled", "ps_5_0")) {
+        device_->CreatePixelShader(scaled->GetBufferPointer(), scaled->GetBufferSize(), nullptr, &blitScaledPixelShader_);
+        release(scaled);
+    }
     device_->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &blitVertexShader_);
     device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &blitPixelShader_);
     release(vs);
@@ -219,6 +292,7 @@ bool D3D11Renderer::initialize(HWND target) {
     constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constants.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     device_->CreateBuffer(&constants, nullptr, &hdrConstants_);
+    constants.ByteWidth = sizeof(BlitConstants);
     device_->CreateBuffer(&constants, nullptr, &blitConstants_);
     logf("[d3d11] renderer ready");
     return true;
@@ -468,11 +542,25 @@ void D3D11Renderer::presentFrame(ID3D11ShaderResourceView* source, bool swapRedB
         context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context_->IASetInputLayout(nullptr);
         context_->VSSetShader(blitVertexShader_, nullptr, 0);
-        if (hdr) {
-            // The scene mask goes into alpha (kBlitShader psMasked).
-            const uint32_t constants[4] = {sceneOnly ? 1u : 0u, swapRedBlue ? 1u : 0u, 0, 0};
-            writeBuffer(context_, blitConstants_, constants, sizeof(constants));
-            context_->PSSetShader(blitMaskedPixelShader_, nullptr, 0);
+        // Scaling: a box filter when the image is larger than its place in the window (internal
+        // resolution above the window size), Catmull-Rom ([display] upscale_filter) when smaller.
+        UINT sourceWidth = 0, sourceHeight = 0;
+        viewSize(source, sourceWidth, sourceHeight);
+        BlitConstants constants{sceneOnly ? 1u : 0u, swapRedBlue ? 1u : 0u, 0, 1,
+                                {float(sourceWidth), float(sourceHeight)},
+                                {float(sourceWidth) / width, float(sourceHeight) / height}};
+        const float footprint = (std::max)(constants.footprint[0], constants.footprint[1]);
+        if (footprint > 1.001f) {
+            constants.filter = 2;
+            constants.taps = std::clamp(uint32_t(std::ceil(footprint - 0.001f)), 2u, 8u);
+        } else if (footprint < 0.999f && host::settings().upscaleBicubic) {
+            constants.filter = 1;
+        }
+        if (!blitScaledPixelShader_) constants.filter = 0;
+        if (hdr || constants.filter) {
+            // The scene mask goes into alpha in HDR mode (kBlitShader psMasked).
+            writeBuffer(context_, blitConstants_, &constants, sizeof(constants));
+            context_->PSSetShader(hdr ? blitMaskedPixelShader_ : blitScaledPixelShader_, nullptr, 0);
             context_->PSSetConstantBuffers(0, 1, &blitConstants_);
         } else {
             context_->PSSetShader(swapRedBlue ? blitSwappedPixelShader_ : blitPixelShader_, nullptr, 0);

@@ -336,6 +336,16 @@ bool drawDisplay(Settings& st) {
         // The 3D scene only: the HUD, menus and movies stay at paper white.
         changed |= ImGui::SliderInt("Highlights", &st.hdrHighlights, 0, 200, "%d%%");
     }
+    // Enlarging the image to a bigger window (an internal resolution above it is averaged).
+    static const char* const filters[] = {"Bicubic (sharper)", "Bilinear"};
+    if (ImGui::BeginCombo("Upscaling filter", filters[st.upscaleBicubic ? 0 : 1])) {
+        for (int i = 0; i < 2; ++i)
+            if (ImGui::Selectable(filters[i], st.upscaleBicubic == (i == 0))) {
+                st.upscaleBicubic = i == 0;
+                changed = true;
+            }
+        ImGui::EndCombo();
+    }
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextDisabled("Applied on the next start:");
