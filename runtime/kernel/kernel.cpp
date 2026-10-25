@@ -8,7 +8,11 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#ifdef _WIN32
 #include <shlobj.h>
+#else
+#include <pthread.h>
+#endif
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -345,8 +349,10 @@ std::shared_ptr<GuestThread> attachThread(uint32_t stackSize, const char* name) 
     auto thread = std::make_shared<GuestThread>();
     setupThreadState(*thread, stackSize, 0);
     thread->name = name;
+#ifdef _WIN32
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &thread->host, 0, FALSE,
                     DUPLICATE_SAME_ACCESS);
+#endif
     registerThread(thread);
     tlsThread = thread;
     return thread;
@@ -361,10 +367,18 @@ struct ThreadStart {
     std::shared_ptr<ThreadObject> object;
 };
 
+#ifdef _WIN32
 DWORD WINAPI guestThreadMain(void* parameter) {
+#else
+void suspensionPoint();
+void* guestThreadMain(void* parameter) {
+#endif
     std::unique_ptr<ThreadStart> start(static_cast<ThreadStart*>(parameter));
     auto object = start->object;
     tlsThread = object->thread;
+#ifndef _WIN32
+    suspensionPoint();
+#endif
     auto& ctx = tlsThread->context;
     uint32_t code = 0;
     try {
@@ -389,6 +403,31 @@ DWORD WINAPI guestThreadMain(void* parameter) {
 }
 }  // namespace
 
+#ifdef _WIN32
+uint32_t suspendThread(GuestThread& thread) { return thread.host ? uint32_t(SuspendThread(thread.host)) : 0; }
+uint32_t resumeThread(GuestThread& thread) { return thread.host ? uint32_t(ResumeThread(thread.host)) : 0; }
+#else
+uint32_t suspendThread(GuestThread& thread) {
+    std::lock_guard lock(thread.suspendMutex);
+    return thread.suspendCount++;
+}
+uint32_t resumeThread(GuestThread& thread) {
+    std::lock_guard lock(thread.suspendMutex);
+    const uint32_t previous = thread.suspendCount;
+    if (previous && !--thread.suspendCount) thread.suspendCondition.notify_all();
+    return previous;
+}
+namespace {
+// Blocks the calling guest thread while it is suspended.
+void suspensionPoint() {
+    GuestThread* thread = currentThread();
+    if (!thread) return;
+    std::unique_lock lock(thread->suspendMutex);
+    thread->suspendCondition.wait(lock, [thread] { return thread->suspendCount == 0; });
+}
+}  // namespace
+#endif
+
 uint32_t createThread(uint32_t stackSize, uint32_t entry, uint32_t argument, uint32_t startup, bool suspended,
                       uint32_t& threadId, uint32_t* kthreadOut, int processor) {
     auto object = std::make_shared<ThreadObject>();
@@ -409,16 +448,31 @@ uint32_t createThread(uint32_t stackSize, uint32_t entry, uint32_t argument, uin
 
     auto* start = new ThreadStart{object};
     // Host stack must hold deep recursive translated call chains.
+#ifdef _WIN32
     HANDLE host = CreateThread(nullptr, 16 * 1024 * 1024, guestThreadMain, start,
                                CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
     if (!host) fatal("CreateThread failed");
     object->thread->host = host;
+#else
+    object->thread->suspendCount = 1;
+    pthread_attr_t attributes;
+    pthread_attr_init(&attributes);
+    pthread_attr_setstacksize(&attributes, 16 * 1024 * 1024);
+    pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+    pthread_t host;
+    const int error = pthread_create(&host, &attributes, guestThreadMain, start);
+    pthread_attr_destroy(&attributes);
+    if (error) fatal("pthread_create failed (%d)", error);
+    char hostName[16];
+    snprintf(hostName, sizeof(hostName), "g%08X", entry);
+    pthread_setname_np(host, hostName);
+#endif
     threadId = object->thread->id;
     if (kthreadOut) *kthreadOut = object->thread->kthread;
     const uint32_t handle = createHandle(object);
     TZ_TRACE("thread", "[thread] create %u entry=%08X arg=%08X startup=%08X stack=%X%s", threadId, entry,
              argument, startup, stackSize, suspended ? " suspended" : "");
-    if (!suspended) ResumeThread(host);
+    if (!suspended) resumeThread(*object->thread);
     return handle;
 }
 
@@ -544,6 +598,9 @@ uint32_t waitForObjects(const std::vector<uint32_t>& dispatchers, bool waitAll, 
     const bool poll = timeout && *timeout == 0;
     const bool finite = timeout && *timeout != 0;
     const auto deadline = finite ? deadlineFor(*timeout) : Clock::time_point::max();
+#ifndef _WIN32
+    suspensionPoint();
+#endif
     std::unique_lock lock(dispatcherMutex);
     for (;;) {
         if (alertable && hasPendingApcs()) {
@@ -582,7 +639,7 @@ uint32_t delayExecution(bool alertable, int64_t interval) {
         return status == kStatusTimeout ? kStatusSuccess : status;
     }
     if (interval == 0) {
-        SwitchToThread();
+        std::this_thread::yield();
         return kStatusSuccess;
     }
     const auto deadline = deadlineFor(interval);
@@ -600,16 +657,27 @@ uint32_t staticTlsSize() { return tlsSize; }
 void installDataImports(const XexImage& xex);
 void startTimeStampBundle(uint32_t bundle);
 
-void initializeKernel(const std::vector<uint8_t>& xexData) {
+std::filesystem::path userDataDirectory() {
+#ifdef _WIN32
     wchar_t* appData = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) {
-        userDir = std::filesystem::path(appData) / L"TenchuZRecomp";
+        std::filesystem::path result = std::filesystem::path(appData) / L"TenchuZRecomp";
         CoTaskMemFree(appData);
-    } else {
-        wchar_t executable[MAX_PATH]{};
-        GetModuleFileNameW(nullptr, executable, MAX_PATH);
-        userDir = std::filesystem::path(executable).parent_path() / "user";
+        return result;
     }
+#else
+    if (const char* data = getenv("XDG_DATA_HOME"); data && *data)
+        return std::filesystem::path(data) / "TenchuZRecomp";
+    if (const char* home = getenv("HOME"); home && *home)
+        return std::filesystem::path(home) / ".local" / "share" / "TenchuZRecomp";
+#endif
+    wchar_t executable[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, executable, MAX_PATH);
+    return std::filesystem::path(executable).parent_path() / "user";
+}
+
+void initializeKernel(const std::vector<uint8_t>& xexData) {
+    userDir = userDataDirectory();
     std::filesystem::create_directories(userDir);
 
     memory = new Memory();
@@ -687,6 +755,7 @@ void startWatchdog() {
 namespace {
 std::atomic<int> watchedWrites{0};
 
+#ifdef _WIN32
 LONG CALLBACK onWatchedWrite(EXCEPTION_POINTERS* info) {
     if (info->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP || !(info->ContextRecord->Dr6 & 1))
         return EXCEPTION_CONTINUE_SEARCH;
@@ -699,6 +768,7 @@ LONG CALLBACK onWatchedWrite(EXCEPTION_POINTERS* info) {
                  guestBacktrace(thread->context, 8).c_str());
     return EXCEPTION_CONTINUE_EXECUTION;
 }
+#endif
 }  // namespace
 
 namespace {
@@ -740,6 +810,10 @@ void stopEntryCounts(const std::string& path) {
 }
 
 void watchGuestWrites(uint32_t address) {
+#ifndef _WIN32
+    logf("[watchw] hardware watchpoints are Windows-only");
+    (void)address;
+#else
     static bool installed = (AddVectoredExceptionHandler(1, onWatchedWrite), true);
     (void)installed;
     // Debug registers are per thread and a thread cannot reliably change its own:
@@ -765,6 +839,7 @@ void watchGuestWrites(uint32_t address) {
         }
         logf("[watchw] armed on %zu threads", threads.size());
     }).detach();
+#endif
 }
 
 namespace {

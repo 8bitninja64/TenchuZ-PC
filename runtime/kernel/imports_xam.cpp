@@ -9,7 +9,9 @@
 #include "guest/host.h"
 #include <chrono>
 #include <fstream>
+#ifdef _WIN32
 #include <xinput.h>
+#endif
 
 using namespace tz;
 

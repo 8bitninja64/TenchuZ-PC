@@ -11,6 +11,10 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include "platform/window_sdl.h"
+#endif
+
 namespace tz::host {
 namespace {
 
@@ -84,6 +88,9 @@ bool down(const State& s, Control control) {
 void setCapture(State& s, bool capture) {
     if (s.captured == capture) return;
     s.captured = capture;
+#ifndef _WIN32
+    SDL_SetWindowRelativeMouseMode(static_cast<SDL_Window*>(s.window), capture);
+#else
     if (capture) {
         RECT client;
         GetClientRect(s.window, &client);
@@ -94,6 +101,7 @@ void setCapture(State& s, bool capture) {
         ClipCursor(nullptr);
         while (ShowCursor(TRUE) < 0) {}
     }
+#endif
 }
 
 int16_t axis(float value) { return int16_t(std::clamp(value, -1.0f, 1.0f) * 32767.0f); }
@@ -103,8 +111,10 @@ int16_t axis(float value) { return int16_t(std::clamp(value, -1.0f, 1.0f) * 3276
 void initializeInput(HWND window) {
     auto& s = state();
     s.window = window;
+#ifdef _WIN32
     RAWINPUTDEVICE device{0x01, 0x02, 0, window};  // generic desktop, mouse
     RegisterRawInputDevices(&device, 1, sizeof(device));
+#endif
 }
 
 bool handleInputMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -145,6 +155,13 @@ bool handleInputMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_MBUTTONUP: s.keys[VK_MBUTTON] = false; return true;
     case WM_XBUTTONUP: s.keys[GET_XBUTTON_WPARAM(wParam) == XBUTTON1 ? VK_XBUTTON1 : VK_XBUTTON2] = false; return true;
     case WM_INPUT: {
+#ifndef _WIN32
+        if (const SDL_Event* event = platform::currentEvent(); event && event->type == SDL_EVENT_MOUSE_MOTION && s.captured) {
+            s.mouseX += event->motion.xrel;
+            s.mouseY += event->motion.yrel;
+        }
+        return false;
+#else
         RAWINPUT raw{};
         UINT size = sizeof(raw);
         if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) !=
@@ -154,6 +171,7 @@ bool handleInputMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
             s.mouseY += raw.data.mouse.lLastY;
         }
         return false;
+#endif
     }
     case WM_KILLFOCUS:
         setCapture(s, false);

@@ -1,0 +1,13 @@
+--- a/libs/vkd3d-shader/tpf.c
++++ b/libs/vkd3d-shader/tpf.c
+@@ -3147,6 +3147,10 @@
+         {"sv_position",                 true,  VKD3D_SHADER_TYPE_VERTEX,    VKD3D_SHADER_SV_POSITION},
+         {"sv_rendertargetarrayindex",   true,  VKD3D_SHADER_TYPE_VERTEX,    VKD3D_SHADER_SV_RENDER_TARGET_ARRAY_INDEX},
+         {"sv_viewportarrayindex",       true,  VKD3D_SHADER_TYPE_VERTEX,    VKD3D_SHADER_SV_VIEWPORT_ARRAY_INDEX},
++        {"sv_clipdistance",             true,  VKD3D_SHADER_TYPE_VERTEX,    VKD3D_SHADER_SV_CLIP_DISTANCE},
++        {"sv_clipdistance",             true,  VKD3D_SHADER_TYPE_GEOMETRY,  VKD3D_SHADER_SV_CLIP_DISTANCE},
++        {"sv_clipdistance",             false, VKD3D_SHADER_TYPE_GEOMETRY,  VKD3D_SHADER_SV_CLIP_DISTANCE},
++        {"sv_clipdistance",             false, VKD3D_SHADER_TYPE_PIXEL,     VKD3D_SHADER_SV_CLIP_DISTANCE},
+     };
+     bool has_sv_prefix = !ascii_strncasecmp(semantic_name, "sv_", 3);
+ 

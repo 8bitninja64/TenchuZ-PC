@@ -1,6 +1,10 @@
 #include "module_loader.h"
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include <set>
 
@@ -28,17 +32,29 @@ const GameModule* gameModule() { return boundModule; }
 const GameModule* loadGameModule(const std::filesystem::path& path, std::string& error,
                                  const std::string& xexSha256) {
     if (boundModule) return boundModule;
+#ifdef _WIN32
     HMODULE library = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!library) {
         error = "cannot load " + utf8(path) + " (error " + std::to_string(GetLastError()) + ")";
         return nullptr;
     }
+    auto release = [library] { FreeLibrary(library); };
+    auto init = reinterpret_cast<ModuleInitFn>(GetProcAddress(library, kModuleInitSymbol));
+#else
+    void* library = dlopen(utf8(path).c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!library) {
+        const char* why = dlerror();
+        error = "cannot load " + utf8(path) + " (" + (why ? why : "unknown error") + ")";
+        return nullptr;
+    }
+    auto release = [library] { dlclose(library); };
+    auto init = reinterpret_cast<ModuleInitFn>(dlsym(library, kModuleInitSymbol));
+#endif
     auto fail = [&](std::string why) -> const GameModule* {
-        FreeLibrary(library);
+        release();
         error = utf8(path) + ": " + why;
         return nullptr;
     };
-    auto init = reinterpret_cast<ModuleInitFn>(GetProcAddress(library, kModuleInitSymbol));
     if (!init) return fail("not a Tenchu Z game module");
     const GameModule* module = init(&kApi);
     if (!module || module->abiVersion != kModuleAbiVersion || module->contextSize != sizeof(PPCContext))

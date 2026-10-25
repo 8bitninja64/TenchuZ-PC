@@ -6,7 +6,9 @@
 #include <cstring>
 #include <string_view>
 #include <thread>
+#ifdef _WIN32
 #include <timeapi.h>
+#endif
 
 namespace tz {
 namespace {
@@ -41,7 +43,9 @@ uint32_t createModuleEntry(const XexImage& xex) {
 void startTimeStampBundle(uint32_t bundle) {
     // { u64 interrupt time; u64 system time; u32 tick count (ms) }, updated every millisecond.
     std::thread([bundle] {
+#ifdef _WIN32
         timeBeginPeriod(1);
+#endif
         const auto start = std::chrono::steady_clock::now();
         for (;;) {
             const auto elapsed = std::chrono::steady_clock::now() - start;

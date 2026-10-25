@@ -4,9 +4,14 @@
 // decodes the faulting x86 move, performs it on the device emulation and resumes
 // after the instruction.
 #include "kernel.h"
+#include "kernel/fault.h"
 #include "kernel/memory.h"
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
 
 #include <cstdlib>
 #include <cstring>
@@ -19,13 +24,6 @@ namespace {
 
 bool isMmio(uint32_t address) {
     return (address >= 0x7FC00000u && address < 0x7FD00000u) || (address >= 0x7FE00000u && address < 0x7FF00000u);
-}
-
-DWORD64* registerSlot(CONTEXT& context, unsigned index) {
-    DWORD64* slots[16] = {&context.Rax, &context.Rcx, &context.Rdx, &context.Rbx, &context.Rsp, &context.Rbp,
-                          &context.Rsi, &context.Rdi, &context.R8,  &context.R9,  &context.R10, &context.R11,
-                          &context.R12, &context.R13, &context.R14, &context.R15};
-    return slots[index & 15];
 }
 
 // A decoded register <-> memory move.
@@ -100,24 +98,21 @@ bool decode(const uint8_t* code, Move& move) {
     return true;
 }
 
-LONG CALLBACK mmioFault(EXCEPTION_POINTERS* info) {
-    const auto* record = info->ExceptionRecord;
-    if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record->NumberParameters < 2 || !memory)
-        return EXCEPTION_CONTINUE_SEARCH;
+bool mmioFault(fault::Info& info) {
+    if (!memory) return false;
     const uintptr_t base = reinterpret_cast<uintptr_t>(memory->base());
-    const uintptr_t host = record->ExceptionInformation[1];
-    if (host < base || host >= base + 0x100000000ull) return EXCEPTION_CONTINUE_SEARCH;
+    const uintptr_t host = info.address;
+    if (host < base || host >= base + 0x100000000ull) return false;
     const uint32_t address = uint32_t(host - base);
-    if (!isMmio(address)) return EXCEPTION_CONTINUE_SEARCH;
-    CONTEXT& context = *info->ContextRecord;
-    const auto* code = reinterpret_cast<const uint8_t*>(context.Rip);
+    if (!isMmio(address)) return false;
+    const auto* code = reinterpret_cast<const uint8_t*>(*info.rip);
     Move move;
     if (!decode(code, move)) {
         logf("[mmio] cannot emulate the access to %08X at %p: %02X %02X %02X %02X %02X %02X", address, code, code[0],
              code[1], code[2], code[3], code[4], code[5]);
-        return EXCEPTION_CONTINUE_SEARCH;
+        return false;
     }
-    DWORD64& reg = *registerSlot(context, move.highByte ? move.reg - 4 : move.reg);
+    uint64_t& reg = *info.regs[(move.highByte ? move.reg - 4 : move.reg) & 15];
     if (move.store) {
         // Registers hold the guest value byte-swapped (memory order): swap it back.
         const uint64_t raw = move.immediate ? move.value : (move.highByte ? reg >> 8 : reg);
@@ -132,16 +127,20 @@ LONG CALLBACK mmioFault(EXCEPTION_POINTERS* info) {
         else if (move.highByte) reg = (reg & ~0xFF00ull) | ((raw & 0xFF) << 8);
         else reg = (reg & ~0xFFull) | (raw & 0xFF);
     }
-    context.Rip += move.length;
-    return EXCEPTION_CONTINUE_EXECUTION;
+    *info.rip += move.length;
+    return true;
 }
 
 }  // namespace
 
 void installMmioFaultHandler() {
-    AddVectoredExceptionHandler(1, mmioFault);
+    fault::addHandler(mmioFault);
     // Null pointer reads return zero, as the per-access checks did.
+#ifdef _WIN32
     VirtualAlloc(memory->base(), 0x10000, MEM_COMMIT, PAGE_READWRITE);
+#else
+    mprotect(memory->base(), 0x10000, PROT_READ | PROT_WRITE);
+#endif
 }
 
 }  // namespace tz

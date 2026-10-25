@@ -1,6 +1,13 @@
 #include "memory.h"
+#include "fault.h"
 #include "kernel.h"
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -16,6 +23,7 @@ constexpr uint32_t kPage = 0x1000;
 uint64_t alignUp(uint64_t value, uint64_t alignment) { return (value + alignment - 1) & ~(alignment - 1); }
 }  // namespace
 
+#ifdef _WIN32
 Memory::Memory() {
     auto kernelbase = GetModuleHandleW(L"kernelbase.dll");
     auto reserve = reinterpret_cast<decltype(&VirtualAlloc2)>(GetProcAddress(kernelbase, "VirtualAlloc2"));
@@ -60,38 +68,63 @@ Memory::Memory() {
     if (!commit(kKernelBegin, kKernelEnd - kKernelBegin))
         throw std::runtime_error("Cannot commit kernel memory");
 }
+#else
+// Linux: one PROT_NONE reservation; physical memory is a memfd mapped three times over it.
+Memory::Memory() {
+    void* reservation = mmap(nullptr, kAddressSpace, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (reservation == MAP_FAILED) throw std::runtime_error("Cannot reserve the 4 GiB guest address space");
+    base_ = static_cast<uint8_t*>(reservation);
+    const int physical = memfd_create("tenchu-physical", MFD_CLOEXEC);
+    if (physical < 0 || ftruncate(physical, kPhysicalSize) != 0)
+        throw std::runtime_error("Cannot create guest physical memory");
+    struct View { uint64_t begin, end; off_t offset; };
+    const View views[] = {{0xA0000000, 0xC0000000, 0}, {0xC0000000, 0xE0000000, 0}, {0xE0000000, 0xFFFFF000, kPage}};
+    for (const auto& view : views) {
+        if (mmap(base_ + view.begin, size_t(view.end - view.begin), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+                 physical, view.offset) == MAP_FAILED)
+            throw std::runtime_error("Cannot map guest physical memory");
+    }
+    close(physical);
+    if (!commit(kKernelBegin, kKernelEnd - kKernelBegin))
+        throw std::runtime_error("Cannot commit kernel memory");
+}
+#endif
 
 // Writes to watched physical pages: unprotect and let the store run again.
-static LONG CALLBACK watchedPageFault(EXCEPTION_POINTERS* info) {
-    const auto* record = info->ExceptionRecord;
-    if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record->NumberParameters < 2 ||
-        record->ExceptionInformation[0] != 1 || !memory)
-        return EXCEPTION_CONTINUE_SEARCH;
+static bool watchedPageFault(fault::Info& info) {
+    if (!info.write || !memory) return false;
     const uintptr_t base = reinterpret_cast<uintptr_t>(memory->base());
-    const uintptr_t host = record->ExceptionInformation[1];
-    if (host < base + 0xA0000000ull || host >= base + 0xFFFFF000ull) return EXCEPTION_CONTINUE_SEARCH;
+    const uintptr_t host = info.address;
+    if (host < base + 0xA0000000ull || host >= base + 0xFFFFF000ull) return false;
     const uint32_t physical = Memory::physicalAddress(uint32_t(host - base));
-    return memory->unwatchForWrite(physical >> 12) ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
+    return memory->unwatchForWrite(physical >> 12);
+}
+
+static void protect(void* address, size_t size, bool readOnly) {
+#ifdef _WIN32
+    DWORD old;
+    VirtualProtect(address, size, readOnly ? PAGE_READONLY : PAGE_READWRITE, &old);
+#else
+    mprotect(address, size, readOnly ? PROT_READ : PROT_READ | PROT_WRITE);
+#endif
 }
 
 void Memory::protectPhysical(uint32_t firstPage, uint32_t count, bool readOnly) {
-    DWORD old;
-    const DWORD protection = readOnly ? PAGE_READONLY : PAGE_READWRITE;
     const size_t offset = size_t(firstPage) * kPage, size = size_t(count) * kPage;
-    VirtualProtect(base_ + 0xA0000000ull + offset, size, protection, &old);
-    VirtualProtect(base_ + 0xC0000000ull + offset, size, protection, &old);
+    protect(base_ + 0xA0000000ull + offset, size, readOnly);
+    protect(base_ + 0xC0000000ull + offset, size, readOnly);
     // The E view maps physical memory from its second page on.
     if (firstPage == 0) {
         if (count == 1) return;
-        VirtualProtect(base_ + 0xE0000000ull, size - kPage, protection, &old);
+        protect(base_ + 0xE0000000ull, size - kPage, readOnly);
     } else {
-        VirtualProtect(base_ + 0xE0000000ull + offset - kPage, size, protection, &old);
+        protect(base_ + 0xE0000000ull + offset - kPage, size, readOnly);
     }
 }
 
 void Memory::watchPages(WatchClient client, uint32_t firstPage, uint32_t count) {
-    static const PVOID handler = AddVectoredExceptionHandler(1, watchedPageFault);
-    (void)handler;
+    static const bool installed = (fault::addHandler(watchedPageFault), true);
+    (void)installed;
     std::lock_guard lock(watchMutex_);
     uint32_t run = 0;
     for (uint32_t page = firstPage; page <= firstPage + count; ++page) {
@@ -144,9 +177,15 @@ bool Memory::unwatchForWrite(uint32_t physicalPage) {
         return true;
     }
     // Another thread already unprotected it, or the page was never ours to protect.
+#ifdef _WIN32
     MEMORY_BASIC_INFORMATION info{};
     VirtualQuery(base_ + 0xA0000000ull + size_t(physicalPage) * kPage, &info, sizeof(info));
     return info.Protect == PAGE_READWRITE;
+#else
+    // Physical views are only ever read-only through protectPhysical, and that ran under
+    // watchMutex_: the page is writable again.
+    return true;
+#endif
 }
 
 bool Memory::rangeWatched(WatchClient client, uint32_t firstPage, uint32_t lastPage) const {
@@ -174,12 +213,22 @@ Memory::~Memory() {
 
 bool Memory::commit(uint32_t address, uint32_t size) {
     if (!size || uint64_t(address) + size > 0xA0000000ull || address < 0x10000) return false;
+#ifdef _WIN32
     return VirtualAlloc(base_ + address, size, MEM_COMMIT, PAGE_READWRITE) != nullptr;
+#else
+    return mprotect(base_ + address, size, PROT_READ | PROT_WRITE) == 0;
+#endif
 }
 
 bool Memory::decommit(uint32_t address, uint32_t size) {
     if (!size || uint64_t(address) + size > 0xA0000000ull) return false;
+#ifdef _WIN32
     return VirtualFree(base_ + address, size, MEM_DECOMMIT) != 0;
+#else
+    // Anonymous private pages read back as zero after MADV_DONTNEED, like a fresh commit.
+    madvise(base_ + address, size, MADV_DONTNEED);
+    return mprotect(base_ + address, size, PROT_NONE) == 0;
+#endif
 }
 
 bool Memory::firstFit(std::map<uint32_t, uint32_t>& used, uint64_t begin, uint64_t end,

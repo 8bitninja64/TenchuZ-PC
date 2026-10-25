@@ -150,7 +150,15 @@ struct GuestThread {
     uint32_t stackBase = 0;  // lowest address
     uint32_t stackSize = 0;
     uint32_t tls = 0;        // static TLS block, followed by 64 dynamic slots
+#ifdef _WIN32
     HANDLE host = nullptr;
+#else
+    // Linux cannot suspend another thread: a suspended thread stops at its next suspension
+    // point (before it starts, and when it enters a wait).
+    std::mutex suspendMutex;
+    std::condition_variable suspendCondition;
+    uint32_t suspendCount = 0;
+#endif
     std::weak_ptr<ThreadObject> object;
     std::mutex apcMutex;
     std::deque<Apc> apcs;
@@ -177,6 +185,11 @@ std::shared_ptr<GuestThread> createSystemThread(const char* name);
 // Samples the calling thread's host instruction pointer (TENCHU_TRACE=hostprof).
 void startHostProfiler(const char* name);
 std::shared_ptr<GuestThread> threadByKthread(uint32_t kthread);
+// SuspendThread/ResumeThread: return the previous suspend count.
+uint32_t suspendThread(GuestThread& thread);
+uint32_t resumeThread(GuestThread& thread);
+// The per-user data folder (Windows %APPDATA%\TenchuZRecomp, Linux $XDG_DATA_HOME/TenchuZRecomp).
+std::filesystem::path userDataDirectory();
 
 // Kernel bring-up: loads the executable, data imports and the function table.
 // `xex` is the disc's default.xex; the game module must be loaded (module_loader.h).

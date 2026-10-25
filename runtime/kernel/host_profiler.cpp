@@ -4,8 +4,10 @@
 #include "kernel/kernel.h"
 #include "kernel/control.h"
 
+#ifdef _WIN32
 #include <windows.h>
 #include <dbghelp.h>
+#endif
 
 #include <algorithm>
 #include <cstring>
@@ -20,6 +22,10 @@ namespace tz {
 
 void startHostProfiler(const char* name) {
     if (!traceEnabled("hostprof")) return;
+#ifndef _WIN32
+    logf("[hostprof] the host profiler is Windows-only (use perf on Linux)");
+    (void)name;
+#else
     HANDLE target = nullptr;
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &target,
                     THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
@@ -137,6 +143,7 @@ void startHostProfiler(const char* name) {
         }
         report(callers, "by first caller in the executable (outside calls only)");
     }).detach();
+#endif
 }
 
 }  // namespace tz

@@ -1,15 +1,20 @@
 // XAudio render driver: the title's mixer callback produces 256-sample frames of
 // six planar big-endian float channels at 48 kHz, which play through an XAudio2
-// source voice. Without an audio device the callback is ticked at the hardware
+// source voice (Linux: an SDL3 audio stream). Without an audio device the callback is ticked at the hardware
 // rate and its output dropped. TENCHU_NOAUDIO=1 forces the silent path;
 // TENCHU_AUDIO_DUMP=<file.wav> also records the submitted frames.
 #include "kernel/kernel.h"
 #include "host/settings.h"
 #include "host/overlay.h"
 #include "guest/host.h"
+#ifdef _WIN32
 #include <windows.h>
 #include <xaudio2.h>
+#else
+#include <SDL3/SDL.h>
+#endif
 #include <array>
+#include <cstring>
 #include <chrono>
 #include <mutex>
 #include <thread>
@@ -23,8 +28,10 @@ constexpr uint32_t kRate = 48000;
 constexpr uint32_t kBufferCount = 16;
 // Frames kept queued ahead of the device (5.33 ms each).
 constexpr uint32_t kQueuedTarget = 4;
+#ifdef _WIN32
 // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, spelled out to avoid ksmedia.h's GUID linkage.
 constexpr GUID kFloatSubFormat = {0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
+#endif
 
 struct Client {
     std::atomic<uint32_t> callback{0};
@@ -34,6 +41,7 @@ struct Client {
 Client clients[8];
 std::atomic<bool> started{false};
 
+#ifdef _WIN32
 struct VoiceCallback : IXAudio2VoiceCallback {
     void STDMETHODCALLTYPE OnBufferEnd(void*) noexcept override {}
     void STDMETHODCALLTYPE OnVoiceProcessingPassStart(UINT32) noexcept override {}
@@ -86,6 +94,55 @@ struct Output {
         engine = nullptr;
         return false;
     }
+#else
+// Linux: an SDL3 audio stream in the title's format (SDL's 5.1 order matches XAudio's).
+struct Output {
+    SDL_AudioStream* stream = nullptr;
+    std::array<float, kFrameSamples * kChannels> buffer{};
+    std::mutex mutex;
+
+    bool open() {
+        char value[8]{};
+        if (GetEnvironmentVariableA("TENCHU_NOAUDIO", value, sizeof(value)) && value[0] == '1') return false;
+        if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+            logf("[audio] SDL audio unavailable (%s); audio disabled", SDL_GetError());
+            return false;
+        }
+        const SDL_AudioSpec spec{SDL_AUDIO_F32, int(kChannels), int(kRate)};
+        stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+        if (!stream) {
+            logf("[audio] cannot open an audio device (%s); audio disabled", SDL_GetError());
+            return false;
+        }
+        SDL_SetAudioStreamGain(stream, host::settings().mute ? 0.0f : host::settings().volume / 100.0f);
+        SDL_ResumeAudioStreamDevice(stream);
+        logf("[audio] SDL audio output ready (%s)", SDL_GetCurrentAudioDriver());
+        return true;
+    }
+    uint32_t queued() {
+        const int bytes = SDL_GetAudioStreamQueued(stream);
+        return bytes > 0 ? uint32_t(bytes) / uint32_t(sizeof(buffer)) : 0;
+    }
+    void pause(bool paused) {
+        std::lock_guard lock(mutex);
+        if (paused) SDL_PauseAudioStreamDevice(stream);
+        else SDL_ResumeAudioStreamDevice(stream);
+    }
+    void setVolume(float volume) {
+        if (stream) SDL_SetAudioStreamGain(stream, volume);
+    }
+    void submit(uint32_t samples) {
+        std::lock_guard lock(mutex);
+        if (queued() >= kBufferCount - 1) return;  // device stalled: drop rather than queue forever
+        for (uint32_t channel = 0; channel < kChannels; ++channel)
+            for (uint32_t i = 0; i < kFrameSamples; ++i) {
+                const uint32_t bits = load32(samples + (channel * kFrameSamples + i) * 4);
+                std::memcpy(&buffer[i * kChannels + channel], &bits, 4);
+            }
+        record(buffer.data());
+        SDL_PutAudioStreamData(stream, buffer.data(), int(sizeof(buffer)));
+    }
+#endif
     // Six-channel float WAV of everything submitted (debugging).
     FILE* dump = nullptr;
     uint32_t dumpedBytes = 0;
@@ -119,6 +176,10 @@ struct Output {
         fwrite(frame, bytes, 1, dump);
         fflush(dump);
     }
+#ifdef _WIN32
+    void setVolume(float volume) {
+        if (master) master->SetVolume(volume);
+    }
     uint32_t queued() {
         XAUDIO2_VOICE_STATE state{};
         voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
@@ -146,6 +207,7 @@ struct Output {
         submission.pAudioData = reinterpret_cast<const BYTE*>(buffer.data());
         voice->SubmitSourceBuffer(&submission);
     }
+#endif
 };
 Output output;
 bool outputReady = false;
@@ -188,7 +250,7 @@ namespace tz::audio {
 // Master volume (0-1) from the F1 menu.
 void setOutputVolume(float volume) {
     std::lock_guard lock(output.mutex);
-    if (output.master) output.master->SetVolume(volume);
+    output.setVolume(volume);
 }
 }  // namespace tz::audio
 

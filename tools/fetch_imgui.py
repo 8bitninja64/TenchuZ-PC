@@ -11,16 +11,16 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION = "1.91.9b"
 URL = f"https://github.com/ocornut/imgui/archive/refs/tags/v{VERSION}.zip"
 SHA256 = "fd37507c8476a6d14cc7c4b352401f31bcbd0f0d995d35390811e968c466f46e"
-# Library sources plus the Win32 and D3D11 backends; nothing else is used.
+# Library sources plus the Win32 (Windows), SDL3 (Linux) and D3D11 backends; nothing else is used.
 KEEP = ("imgui.cpp", "imgui.h", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "imgui_internal.h",
         "imconfig.h", "imstb_rectpack.h", "imstb_textedit.h", "imstb_truetype.h", "LICENSE.txt",
         "backends/imgui_impl_win32.cpp", "backends/imgui_impl_win32.h", "backends/imgui_impl_dx11.cpp",
-        "backends/imgui_impl_dx11.h")
+        "backends/imgui_impl_dx11.h", "backends/imgui_impl_sdl3.cpp", "backends/imgui_impl_sdl3.h")
 
 
 def main() -> int:
     target = ROOT / "build" / "deps" / "imgui"
-    if (target / "imgui.h").exists():
+    if all((target / name).exists() for name in KEEP):
         print("Dear ImGui already present in", target)
         return 0
     data = urllib.request.urlopen(URL).read()

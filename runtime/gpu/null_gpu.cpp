@@ -14,7 +14,7 @@
 #include <array>
 #include <filesystem>
 #include <set>
-#include <intrin.h>
+#include <immintrin.h>
 #include <chrono>
 #include <thread>
 #include <mutex>

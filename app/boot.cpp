@@ -1,9 +1,15 @@
 #include "boot.h"
 
+#ifdef _WIN32
 #include <windows.h>
-#include <bcrypt.h>
 #include <commdlg.h>
 #include <shlobj.h>
+#else
+#include <SDL3/SDL.h>
+#include <sys/wait.h>
+
+#include "first_start.h"
+#endif
 
 #include <cstdio>
 #include <cstring>
@@ -14,6 +20,7 @@
 #include "kernel/kernel.h"
 #include "kernel/module_loader.h"
 #include "kernel/xdvdfs.h"
+#include "platform/crypto.h"
 
 namespace tz {
 namespace {
@@ -26,8 +33,12 @@ constexpr wchar_t kTitle[] = L"Tenchu Z";
 // older release is rebuilt after an update. Missing files mean a development build, which
 // never builds modules itself (tools/build.ps1 does).
 constexpr const char* kKitFiles[] = {
-    "tools/XenonRecomp.exe", "tools/recompile.py", "tools/xex_image.py", "tools/compile_module.py",
-    "tools/make_module.ps1", "tools/vsenv.ps1", "tools/python.ps1", "tools/xbox/xboxkrnl_table.inc",
+#ifdef _WIN32
+    "tools/XenonRecomp.exe", "tools/make_module.ps1", "tools/vsenv.ps1", "tools/python.ps1",
+#else
+    "tools/XenonRecomp", "tools/make_module.sh",
+#endif
+    "tools/recompile.py", "tools/xex_image.py", "tools/compile_module.py", "tools/xbox/xboxkrnl_table.inc",
     "tools/xbox/xam_table.inc", "config/tenchuz.toml", "config/tenchuz_switch_tables.toml",
     "config/tenchuz_switch_tables_manual.toml", "config/overrides.txt", "runtime/guest/ppc_context.template.h",
     "runtime/guest/ppc_config.h", "runtime/guest/module_abi.h", "runtime/guest/module_rt.cpp",
@@ -39,46 +50,40 @@ std::filesystem::path executableDirectory() {
     return std::filesystem::path(executable).parent_path();
 }
 
+#ifdef _WIN32
+constexpr wchar_t kModuleName[] = L"tenchu_game.dll";
+#else
+constexpr wchar_t kModuleName[] = L"tenchu_game.so";
+#endif
+
 std::filesystem::path userDirectory() {
-    std::filesystem::path directory = executableDirectory() / "user";
-    wchar_t* appData = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) {
-        directory = std::filesystem::path(appData) / L"TenchuZRecomp";
-        CoTaskMemFree(appData);
-    }
+    const std::filesystem::path directory = userDataDirectory();
     std::error_code error;
     std::filesystem::create_directories(directory, error);
     return directory;
 }
 
 std::wstring widen(const std::string& text) {
+#ifndef _WIN32
+    return compat::widen(text.c_str());
+#else
     std::wstring result(MultiByteToWideChar(CP_UTF8, 0, text.c_str(), int(text.size()), nullptr, 0), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, text.c_str(), int(text.size()), result.data(), int(result.size()));
     return result;
+#endif
 }
 
+#ifdef _WIN32
 void showError(const std::wstring& message) { MessageBoxW(nullptr, message.c_str(), kTitle, MB_OK | MB_ICONERROR); }
-
-std::string sha256(const std::vector<uint8_t>& data) {
-    uint8_t digest[32]{};
-    BCRYPT_ALG_HANDLE algorithm = nullptr;
-    BCRYPT_HASH_HANDLE hash = nullptr;
-    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0) {
-        if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) == 0) {
-            BCryptHashData(hash, const_cast<PUCHAR>(data.data()), ULONG(data.size()), 0);
-            BCryptFinishHash(hash, digest, sizeof(digest), 0);
-            BCryptDestroyHash(hash);
-        }
-        BCryptCloseAlgorithmProvider(algorithm, 0);
-    }
-    std::string text;
-    char cell[3];
-    for (const uint8_t byte : digest) {
-        snprintf(cell, sizeof(cell), "%02x", byte);
-        text += cell;
-    }
-    return text;
+#else
+void showError(const std::wstring& message) {
+    const std::string text = compat::narrow(message.c_str());
+    fprintf(stderr, "[boot] %s\n", text.c_str());
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Tenchu Z", text.c_str(), nullptr);
 }
+#endif
+
+std::string sha256(const std::vector<uint8_t>& data) { return tz::crypto::sha256Hex(data.data(), data.size()); }
 
 // FNV-1a 64 over each kit file's name and bytes; "" without a complete kit.
 std::string kitStamp() {
@@ -136,6 +141,40 @@ bool openGame(const std::filesystem::path& path, GameSource& source, std::wstrin
     return true;
 }
 
+#ifndef _WIN32
+// Single-quoted for /bin/sh.
+std::string shellQuote(const std::string& text) {
+    std::string quoted = "'";
+    for (char c : text) quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return quoted + "'";
+}
+
+// The desktop's file chooser (zenity on GNOME, SteamOS and most others; kdialog on KDE), as the
+// NFL Blitz 2003 port does.
+std::filesystem::path pickDisc(const std::filesystem::path& start) {
+    const std::string folder = start.empty() ? std::string(".") : utf8(start.parent_path());
+    const std::string commands[] = {
+        "zenity --file-selection --title='Select your Tenchu Z (USA, Europe) Xbox 360 disc image' "
+        "--file-filter='Xbox 360 disc image | *.[iI][sS][oO]' --file-filter='All files | *' --filename=" +
+            shellQuote(folder + "/") + " 2>/dev/null",
+        "kdialog --title 'Select your Tenchu Z (USA, Europe) Xbox 360 disc image' --getopenfilename " +
+            shellQuote(folder) + " 'Xbox 360 disc image (*.iso)' 2>/dev/null"};
+    for (const std::string& command : commands) {
+        FILE* pipe = popen(command.c_str(), "r");
+        if (!pipe) continue;
+        std::string out;
+        char buffer[512];
+        while (size_t count = fread(buffer, 1, sizeof(buffer), pipe)) out.append(buffer, count);
+        const int status = pclose(pipe);
+        while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+        if (status == 0 && !out.empty()) return std::filesystem::u8path(out);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 1) return {};  // cancelled
+    }
+    showError(L"No file chooser (zenity or kdialog) could be shown. Start the game with the path of your "
+              L"disc image: TenchuZ <disc image>");
+    return {};
+}
+#else
 std::filesystem::path pickDisc(const std::filesystem::path& start) {
     wchar_t file[MAX_PATH]{};
     const std::wstring folder = start.empty() ? std::wstring() : start.parent_path().wstring();
@@ -148,6 +187,7 @@ std::filesystem::path pickDisc(const std::filesystem::path& start) {
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
     return GetOpenFileNameW(&dialog) ? std::filesystem::path(file) : std::filesystem::path();
 }
+#endif
 
 // The extracted disc next to the executable or above it (the repository layout).
 std::filesystem::path findGameFolder() {
@@ -211,6 +251,7 @@ bool tryModule(const std::filesystem::path& path, const std::string& xexHash, bo
     return false;
 }
 
+#ifdef _WIN32
 // Runs tools/make_module.ps1 in its own console window and waits for it.
 bool buildModule(const std::filesystem::path& xexPath, const std::filesystem::path& out,
                  const std::filesystem::path& work) {
@@ -249,6 +290,7 @@ bool buildModule(const std::filesystem::path& xexPath, const std::filesystem::pa
     }
     return true;
 }
+#endif
 
 // A module translated from this default.xex: TENCHU_MODULE, the one next to the executable
 // (a source build), or the one this release built in the user folder; otherwise build one.
@@ -260,23 +302,43 @@ bool loadModule(const GameSource& source) {
         showError(L"TENCHU_MODULE does not name a usable game module:\n" + std::wstring(value));
         return false;
     }
-    if (tryModule(executableDirectory() / L"tenchu_game.dll", xexHash, false)) return true;
+    if (tryModule(executableDirectory() / kModuleName, xexHash, false)) return true;
 
     const std::string stamp = kitStamp();
     if (stamp.empty()) {
-        showError(L"This build has no game module and cannot compile one.\n\nBuild it with tools\\build.ps1, "
-                  L"or use a release of Tenchu Z Recomp.");
+        showError(L"This build has no game module and cannot compile one.\n\nBuild it with tools/build.ps1 "
+                  L"(Linux: tools/build_linux.sh), or use a release of Tenchu Z Recomp.");
         return false;
     }
     const auto user = userDirectory();
-    const auto built = user / L"tenchu_game.dll";
-    const auto stampFile = user / L"tenchu_game.dll.stamp";
+    const auto built = user / kModuleName;
+    const auto stampFile = user / (std::wstring(kModuleName) + L".stamp");
     if (readText(stampFile) == stamp && tryModule(built, xexHash, false)) return true;
 
     // One build at a time.
     const auto work = user / L"module_build";
     std::error_code error;
     std::filesystem::create_directories(work, error);
+#ifndef _WIN32
+    // The first-start window asks, locks the work folder and shows the build (first_start_linux.cpp).
+    const auto xexPath = work / "default.xex";
+    {
+        std::ofstream file(xexPath, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(source.xex.data()), std::streamsize(source.xex.size()));
+        if (!file) {
+            showError(L"Cannot write " + xexPath.wstring());
+            return false;
+        }
+    }
+    std::filesystem::remove(stampFile, error);
+    if (!firststart::build(utf8(executableDirectory() / "tools" / "make_module.sh"), utf8(xexPath), utf8(built),
+                           !GetEnvironmentVariableW(L"TENCHU_AUTO_BUILD", nullptr, 0)))
+        return false;
+    if (!tryModule(built, xexHash, true)) return false;
+    std::ofstream(stampFile, std::ios::binary | std::ios::trunc) << stamp;
+    std::filesystem::remove(xexPath, error);
+    return true;
+#else
     HANDLE lock = CreateFileW((work / L"lock").c_str(), GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
     if (lock == INVALID_HANDLE_VALUE) {
@@ -309,6 +371,7 @@ bool loadModule(const GameSource& source) {
     std::ofstream(stampFile, std::ios::binary | std::ios::trunc) << stamp;
     std::filesystem::remove(xexPath, error);
     return true;
+#endif
 }
 
 }  // namespace

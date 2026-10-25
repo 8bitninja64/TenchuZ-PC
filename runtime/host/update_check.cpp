@@ -1,11 +1,17 @@
-// Updates (update_check.h). HTTPS through WinHTTP (no bundled TLS library); the package is
-// unpacked with the system's tar.exe (Windows 10 1803+ ships bsdtar, which reads .zip).
+// Updates (update_check.h). HTTPS through WinHTTP (Linux: the system's curl), no bundled TLS
+// library; the package is unpacked with the system's tar (Windows 10 1803+ ships bsdtar, which
+// reads .zip). The Linux side follows the NFL Blitz 2003 port's updater.
 #include "host/update_check.h"
 
+#include "platform/crypto.h"
+#ifdef _WIN32
 #include <windows.h>
-#include <bcrypt.h>
 #include <shellapi.h>
 #include <winhttp.h>
+#else
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -35,15 +41,42 @@ std::mutex& g_mutex = *new std::mutex;
 Release& g_release = *new Release;
 Install& g_install = *new Install;
 
+#ifdef _WIN32
 constexpr const char* kPackage = "TenchuZ-windows-x64.zip";
 constexpr const char* kExe = "TenchuZ.exe";
+#else
+constexpr const char* kPackage = "TenchuZ-linux-x64.tar.xz";
+constexpr const char* kExe = "TenchuZ";
+#endif
 constexpr const char* kBackup = ".old-update";
 
 fs::path exeDir() {
+#ifdef _WIN32
     wchar_t buffer[MAX_PATH];
     const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
     return fs::path(std::wstring(buffer, length)).parent_path();
+#else
+    std::error_code error;
+    return fs::read_symlink("/proc/self/exe", error).parent_path();
+#endif
 }
+
+#ifndef _WIN32
+// Runs a program (searched on PATH) and returns its exit status (-1: it could not run).
+int runProgram(const std::vector<std::string>& arguments) {
+    std::vector<char*> argv;  // made before fork: the child only execs
+    for (const std::string& argument : arguments) argv.push_back(const_cast<char*>(argument.c_str()));
+    argv.push_back(nullptr);
+    const pid_t pid = fork();
+    if (pid == 0) {
+        execvp(argv[0], argv.data());
+        _exit(127);
+    }
+    int status = 0;
+    if (pid < 0 || waitpid(pid, &status, 0) < 0) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+#endif
 
 std::string environment(const char* name) {
     char value[512]{};
@@ -70,22 +103,7 @@ std::string apiBase() {
     return test.empty() ? "https://api.github.com" : test;
 }
 
-std::string sha256Hex(const std::vector<uint8_t>& data) {
-    uint8_t digest[32]{};
-    BCRYPT_ALG_HANDLE algorithm = nullptr;
-    BCRYPT_HASH_HANDLE hash = nullptr;
-    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0) {
-        if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) == 0) {
-            BCryptHashData(hash, const_cast<PUCHAR>(data.data()), ULONG(data.size()), 0);
-            BCryptFinishHash(hash, digest, sizeof(digest), 0);
-            BCryptDestroyHash(hash);
-        }
-        BCryptCloseAlgorithmProvider(algorithm, 0);
-    }
-    char text[65];
-    for (int i = 0; i < 32; ++i) snprintf(text + i * 2, 3, "%02x", digest[i]);
-    return text;
-}
+std::string sha256Hex(const std::vector<uint8_t>& data) { return crypto::sha256Hex(data.data(), data.size()); }
 
 // ---- A small JSON reader (the release API's answer) --------------------------------------
 struct Json {
@@ -93,10 +111,11 @@ struct Json {
     double number = 0;
     std::string text;
     std::vector<Json> items;
-    std::vector<std::pair<std::string, Json>> members;
+    std::vector<Json> members;  // an object's values, each named by its key
+    std::string key;
     const Json* get(const char* key) const {
-        for (const auto& [name, value] : members)
-            if (name == key) return &value;
+        for (const Json& value : members)
+            if (value.key == key) return &value;
         return nullptr;
     }
     std::string string(const char* key) const {
@@ -213,7 +232,8 @@ private:
                 if (p_ >= end_ || *p_++ != ':') return false;
                 Json member;
                 if (!value(member, depth + 1)) return false;
-                out.members.emplace_back(std::move(name), std::move(member));
+                member.key = std::move(name);
+                out.members.push_back(std::move(member));
                 space();
                 if (p_ < end_ && *p_ == ',') { ++p_; continue; }
                 if (p_ < end_ && *p_ == '}') return ++p_, true;
@@ -255,6 +275,59 @@ int httpGet(const std::string& url, bool api, const std::function<bool(const cha
         error = "unexpected address " + url;
         return 0;
     }
+#ifndef _WIN32
+    // API answers are small: the status code is appended on its own line. Downloads stream the
+    // body; -f turns an HTTP error into curl's exit status 22. LD_PRELOAD (Steam's overlay) is dropped.
+    const std::string agent = std::string("TenchuZRecomp/") + TENCHU_VERSION;
+    const std::string command =
+        std::string("env -u LD_PRELOAD curl -sL --connect-timeout 10 ") +
+        (api ? "--max-time 15 -w '\\n%{http_code}' " : "-f ") + "-A '" + agent + "' " +
+        (api ? "-H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' " : "") + "'" + url +
+        "' 2>/dev/null";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        error = "could not run curl";
+        return 0;
+    }
+    std::string body;
+    std::vector<char> buffer(1 << 16);
+    bool stopped = false;
+    for (size_t count; (count = fread(buffer.data(), 1, buffer.size(), pipe)) > 0;) {
+        if (api) {
+            if (body.size() < (1u << 20)) body.append(buffer.data(), count);
+        } else if (!sink(buffer.data(), count)) {
+            stopped = true;
+            break;
+        }
+    }
+    const int status = pclose(pipe);
+    const int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (exitCode == 127) {
+        error = "curl is not installed";
+        return 0;
+    }
+    if (api) {
+        const size_t newline = body.rfind('\n');
+        const int code = newline == std::string::npos ? 0 : atoi(body.c_str() + newline + 1);
+        if (newline != std::string::npos) body.resize(newline);
+        if (!code) {
+            error = "no connection to github.com";
+            return 0;
+        }
+        sink(body.data(), body.size());
+        return code;
+    }
+    if (stopped) return 200;
+    if (exitCode == 22) {
+        error = "the server refused the download";
+        return 404;
+    }
+    if (exitCode != 0) {
+        error = "the download failed (curl " + std::to_string(exitCode) + ")";
+        return 0;
+    }
+    return 200;
+#else
     const std::wstring wideUrl(url.begin(), url.end());  // ASCII (validUrl)
     wchar_t host[256] = {}, path[2048] = {}, extra[2048] = {};
     URL_COMPONENTS components{};
@@ -311,6 +384,7 @@ int httpGet(const std::string& url, bool api, const std::function<bool(const cha
     if (connection) WinHttpCloseHandle(connection);
     if (session) WinHttpCloseHandle(session);
     return code;
+#endif
 }
 
 std::vector<long> versionParts(const std::string& version) {
@@ -343,6 +417,17 @@ void setInstall(Install::State state, float fraction = 0, const std::string& err
 }
 
 bool extract(const fs::path& archive, const fs::path& directory, std::string& error) {
+#ifndef _WIN32
+    std::error_code ignored;
+    fs::create_directories(directory, ignored);
+    if (runProgram({"tar", "-xJf", archive.string(), "-C", directory.string()}) == 0) return true;
+    // Minimal installs: tar without xz. The installed package's own unpacker (Python's tarfile).
+    if (runProgram({"python3", "-I", (exeDir() / "tools" / "compile_module.py").string(), "unpack", archive.string(),
+                    directory.string()}) == 0)
+        return true;
+    error = "the package could not be unpacked (tar and python3 failed)";
+    return false;
+#else
     wchar_t system[MAX_PATH];
     GetSystemDirectoryW(system, MAX_PATH);
     const fs::path tar = fs::path(system) / "tar.exe";
@@ -369,6 +454,7 @@ bool extract(const fs::path& archive, const fs::path& directory, std::string& er
         return false;
     }
     return true;
+#endif
 }
 
 Release checkNow() {
@@ -615,6 +701,27 @@ Install installStatus() {
 
 bool restart() {
     const fs::path exe = exeDir() / kExe;
+#ifndef _WIN32
+    // The original arguments (/proc/self/cmdline) with the new executable.
+    std::vector<std::string> arguments;
+    {
+        std::ifstream file("/proc/self/cmdline", std::ios::binary);
+        for (std::string argument; std::getline(file, argument, '\0');) arguments.push_back(argument);
+    }
+    const std::string path = exe.string();
+    std::vector<char*> argv;  // made before fork: the child only execs
+    argv.push_back(const_cast<char*>(path.c_str()));
+    for (size_t i = 1; i < arguments.size(); ++i) argv.push_back(arguments[i].data());
+    argv.push_back(nullptr);
+    const pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        usleep(500000);  // let this process release the window and audio device first
+        execv(path.c_str(), argv.data());
+        _exit(127);
+    }
+    return pid > 0;
+#else
     // The original command line (arguments included) with the new executable.
     std::wstring command = L"\"" + exe.wstring() + L"\"";
     int count = 0;
@@ -631,6 +738,7 @@ bool restart() {
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     return true;
+#endif
 }
 
 void cleanup() {
@@ -660,7 +768,14 @@ void cleanup() {
 
 void openPage(const std::string& url) {
     if (url.rfind("https://", 0) != 0 || !validUrl(url)) return;
+#ifdef _WIN32
     ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    if (fork() == 0) {
+        execlp("xdg-open", "xdg-open", url.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+#endif
 }
 
 }  // namespace tz::host::update

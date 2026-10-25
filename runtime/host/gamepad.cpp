@@ -170,11 +170,17 @@ void inputMain() {
     }
     auto nextRefresh = std::chrono::steady_clock::now();
     for (;;) {
+        bool devicesChanged = false;
+#ifdef _WIN32
         SDL_PumpEvents();
         SDL_Event event;
-        bool devicesChanged = false;
         while (SDL_PollEvent(&event))
             if (event.type == SDL_EVENT_GAMEPAD_ADDED || event.type == SDL_EVENT_GAMEPAD_REMOVED) devicesChanged = true;
+#else
+        // The game window's thread owns the SDL event queue here: update the pads directly
+        // (new and removed pads are found by the refresh every second).
+        SDL_UpdateGamepads();
+#endif
         const auto now = std::chrono::steady_clock::now();
         if (devicesChanged || now >= nextRefresh) {
             refresh(g);

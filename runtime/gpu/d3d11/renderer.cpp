@@ -4,6 +4,9 @@
 #include "kernel/control.h"
 #include "host/settings.h"
 #include <d3dcompiler.h>
+#ifndef _WIN32
+#include <SDL3/SDL.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -176,6 +179,10 @@ ID3DBlob* compile(const char* source, const char* entry, const char* profile) {
 // Windows' "SDR content brightness" for a monitor in HDR mode, in nits (0 if unknown: the
 // callers keep their previous value, 200 at first).
 float windowsSdrWhiteNits(HMONITOR monitor) {
+#ifndef _WIN32
+    (void)monitor;
+    return 0.0f;  // HDR output is Windows-only for now
+#else
     MONITORINFOEXW info{};
     info.cbSize = sizeof(info);
     if (!GetMonitorInfoW(monitor, &info)) return 0.0f;
@@ -202,6 +209,7 @@ float windowsSdrWhiteNits(HMONITOR monitor) {
             return float(white.SDRWhiteLevel) / 1000.0f * 80.0f;
     }
     return 0.0f;
+#endif
 }
 
 // Windows' SDR brightness slider does not make the DXGI factory stale, so its value is
@@ -265,9 +273,13 @@ bool D3D11Renderer::initialize(HWND target) {
     if (preferred) {
         DXGI_ADAPTER_DESC1 description{};
         preferred->GetDesc1(&description);
+#ifdef _WIN32
         char name[128]{};
         WideCharToMultiByte(CP_UTF8, 0, description.Description, -1, name, sizeof(name), nullptr, nullptr);
         logf("[d3d11] adapter: %s", name);
+#else
+        logf("[d3d11] adapter: %s", compat::narrow(description.Description).c_str());
+#endif
     }
     release(preferred);
     if (FAILED(created)) {
@@ -337,6 +349,10 @@ bool D3D11Renderer::initialize(HWND target) {
 
 // Refresh rate of the monitor showing the window (0 if unknown).
 uint32_t D3D11Renderer::refreshRate() const {
+#ifndef _WIN32
+    const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(static_cast<SDL_Window*>(window_)));
+    return mode && mode->refresh_rate > 1.0f ? uint32_t(std::lround(mode->refresh_rate)) : 0;
+#else
     MONITORINFOEXW monitor{};
     monitor.cbSize = sizeof(monitor);
     if (!GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor)) return 0;
@@ -344,6 +360,7 @@ uint32_t D3D11Renderer::refreshRate() const {
     mode.dmSize = sizeof(mode);
     if (!EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode)) return 0;
     return mode.dmDisplayFrequency > 1 ? mode.dmDisplayFrequency : 0;
+#endif
 }
 
 // Vsync interval for Present. When the refresh rate is a multiple of the frame
@@ -369,6 +386,9 @@ bool D3D11Renderer::pacedByVsync() const {
 // after HDR toggles and display changes) is replaced; otherwise the outputs are enumerated
 // again only when the window moved to another monitor.
 bool D3D11Renderer::monitorHdr() {
+#ifndef _WIN32
+    return false;
+#else
     const HMONITOR monitor = MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST);
     const bool current = outputFactory_ && outputFactory_->IsCurrent();
     if (current && monitor == outputMonitor_) return monitorHdr_;
@@ -397,6 +417,7 @@ bool D3D11Renderer::monitorHdr() {
     }
     if (const float nits = monitorHdr_ ? windowsSdrWhiteNits(monitor) : 0.0f; nits > 0.0f) sdrWhiteNits_ = nits;
     return monitorHdr_;
+#endif
 }
 
 void D3D11Renderer::hdrLevels(float& paperWhite, float& peak) const {
@@ -517,9 +538,15 @@ void D3D11Renderer::createHdrTextures() {
 }
 
 void D3D11Renderer::resizeIfNeeded() {
+#ifdef _WIN32
     RECT client{};
     GetClientRect(window_, &client);
     const UINT width = (std::max)(1L, client.right - client.left), height = (std::max)(1L, client.bottom - client.top);
+#else
+    int pixelsWide = 1, pixelsHigh = 1;
+    SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(window_), &pixelsWide, &pixelsHigh);
+    const UINT width = UINT((std::max)(1, pixelsWide)), height = UINT((std::max)(1, pixelsHigh));
+#endif
     if (backBufferView_ && width == width_ && height == height_) return;
     release(backBufferView_);
     releaseHdrTextures();
@@ -652,9 +679,13 @@ void D3D11Renderer::presentFrame(ID3D11ShaderResourceView* source, bool swapRedB
         host::overlay::render(backBufferView_, fps_);
     }
     const HRESULT presented = swapChain_->Present(syncInterval(), 0);
+#ifdef _WIN32
     if (frame_ % 300 == 0)
         TZ_TRACE("window", "[window] foreground %d iconic %d present %08X", GetForegroundWindow() == window_,
                  IsIconic(window_) != 0, unsigned(presented));
+#else
+    (void)presented;
+#endif
     if (traceEnabled("present")) {
         static auto last = std::chrono::steady_clock::now();
         const auto now = std::chrono::steady_clock::now();

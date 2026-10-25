@@ -1,2 +1,4 @@
 # Patches for the generator apply byte for byte: never convert their line endings.
 *.patch -text
+# Shell scripts run on Linux (WSL reads this checkout): keep LF line endings.
+*.sh text eol=lf

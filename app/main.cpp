@@ -8,7 +8,17 @@
 #include "host/settings.h"
 #include "host/overlay.h"
 #include "host/update_check.h"
+#ifdef _WIN32
 #include <dbghelp.h>
+#else
+#include <SDL3/SDL.h>
+#include <execinfo.h>
+#include <csignal>
+#include <ucontext.h>
+#include <vector>
+
+#include "platform/window_sdl.h"
+#endif
 #include <cstring>
 #include <chrono>
 #include <thread>
@@ -17,6 +27,7 @@
 #include <stdexcept>
 
 namespace {
+#ifdef _WIN32
 // Borderless fullscreen on the window's monitor, or back to the saved window.
 void setFullscreen(HWND window, bool fullscreen) {
     static WINDOWPLACEMENT placement{sizeof(placement)};
@@ -190,12 +201,100 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS* exception) {
     fflush(stderr);
     return EXCEPTION_EXECUTE_HANDLER;
 }
-}  // namespace
+#else
+// Linux: an SDL3 window (DXVK-native presents to it). Its events arrive as the Win32 messages
+// the host code handles (runtime/platform/window_sdl.cpp).
+void setFullscreen(HWND window, bool fullscreen) {
+    // Without a display mode SDL3 makes it borderless fullscreen at the desktop resolution.
+    SDL_SetWindowFullscreen(static_cast<SDL_Window*>(window), fullscreen);
+}
 
-int wmain(int argc, wchar_t** argv) {
-    SetUnhandledExceptionFilter(crashFilter);
-    // Real pixels: fullscreen uses the monitor's native resolution.
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+void windowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    static bool fullscreen = false;
+    if (message == tz::host::overlay::kMessageFullscreen) {
+        if ((wParam != 0) != fullscreen) setFullscreen(window, fullscreen = wParam != 0);
+        return;
+    }
+    // F1 menu first: it takes keyboard and mouse while open.
+    if (message != WM_CLOSE && tz::host::overlay::handleMessage(window, message, wParam, lParam)) return;
+    switch (message) {
+    case WM_CLOSE:
+        ExitProcess(0);
+    case WM_SYSKEYDOWN:
+    case WM_KEYDOWN:
+        // Alt+Enter and F11 toggle fullscreen.
+        if ((wParam == VK_RETURN && (lParam & (1 << 29))) || wParam == VK_F11) {
+            if (!(lParam & (1 << 30))) setFullscreen(window, fullscreen = !fullscreen);
+            return;
+        }
+        break;
+    case WM_APP:
+        setFullscreen(window, fullscreen = true);
+        return;
+    default:
+        break;
+    }
+    tz::host::handleInputMessage(window, message, wParam, lParam);
+}
+
+// The game window lives on its own thread so the guest never blocks input.
+void startWindowThread() {
+    std::thread([] {
+        if (!SDL_Init(SDL_INIT_VIDEO)) tz::fatal("Cannot open a window: %s", SDL_GetError());
+        const auto& settings = tz::host::settings();
+        SDL_Window* window = SDL_CreateWindow("Tenchu Z", settings.windowWidth, settings.windowHeight,
+                                              SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN);
+        if (!window) tz::fatal("Cannot open a window: %s", SDL_GetError());
+        tz::host::initializeInput(window);
+        if (settings.fullscreen) PostMessageW(window, WM_APP, 0, 0);
+        tz::gpu::setOutputWindow(window);
+        SDL_Event event;
+        while (SDL_WaitEvent(&event)) tz::platform::dispatchEvent(window, event, windowProcedure);
+    }).detach();
+}
+
+// Faults nobody handled (the guest memory handlers in kernel/fault.cpp come first): where it
+// happened, the guest thread's recent functions and the host stack, then the default action.
+void crashSignal(int signal, siginfo_t* info, void* data) {
+    const auto* context = static_cast<const ucontext_t*>(data);
+    const uintptr_t address = uintptr_t(info->si_addr);
+    fprintf(stderr, "[FATAL] host signal %d at %p", signal,
+            reinterpret_cast<void*>(context->uc_mcontext.gregs[REG_RIP]));
+    if ((signal == SIGSEGV || signal == SIGBUS) && tz::memory) {
+        const uintptr_t base = uintptr_t(tz::memory->base());
+        const bool write = context->uc_mcontext.gregs[REG_ERR] & 2;
+        if (address >= base && address - base < 0x100000000ull)
+            fprintf(stderr, " (%s guest 0x%08llX)", write ? "write" : "read", (unsigned long long)(address - base));
+        else
+            fprintf(stderr, " (%s host %p)", write ? "write" : "read", info->si_addr);
+    }
+    fputc('\n', stderr);
+    if (auto* thread = tz::currentThread()) {
+        const auto& ctx = thread->context;
+        fprintf(stderr, "thread %u (%s) guest function 0x%08X lr 0x%08X\nrecent:", thread->id, thread->name.c_str(),
+                ctx.lastFunction, uint32_t(ctx.lr));
+        const uint32_t count = (std::min)(ctx.traceIndex, 64u);
+        for (uint32_t i = 0; i < count; ++i) fprintf(stderr, " %08X", ctx.trace[(ctx.traceIndex - count + i) & 63]);
+        fputc('\n', stderr);
+    }
+    fprintf(stderr, "host stack:\n");
+    void* frames[48];
+    backtrace_symbols_fd(frames, backtrace(frames, 48), 2);
+    fflush(stderr);
+    std::signal(signal, SIG_DFL);
+    raise(signal);
+}
+
+void installCrashHandler() {
+    struct sigaction action {};
+    action.sa_sigaction = crashSignal;
+    action.sa_flags = SA_SIGINFO;
+    sigemptyset(&action.sa_mask);
+    for (const int signal : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) sigaction(signal, &action, nullptr);
+}
+#endif
+
+int run(int argc, wchar_t** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     namespace update = tz::host::update;
     update::cleanup();  // the files the last update replaced
@@ -238,3 +337,29 @@ int wmain(int argc, wchar_t** argv) {
     }
     return 0;
 }
+}  // namespace
+
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv) {
+    SetUnhandledExceptionFilter(crashFilter);
+    // Real pixels: fullscreen uses the monitor's native resolution.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    return run(argc, argv);
+}
+#else
+int main(int argc, char** argv) {
+    installCrashHandler();
+    // DXVK-native presents to SDL3 windows.
+    setenv("DXVK_WSI_DRIVER", "SDL3", 0);
+    std::vector<std::wstring> wide;
+    for (int i = 0; i < argc; ++i) wide.push_back(tz::compat::widen(argv[i]));
+    std::vector<wchar_t*> pointers;
+    for (auto& argument : wide) pointers.push_back(argument.data());
+    pointers.push_back(nullptr);
+    // Quit without static destructors: guest threads are still running.
+    std::fflush(nullptr);
+    const int code = run(argc, pointers.data());
+    std::fflush(nullptr);
+    std::_Exit(code);
+}
+#endif

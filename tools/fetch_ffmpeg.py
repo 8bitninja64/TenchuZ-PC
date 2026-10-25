@@ -4,7 +4,8 @@ The archive is what tools/build_xma_codec.py produces (pinned FFmpeg n8.1.2 with
 small XMA decoder option; the script is also the corresponding source), built by the
 repository's ffmpeg workflow (.github/workflows/ffmpeg.yml) and attached to the
 deps-ffmpeg release. Its SHA-256 is pinned here. Building it yourself instead needs
-MSYS2: python tools/build_xma_codec.py.
+MSYS2: python tools/build_xma_codec.py. On Linux there is no prebuilt: this script
+exits with 1 and build_xma_codec.py builds natively into build/deps-linux/ffmpeg.
 """
 from __future__ import annotations
 
@@ -23,6 +24,9 @@ SHA256 = "e3aff23c3390bd2aa2b300f8b34450cc6b12cee4c3cd09c6e94b194a570f164f"
 
 
 def main() -> int:
+    if not sys.platform.startswith("win"):
+        print("fetch_ffmpeg: the prebuilt FFmpeg is Windows-only; build it with tools/build_xma_codec.py", file=sys.stderr)
+        return 1
     if not SHA256:
         print("fetch_ffmpeg: no prebuilt FFmpeg is pinned yet; build it with tools/build_xma_codec.py", file=sys.stderr)
         return 1

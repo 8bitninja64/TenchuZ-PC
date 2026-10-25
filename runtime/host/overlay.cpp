@@ -10,7 +10,13 @@
 
 #include <imgui.h>
 #include <backends/imgui_impl_dx11.h>
+#ifdef _WIN32
 #include <backends/imgui_impl_win32.h>
+#else
+#include <SDL3/SDL.h>
+#include <backends/imgui_impl_sdl3.h>
+#include "platform/window_sdl.h"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -23,7 +29,9 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+#endif
 
 namespace tz::audio {
 void setOutputVolume(float volume);
@@ -135,13 +143,27 @@ void loadFonts() {
                 if (ImFont* font = io.Fonts->AddFontFromFileTTF(path, px)) return font;
         return nullptr;
     };
+#ifdef _WIN32
     g_fontBody = load({"C:/Windows/Fonts/segoeui.ttf"}, kFontPx);
+#else
+    g_fontBody = load({"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+                       "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                       "/usr/share/fonts/dejavu/DejaVuSans.ttf"},
+                      kFontPx);
+#endif
     if (!g_fontBody) {
         ImFontConfig config;
         config.SizePixels = 13;
         g_fontBody = io.Fonts->AddFontDefault(&config);
     }
+#ifdef _WIN32
     g_fontTitle = load({"C:/Windows/Fonts/seguibl.ttf", "C:/Windows/Fonts/segoeuib.ttf"}, kFontPx * 1.4f);
+#else
+    g_fontTitle = load({"/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf", "/usr/share/fonts/noto/NotoSans-Bold.ttf",
+                        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+                        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"},
+                       kFontPx * 1.4f);
+#endif
     if (!g_fontTitle) g_fontTitle = g_fontBody;
     io.FontDefault = g_fontBody;
 }
@@ -534,9 +556,7 @@ bool drawControls(Settings& st) {
 std::string g_missionMessage;
 
 std::filesystem::path savePath() {
-    char appData[MAX_PATH]{};
-    GetEnvironmentVariableA("APPDATA", appData, sizeof(appData));
-    return std::filesystem::path(appData) / "TenchuZRecomp" / "content" / "00000001" / "TENCHU_Z" / "tenchu.bin";
+    return userDataDirectory() / "content" / "00000001" / "TENCHU_Z" / "tenchu.bin";
 }
 
 void unlockMissions() {
@@ -908,7 +928,12 @@ bool handleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     }
     if (g_initialized) {
         std::lock_guard lock(g_mutex);
+#ifdef _WIN32
         ImGui_ImplWin32_WndProcHandler(window, message, wParam, lParam);
+#else
+        // The SDL event this message was translated from.
+        if (const SDL_Event* event = platform::currentEvent()) ImGui_ImplSDL3_ProcessEvent(event);
+#endif
     }
     // Keyboard and mouse belong to the menu while it is open.
     return (message >= WM_KEYFIRST && message <= WM_KEYLAST) || (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST);
@@ -924,7 +949,12 @@ void initialize(HWND window, ID3D11Device* device, ID3D11DeviceContext* context)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     loadFonts();
     applyStyle();
+#ifdef _WIN32
     ImGui_ImplWin32_Init(window);
+#else
+    ImGui_ImplSDL3_InitForD3D(static_cast<SDL_Window*>(window));
+    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);  // the menu reads pads itself
+#endif
     ImGui_ImplDX11_Init(device, context);
     g_context = context;
     g_initialized = true;
@@ -937,7 +967,11 @@ void render(ID3D11RenderTargetView* target, float fps) {
     if (!g_open && !showFps) return;
     std::lock_guard lock(g_mutex);
     ImGui_ImplDX11_NewFrame();
+#ifdef _WIN32
     ImGui_ImplWin32_NewFrame();
+#else
+    ImGui_ImplSDL3_NewFrame();
+#endif
     // The fonts are rasterized at kFontPx: scale them to ~18 px per 540 lines of window.
     ImGuiIO& io = ImGui::GetIO();
     float px = 18.0f * io.DisplaySize.y / 540.0f;

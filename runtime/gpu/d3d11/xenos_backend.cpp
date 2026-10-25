@@ -1525,10 +1525,10 @@ struct XenosBackend::Impl {
         if (!(scissorTl >> 31)) {
             const uint32_t windowOffset = reg(reg::PA_SC_WINDOW_OFFSET);
             const LONG dx = int32_t(windowOffset << 17) >> 17, dy = int32_t(windowOffset << 1) >> 17;
-            scissor.left = (std::max)(0L, scissor.left + dx);
-            scissor.right = (std::max)(0L, scissor.right + dx);
-            scissor.top = (std::max)(0L, scissor.top + dy);
-            scissor.bottom = (std::max)(0L, scissor.bottom + dy);
+            scissor.left = (std::max)(LONG(0), scissor.left + dx);
+            scissor.right = (std::max)(LONG(0), scissor.right + dx);
+            scissor.top = (std::max)(LONG(0), scissor.top + dy);
+            scissor.bottom = (std::max)(LONG(0), scissor.bottom + dy);
         }
         const D3D11_RECT hostScissor = scaled(scissor);
         if (!bound.valid || std::memcmp(&hostScissor, &bound.scissor, sizeof(hostScissor)) != 0) {
@@ -1795,8 +1795,8 @@ struct XenosBackend::Impl {
         // Pixels whose centers lie inside the rectangle (vertices sit on pixel edges, -0.5..639.5).
         auto edge = [](float value) { return LONG(std::floor(value + 0.5f)); };
         D3D11_RECT rect{edge(minX) + offsetX, edge(minY) + offsetY, edge(maxX) + offsetX, edge(maxY) + offsetY};
-        rect.left = (std::max)(0L, rect.left);
-        rect.top = (std::max)(0L, rect.top);
+        rect.left = (std::max)(LONG(0), rect.left);
+        rect.top = (std::max)(LONG(0), rect.top);
 
         RenderTarget* source = nullptr;
         if (sourceSelect < 4) {

@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <utility>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -89,6 +90,44 @@ bool closeTo(float actual, float wanted) {
     return std::fabs(actual - wanted) <= 1e-4f * (std::max)(1.0f, std::fabs(wanted));
 }
 
+// The region of guest memory holding address: where it ends (clipped to end) and whether
+// it can be read.
+bool readableRegion(const uint8_t* base, uint64_t address, uint64_t end, uint64_t& regionEnd, bool& readable) {
+#ifdef _WIN32
+    MEMORY_BASIC_INFORMATION info{};
+    if (!VirtualQuery(base + address, &info, sizeof(info))) return false;
+    regionEnd = (std::min)(end, uint64_t(static_cast<const uint8_t*>(info.BaseAddress) + info.RegionSize - base));
+    readable = info.State == MEM_COMMIT &&
+               (info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
+               !(info.Protect & PAGE_GUARD);
+    return true;
+#else
+    // /proc/self/maps lists mappings in address order with their permissions.
+    FILE* maps = fopen("/proc/self/maps", "r");
+    if (!maps) return false;
+    const uintptr_t host = uintptr_t(base + address);
+    uintptr_t next = uintptr_t(base + end);
+    readable = false;
+    char line[512];
+    while (fgets(line, sizeof(line), maps)) {
+        unsigned long long first = 0, last = 0;
+        char permissions[8]{};
+        if (sscanf(line, "%llx-%llx %7s", &first, &last, permissions) != 3) continue;
+        if (last <= host) continue;
+        if (first <= host) {
+            readable = permissions[0] == 'r';
+            next = (std::min)(next, uintptr_t(last));
+        } else {
+            next = (std::min)(next, uintptr_t(first));  // a gap up to the next mapping
+        }
+        break;
+    }
+    fclose(maps);
+    regionEnd = (std::min)(end, uint64_t(next - uintptr_t(base)));
+    return regionEnd > address;
+#endif
+}
+
 // Scans committed guest memory (heap, stacks, image, physical) for big-endian floats.
 void findFloats(const std::vector<float>& values) {
     const uint8_t* base = tz::memory->base();
@@ -96,13 +135,9 @@ void findFloats(const std::vector<float>& values) {
     for (const auto [begin, end] : {std::pair{0x40000000u, 0x7F000000u}, std::pair{0x80000000u, 0xA0000000u},
                                     std::pair{0xA0000000u, 0xC0000000u}}) {
         for (uint64_t address = begin; address < end && found < 32;) {
-            MEMORY_BASIC_INFORMATION info{};
-            if (!VirtualQuery(base + address, &info, sizeof(info))) break;
-            const uint64_t regionEnd = (std::min)(uint64_t(end), uint64_t(static_cast<const uint8_t*>(info.BaseAddress) +
-                                                                          info.RegionSize - base));
-            const bool readable = info.State == MEM_COMMIT &&
-                                  (info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
-                                  !(info.Protect & PAGE_GUARD);
+            uint64_t regionEnd;
+            bool readable;
+            if (!readableRegion(base, address, end, regionEnd, readable)) break;
             if (readable) {
                 for (uint64_t at = address; at + values.size() * 4 <= regionEnd && found < 32; at += 4) {
                     size_t i = 0;

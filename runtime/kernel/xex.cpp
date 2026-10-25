@@ -1,7 +1,6 @@
 #include "xex.h"
 #include "kernel.h"
-#include <windows.h>
-#include <bcrypt.h>
+#include "platform/crypto.h"
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
@@ -26,26 +25,8 @@ uint16_t be16(const std::vector<uint8_t>& data, size_t offset) {
 // AES-128-CBC with a zero IV, in place.
 void decryptCbc(const uint8_t* key, uint8_t* data, size_t size) {
     if (size % 16) throw std::runtime_error("Encrypted XEX data is not block aligned");
-    BCRYPT_ALG_HANDLE algorithm = nullptr;
-    BCRYPT_KEY_HANDLE handle = nullptr;
-    auto check = [](NTSTATUS status) {
-        if (!BCRYPT_SUCCESS(status)) throw std::runtime_error("AES decryption failed");
-    };
-    try {
-        check(BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_AES_ALGORITHM, nullptr, 0));
-        check(BCryptSetProperty(algorithm, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_CBC,
-                                sizeof(BCRYPT_CHAIN_MODE_CBC), 0));
-        check(BCryptGenerateSymmetricKey(algorithm, &handle, nullptr, 0, (PUCHAR)key, 16, 0));
-        uint8_t iv[16] = {};
-        ULONG written = 0;
-        check(BCryptDecrypt(handle, data, ULONG(size), nullptr, iv, sizeof(iv), data, ULONG(size), &written, 0));
-    } catch (...) {
-        if (handle) BCryptDestroyKey(handle);
-        if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
-        throw;
-    }
-    BCryptDestroyKey(handle);
-    BCryptCloseAlgorithmProvider(algorithm, 0);
+    const uint8_t iv[16] = {};
+    crypto::aes128CbcDecrypt(key, iv, data, size);
 }
 
 }  // namespace

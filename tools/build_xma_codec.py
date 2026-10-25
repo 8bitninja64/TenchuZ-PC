@@ -10,6 +10,13 @@ serve the title's movies.
 Requires MSYS2 with mingw-w64-x86_64-gcc and make (TENCHU_MSYS2, ../_Tools/msys64 or
 C:/msys64) and
 llvm-lib from Visual Studio. Output: build/deps/ffmpeg (bin, include, lib).
+
+On Linux it builds natively with the system compiler (CC, else gcc or clang from
+PATH) and make: same source, patch and feature set, pthreads, PIC shared libraries
+(libavcodec-tenchu.so.62 ...), installed into build/deps-linux/ffmpeg (include, lib).
+Objects are built under TENCHU_DEPS_WORK (default ~/tenchu-deps), off the slow
+/mnt drive when the repository lives on Windows. No rpath is set on the libraries:
+the executable's $ORIGIN rpath finds them.
 """
 from pathlib import Path
 import argparse
@@ -20,6 +27,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import urllib.request
 
@@ -28,6 +36,8 @@ TOOLS = ROOT.parent / '_Tools'
 MSYS = next((path for path in ([Path(os.environ['TENCHU_MSYS2'])] if 'TENCHU_MSYS2' in os.environ else [])
              + [TOOLS / 'msys64', Path('C:/msys64')] if (path / 'usr/bin/bash.exe').exists()), TOOLS / 'msys64')
 DEPS = ROOT / 'build' / 'deps'
+DEPS_LINUX = ROOT / 'build' / 'deps-linux'
+WORK_LINUX = Path(os.environ.get('TENCHU_DEPS_WORK', Path.home() / 'tenchu-deps'))
 COMMIT = '1c2c67c0b9f7f66ab32c19dcf7f227bcd290aa4c'  # FFmpeg n8.1.2
 ARCHIVE_HASH = '1291ae49c285f7bd55c7c059aa43f1a0fd784a1ae22d5c76297dcd11c531248a'
 SOURCE_HASH = '803547a38dea1294891c00402d6b3576a16053b0f00b395768c4983740c86553'
@@ -95,20 +105,16 @@ def msys_path(path: Path) -> str:
     return '/' + text[0].lower() + text[2:]
 
 
-def main(rebuild: bool):
-    if not (MSYS / 'usr/bin/bash.exe').exists():
-        raise SystemExit('MSYS2 was not found (TENCHU_MSYS2, ../_Tools/msys64 or C:/msys64): install it from '
-                         'https://www.msys2.org and run: pacman -S mingw-w64-x86_64-gcc make')
-    DEPS.mkdir(parents=True, exist_ok=True)
-    archive = DEPS / 'ffmpeg-upstream.tar.gz'
+def prepare_source(archive: Path, extract_to: Path) -> tuple[Path, bytes]:
+    """Download (once), verify, extract and patch the pinned FFmpeg source."""
     if not archive.exists():
         urllib.request.urlretrieve(f'https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/{COMMIT}', archive)
     if hashlib.sha256(archive.read_bytes()).hexdigest() != ARCHIVE_HASH:
         raise RuntimeError('Pinned FFmpeg archive hash mismatch')
-    source = DEPS / ('FFmpeg-' + COMMIT)
+    source = extract_to / ('FFmpeg-' + COMMIT)
     with tarfile.open(archive) as tar:
         if not source.exists():
-            tar.extractall(DEPS, filter='data')
+            tar.extractall(extract_to, filter='data')
         original = tar.extractfile(f'FFmpeg-{COMMIT}/libavcodec/wmaprodec.c').read()
     if hashlib.sha256(original).hexdigest() != SOURCE_HASH:
         raise RuntimeError('Pinned decoder source hash mismatch')
@@ -117,6 +123,60 @@ def main(rebuild: bool):
     if decoder.read_bytes() not in (original, patched):
         raise RuntimeError('Unexpected local edits to wmaprodec.c; refusing to overwrite')
     decoder.write_bytes(patched)
+    return source, patched
+
+
+def main_linux(rebuild: bool):
+    cc = os.environ.get('CC') or shutil.which('gcc') or shutil.which('clang')
+    if not cc or not shutil.which('make'):
+        raise SystemExit('A C compiler (CC, gcc or clang) and make are required: apt-get install build-essential')
+    DEPS_LINUX.mkdir(parents=True, exist_ok=True)
+    WORK_LINUX.mkdir(parents=True, exist_ok=True)
+    # The archive is shared with the Windows build when it is already there.
+    archive = DEPS / 'ffmpeg-upstream.tar.gz'
+    if not archive.exists():
+        archive = DEPS_LINUX / 'ffmpeg-upstream.tar.gz'
+    source, patched = prepare_source(archive, WORK_LINUX)
+
+    build = WORK_LINUX / 'ffmpeg-build'
+    install = DEPS_LINUX / 'ffmpeg'
+    build.mkdir(exist_ok=True)
+    # --disable-asm keeps decoding identical to the Windows build (same C code paths).
+    configure = [str(source / 'configure'), '--prefix=' + str(install), '--cc=' + cc,
+                 '--disable-everything', '--disable-autodetect',
+                 '--disable-programs', '--disable-doc', '--disable-network', '--disable-debug',
+                 '--disable-avdevice', '--disable-avfilter', '--disable-swscale', '--disable-swresample',
+                 '--disable-asm', '--enable-pthreads', '--enable-pic',
+                 '--enable-avcodec', '--enable-avutil', '--enable-avformat',
+                 '--enable-decoder=xma1,xma2,wmv1,wmv2,wmv3,vc1,wmav1,wmav2,wmapro',
+                 '--enable-demuxer=asf', '--enable-parser=vc1', '--enable-protocol=file',
+                 '--enable-shared', '--disable-static', '--build-suffix=' + SUFFIX]
+    stamp = build / 'configure-args.json'
+    if rebuild or not stamp.exists() or json.loads(stamp.read_text()) != configure:
+        subprocess.run(configure, cwd=build, check=True)
+    if rebuild:
+        subprocess.run(['make', 'clean'], cwd=build, check=True)
+    subprocess.run(['make', f'-j{os.cpu_count() or 8}'], cwd=build, check=True)
+    subprocess.run(['make', 'install'], cwd=build, check=True)
+    stamp.write_text(json.dumps(configure))
+
+    for filename in ['COPYING.LGPLv2.1', 'LICENSE.md']:
+        shutil.copy2(source / filename, install / filename)
+    (install / 'PROVENANCE.json').write_text(json.dumps({
+        'upstream_commit': COMMIT, 'archive_sha256': ARCHIVE_HASH,
+        'patched_decoder_sha256': hashlib.sha256(patched).hexdigest(),
+        'configure': configure, 'license': 'LGPL-2.1-or-later'}, indent=2) + '\n')
+    print('FFmpeg ready in', install)
+
+
+def main(rebuild: bool):
+    if sys.platform.startswith('linux'):
+        return main_linux(rebuild)
+    if not (MSYS / 'usr/bin/bash.exe').exists():
+        raise SystemExit('MSYS2 was not found (TENCHU_MSYS2, ../_Tools/msys64 or C:/msys64): install it from '
+                         'https://www.msys2.org and run: pacman -S mingw-w64-x86_64-gcc make')
+    DEPS.mkdir(parents=True, exist_ok=True)
+    source, patched = prepare_source(DEPS / 'ffmpeg-upstream.tar.gz', DEPS)
 
     build = DEPS / 'ffmpeg-build'
     install = DEPS / 'ffmpeg'

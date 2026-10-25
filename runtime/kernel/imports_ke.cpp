@@ -1,7 +1,11 @@
 // Kernel executive imports: threads, synchronization, TLS, memory, time.
 #include "kernel.h"
+#ifdef _WIN32
 #include <intrin.h>
+#endif
 #include "guest/host.h"
+#include <atomic>
+#include <immintrin.h>
 #include <thread>
 
 using namespace tz;
@@ -44,14 +48,14 @@ TZ_IMPORT(ExTerminateThread) { throw ThreadExit{ctx.r3.u32}; }
 TZ_IMPORT(KeResumeThread) {
     auto thread = threadByKthread(ctx.r3.u32);
     TZ_TRACE("thread", "[thread] KeResumeThread %08X -> %s", ctx.r3.u32, thread ? thread->name.c_str() : "unknown");
-    ctx.r3.u64 = thread ? ResumeThread(thread->host) : 0;
+    ctx.r3.u64 = thread ? resumeThread(*thread) : 0;
 }
 
 TZ_IMPORT(NtResumeThread) {
     auto object = lookupHandleAs<ThreadObject>(ctx.r3.u32);
     TZ_TRACE("thread", "[thread] NtResumeThread %08X -> %s", ctx.r3.u32, object ? object->thread->name.c_str() : "unknown");
     if (!object) { ctx.r3.u64 = kStatusInvalidHandle; return; }
-    const DWORD previous = ResumeThread(object->thread->host);
+    const uint32_t previous = resumeThread(*object->thread);
     if (ctx.r4.u32) store32(ctx.r4.u32, previous);
     ctx.r3.u64 = kStatusSuccess;
 }
@@ -59,7 +63,7 @@ TZ_IMPORT(NtResumeThread) {
 TZ_IMPORT(NtSuspendThread) {
     auto object = lookupHandleAs<ThreadObject>(ctx.r3.u32);
     if (!object) { ctx.r3.u64 = kStatusInvalidHandle; return; }
-    const DWORD previous = SuspendThread(object->thread->host);
+    const uint32_t previous = suspendThread(*object->thread);
     if (ctx.r4.u32) store32(ctx.r4.u32, previous);
     ctx.r3.u64 = kStatusSuccess;
 }
@@ -292,11 +296,11 @@ TZ_IMPORT(ObDereferenceObject) {}
 
 namespace {
 void spinAcquire(uint32_t lock) {
-    auto* word = memory->host<volatile long>(lock);
-    const long owner = long(_byteswap_ulong(currentContext().r13.u32));
-    while (_InterlockedCompareExchange(word, owner, 0) != 0) YieldProcessor();
+    std::atomic_ref<uint32_t> word(*memory->host<uint32_t>(lock));
+    const uint32_t owner = _byteswap_ulong(currentContext().r13.u32);
+    for (uint32_t expected = 0; !word.compare_exchange_weak(expected, owner); expected = 0) _mm_pause();
 }
-void spinRelease(uint32_t lock) { _InterlockedExchange(memory->host<volatile long>(lock), 0); }
+void spinRelease(uint32_t lock) { std::atomic_ref<uint32_t>(*memory->host<uint32_t>(lock)).store(0); }
 }  // namespace
 
 TZ_IMPORT(KfAcquireSpinLock) { spinAcquire(ctx.r3.u32); ctx.r3.u64 = 0; }
