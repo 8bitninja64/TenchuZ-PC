@@ -39,6 +39,9 @@ namespace {
 std::recursive_mutex g_mutex;
 std::atomic<bool> g_open{false};
 std::atomic<bool> g_holdInput{false};  // after closing: pads stay away from the game until released
+// Opened by Back+Start on the title's thread: the menu's own pad poll (command processor
+// thread) may see that same press as new, so closing waits until the combo is released.
+std::atomic<bool> g_comboLatched{false};
 std::atomic<bool> g_initialized{false};
 HWND g_window = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
@@ -235,7 +238,8 @@ void pollPads() {
     if (g_holdInput && !held) g_holdInput = false;
     // Opening is handled where the game reads the pads (filterGamePad): the game must
     // not see the Start of the combo. Closing happens here, while the game is paused.
-    if (g_open && (held & (kBack | kStart)) == (kBack | kStart) && (pressed & (kBack | kStart))) {
+    if (g_comboLatched && !(held & (kBack | kStart))) g_comboLatched = false;
+    if (g_open && !g_comboLatched && (held & (kBack | kStart)) == (kBack | kStart) && (pressed & (kBack | kStart))) {
         setOpen(false);
         g_padHeld = 0;
         return;
@@ -846,7 +850,10 @@ bool filterGamePad(uint16_t buttons) {
         VirtualPad pad;
         if (gamepadRawState(user, pad)) combo = (pad.buttons & (kBack | kStart)) == (kBack | kStart);
     }
-    if (combo && !comboHeld && !g_open) setOpen(true);
+    if (combo && !comboHeld && !g_open) {
+        g_comboLatched = true;
+        setOpen(true);
+    }
     comboHeld = combo;
     return combo || ownsInput();
 }

@@ -173,18 +173,19 @@ ID3DBlob* compile(const char* source, const char* entry, const char* profile) {
     return code;
 }
 
-// Windows' "SDR content brightness" for a monitor in HDR mode, in nits (200 if unknown).
+// Windows' "SDR content brightness" for a monitor in HDR mode, in nits (0 if unknown: the
+// callers keep their previous value, 200 at first).
 float windowsSdrWhiteNits(HMONITOR monitor) {
     MONITORINFOEXW info{};
     info.cbSize = sizeof(info);
-    if (!GetMonitorInfoW(monitor, &info)) return 200.0f;
+    if (!GetMonitorInfoW(monitor, &info)) return 0.0f;
     UINT32 pathCount = 0, modeCount = 0;
-    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS) return 200.0f;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS) return 0.0f;
     std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
     std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
     if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr) !=
         ERROR_SUCCESS)
-        return 200.0f;
+        return 0.0f;
     paths.resize(pathCount);
     for (const auto& path : paths) {
         DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
@@ -200,7 +201,7 @@ float windowsSdrWhiteNits(HMONITOR monitor) {
         if (DisplayConfigGetDeviceInfo(&white.header) == ERROR_SUCCESS && white.SDRWhiteLevel)
             return float(white.SDRWhiteLevel) / 1000.0f * 80.0f;
     }
-    return 200.0f;
+    return 0.0f;
 }
 
 // Windows' SDR brightness slider does not make the DXGI factory stale, so its value is
@@ -220,6 +221,7 @@ void pollSdrWhite(HMONITOR monitor) {
             for (;;) {
                 if (const HMONITOR polled = sdrWhiteMonitor.load()) {
                     const float nits = windowsSdrWhiteNits(polled);
+                    if (nits <= 0.0f) continue;  // a failed query (display changing): keep the last
                     std::lock_guard lock(sdrWhiteMutex);
                     sdrWhitePolledMonitor = polled;
                     sdrWhitePolled = nits;
@@ -393,7 +395,7 @@ bool D3D11Renderer::monitorHdr() {
         }
         release(adapter);
     }
-    if (monitorHdr_) sdrWhiteNits_ = windowsSdrWhiteNits(monitor);
+    if (const float nits = monitorHdr_ ? windowsSdrWhiteNits(monitor) : 0.0f; nits > 0.0f) sdrWhiteNits_ = nits;
     return monitorHdr_;
 }
 
@@ -417,8 +419,8 @@ void D3D11Renderer::updateHdrMetadata(float paperWhite, float peak) {
     // Chromaticity coordinates scaled by 50000.
     const UINT16 primaries[8] = {32000, 16500, 15000, 30000, 7500, 3000, 15635, 16450};
     std::memcpy(metadata.RedPrimary, primaries, sizeof(primaries));  // red, green, blue, white point
-    metadata.MaxMasteringLuminance = UINT(peak);
-    metadata.MinMasteringLuminance = 1;  // 0.0001 nits
+    metadata.MaxMasteringLuminance = UINT(peak * 10000.0f);  // both in 0.0001 nits
+    metadata.MinMasteringLuminance = 1;
     metadata.MaxContentLightLevel = UINT16(peak);
     metadata.MaxFrameAverageLightLevel = UINT16(paperWhite);
     if (FAILED(swapChain4->SetHDRMetaData(DXGI_HDR_METADATA_TYPE_HDR10, sizeof(metadata), &metadata)))

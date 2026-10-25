@@ -165,8 +165,9 @@ address = 0x823C33B0
 registers = ["f0"]
 
 # Cheats (runtime/kernel/cheats.cpp): the grapple's ray length after its load in
-# sub_82363860 (the constant is shared with AI sight), and the fall height above which the
-# player staggers on landing (player fall state and state 160; shared constant).
+# sub_82363860 (the constant is shared with AI sight), the fall height above which the
+# player staggers on landing (player fall state and state 160; shared constant), and the
+# guard gauge after a blocked hit (before the guard-break test in sub_822DDF68).
 [[midasm_hook]]
 name = "GrappleRayLengthMidAsmHook"
 address = 0x82363914
@@ -184,3 +185,8 @@ name = "SoftLandingMidAsmHook"
 address = 0x8236109C
 registers = ["f13"]
 after_instruction = true
+
+[[midasm_hook]]
+name = "GuardBreakMidAsmHook"
+address = 0x822DE0E4
+registers = ["f0", "r31"]

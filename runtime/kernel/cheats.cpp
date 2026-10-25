@@ -31,7 +31,7 @@ const Info kInfo[kCount] = {
     {"silent", "Silent ninja", "Enemies hear no noise at all (yours, items, and their own calls for help).", false},
     {"items", "Infinite items", "Using an item does not use it up.", false},
     {"poison", "Cure poison", "Poison wears off at once.", false},
-    {"guard", "Unbreakable guard", "Your guard gauge stays full, so blocking never breaks.", false},
+    {"guard", "Unbreakable guard", "Blocking never breaks your guard (the gauge stays full).", false},
     {"jump", "Super jump", "Jumps go twice as high (combine with Soft landing).", false},
     {"run", "Fast run", "You run 75% faster.", false},
     {"gravity", "Low gravity", "Falls are half as fast, for everyone.", false},
@@ -118,15 +118,18 @@ template <size_t N> void applyPatches(int cheat, Patch (&patches)[N]) {
     g_patched[cheat] = on;
 }
 
-// Fast run: the player's top speed (+0x14DC) is recomputed by sub_8233F240 at spawn and on
-// some modes every frame; the override scales the result, this applies it at once.
+// Fast run: the player's top speed (+0x14DC) is computed by sub_8233F240 at spawn (and every
+// frame in the hideout); the override scales its result and records whether the stored speed
+// is scaled, so toggling while playing applies at once without scaling twice.
 constexpr float kRunScale = 1.75f;
-bool g_runApplied = false;
+std::atomic<bool> g_runApplied{false};
 
 void runAction(int cheat) {
-    const uint32_t m = manager();
+    // Only with a loaded game (hideout or mission): before that the profile is a placeholder
+    // that loading a save overwrites.
+    const uint32_t m = player() ? manager() : 0;
     if (!m) {
-        setMessage(std::string(kInfo[cheat].name) + ": load a game first.");
+        setMessage(std::string(kInfo[cheat].name) + ": go to the hideout or a mission first.");
         return;
     }
     switch (cheat) {
@@ -207,27 +210,26 @@ void applyFrame() {
     applyPatches(kLongGrapple, g_grapplePatches);
 
     const uint32_t p = player();
-    if (!p) {
-        g_runApplied = false;  // the next player computes its speed through the override
-        return;
-    }
+    if (!p) return;
     if (enabled(kInfiniteHealth)) {
         // Also undoes life spent by power-ups; not while dying (death zones set life 0).
         const float life = loadFloat(p + 0x118C), max = loadFloat(p + 0x1188);
         if (life >= 1.0f && life < max) storeFloat(p + 0x118C, max);
     }
     if (enabled(kCurePoison) && load32(p + 0x11D8)) storeFloat(p + 0x11CC, 0.0f);  // duration: the game cures it
-    if (enabled(kUnbreakableGuard)) storeFloat(p + 0x1190, 100.0f);
-    if (enabled(kFastRun) != g_runApplied) {
+    if (const bool run = enabled(kFastRun); run != g_runApplied) {
         const float speed = loadFloat(p + 0x14DC);
-        storeFloat(p + 0x14DC, enabled(kFastRun) ? speed * kRunScale : speed / kRunScale);
-        g_runApplied = enabled(kFastRun);
+        storeFloat(p + 0x14DC, run ? speed * kRunScale : speed / kRunScale);
+        g_runApplied = run;
     }
     if (enabled(kPerfectStealth)) {
-        // Mission stats in the profile: bonus flags (bit 0 undetected), combat ms, detections.
+        // Mission stats in the profile: bonus flags, combat ms, kill and detection counts.
+        // A detection clears bonus bits 0x1 (undetected) and 0x40 (which kills also clear).
         if (const uint32_t m = manager()) {
             const uint32_t stats = m + 0xA0 + 0x360;
-            store32(stats, load32(stats) | 1);
+            bool kills = load8(stats + 0xF) != 0;
+            for (uint32_t i = 8; i < 0xE; ++i) kills |= load8(stats + i) != 0;
+            store32(stats, load32(stats) | (kills ? 0x1 : 0x41));
             store32(stats + 4, 0);
             *memory->host<uint8_t>(stats + 0xE) = 0;
         }
@@ -291,7 +293,9 @@ TZ_OVERRIDE(82363458) {
 // The player's top run speed, stored by the callers at +0x14DC.
 TZ_OVERRIDE(8233F240) {
     __imp__sub_8233F240(ctx, base);
-    if (enabled(kFastRun)) ctx.f1.f64 *= kRunScale;
+    const bool run = enabled(kFastRun);
+    if (run) ctx.f1.f64 *= kRunScale;
+    g_runApplied = run;
 }
 
 // Spending money (r3 profile, r4 amount): the three shops.
@@ -314,6 +318,13 @@ void GrappleRayLengthMidAsmHook(PPCRegister& f0) {
     if (enabled(kLongGrapple)) f0.f64 = 2800.0;
 }
 TZ_MIDASM_HOOK1(GrappleRayLengthMidAsmHook);
+
+// The player's guard gauge after a blocked hit (sub_822DDF68: r31 the character, f0 the gauge
+// minus the hit's guard damage; not above 0 breaks the guard).
+void GuardBreakMidAsmHook(PPCRegister& f0, PPCRegister& r31) {
+    if (enabled(kUnbreakableGuard) && playerType(r31.u32)) f0.f64 = 100.0;
+}
+TZ_MIDASM_HOOK2(GuardBreakMidAsmHook);
 
 // Fall height above which the player lands with a stagger (600, shared constant).
 void SoftLandingMidAsmHook(PPCRegister& f13) {

@@ -300,7 +300,9 @@ bool extractProjection(const float m[4][4], float zScale, float zOffset, Project
     // The main camera: 16:9, near/far below 1/10, a positive near plane.
     if (!(px > 0.0f) || std::fabs(py / px - 16.0f / 9.0f) > 0.02f || a < 0.9999f || a > 1.1f || !(b < 0.0f))
         return false;
-    out = {px, py, a, b, zScale, zOffset};
+    // a = f / (f - n) >= 1; just below 1 is rounding of an infinite far plane: anything
+    // farther than that would decode to a negative depth.
+    out = {px, py, (std::max)(a, 1.0f), b, zScale, zOffset};
     return true;
 }
 
@@ -422,10 +424,16 @@ bool PostEffects::ensure(Target& target, UINT width, UINT height, DXGI_FORMAT fo
     if (FAILED(device_->CreateTexture2D(&desc, nullptr, &target.texture))) return false;
     device_->CreateRenderTargetView(target.texture, nullptr, &target.target);
     device_->CreateShaderResourceView(target.texture, nullptr, &target.view);
+    if (!target.target || !target.view) {  // never cache a half-built target as valid
+        release(target.view);
+        release(target.target);
+        release(target.texture);
+        return false;
+    }
     target.width = width;
     target.height = height;
     target.format = format;
-    return target.target && target.view;
+    return true;
 }
 
 void PostEffects::writeConstants(const void* data, size_t size) {
