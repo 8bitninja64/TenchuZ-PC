@@ -78,6 +78,8 @@ mute = false
 [input]
 mouse_sensitivity = 1.0
 invert_mouse_y = false
+; Controller vibration strength in percent (0 = off).
+rumble = 100
 
 ; Controller buttons: each game control (left) is driven by the controller button on
 ; the right, named by position on an Xbox pad: a, b, x, y, lb, rb, lt, rt, start, back,
@@ -188,6 +190,7 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
         } else if (section == "input") {
             if (key == "mouse_sensitivity") settings.mouseSensitivity = std::stof(value);
             else if (key == "invert_mouse_y") settings.invertMouseY = parseBool(value);
+            else if (key == "rumble") settings.rumble = std::clamp(std::stoi(value), 0, 100);
         } else if (section == "keyboard") {
             settings.keys[key] = value;
         } else if (section == "controller") {
@@ -330,6 +333,7 @@ void saveSettings() {
         {"audio", "mute", text(s.mute)},
         {"input", "mouse_sensitivity", std::to_string(s.mouseSensitivity)},
         {"input", "invert_mouse_y", text(s.invertMouseY)},
+        {"input", "rumble", std::to_string(s.rumble)},
     };
     for (const auto& [key, value] : s.keys) values.emplace_back("keyboard", key, value);
     for (const auto& [key, value] : s.pad) values.emplace_back("controller", key, value);

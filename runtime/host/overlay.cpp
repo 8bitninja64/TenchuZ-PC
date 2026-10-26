@@ -517,6 +517,7 @@ bool drawControls(Settings& st) {
         reloadControllerMapping();
         changed = true;
     }
+    changed |= ImGui::SliderInt("Vibration", &st.rumble, 0, 100, st.rumble ? "%d%%" : "off");
     ImGui::Separator();
     ImGui::TextUnformatted("Keyboard and mouse (player 1):");
     int count = 0;

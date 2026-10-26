@@ -39,6 +39,7 @@ struct Settings {
     // Input
     float mouseSensitivity = 1.0f;
     bool invertMouseY = false;
+    int rumble = 100;             // controller vibration strength, percent (0 = off)
     // Keyboard bindings: controller control -> key names ("w", "space", "mouse1", ...).
     std::map<std::string, std::string> keys;
     // Controller remapping: game control -> the physical button driving it (Xbox names).

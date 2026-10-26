@@ -587,6 +587,8 @@ TZ_IMPORT(XamInputSetState) {
     // (user, flags, vibration*) where vibration = { left u16, right u16 }
     // Player 1's vibration goes to every connected controller.
     bool any = false;
+    TZ_TRACE("rumble", "[rumble] user %u left %u right %u (lr %08X)", ctx.r3.u32, load16(ctx.r5.u32),
+             load16(ctx.r5.u32 + 2), uint32_t(ctx.lr));
     if (ctx.r3.u32 == 0)
         for (uint32_t index = 0; index < 4; ++index)
             any |= host::gamepadRumble(index, load16(ctx.r5.u32), load16(ctx.r5.u32 + 2));

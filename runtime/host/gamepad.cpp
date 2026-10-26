@@ -1,4 +1,5 @@
 #include "host/gamepad.h"
+#include "host/overlay.h"
 #include "host/settings.h"
 #include "kernel/kernel.h"
 
@@ -24,6 +25,8 @@ constexpr int kPads = 4;
 struct Pad {
     SDL_Gamepad* handle = nullptr;
     SDL_JoystickID id = 0;
+    uint16_t left = 0, right = 0;  // the motor speeds last sent
+    bool rumbleFailed = false;     // logged once
 };
 
 // What the title's threads see: a snapshot per slot and pending rumble, behind a
@@ -142,7 +145,12 @@ void refresh(Gamepads& g) {
         if (SDL_Gamepad* handle = SDL_OpenGamepad(ids[i])) {
             free->handle = handle;
             free->id = ids[i];
-            logf("[input] controller %d: %s", int(free - g.pads.begin()) + 1, SDL_GetGamepadName(handle));
+            const SDL_PropertiesID properties = SDL_GetGamepadProperties(handle);
+            logf("[input] controller %d: %s (%04X:%04X, %s, vibration %s)", int(free - g.pads.begin()) + 1,
+                 SDL_GetGamepadName(handle), SDL_GetGamepadVendor(handle), SDL_GetGamepadProduct(handle),
+                 SDL_GetGamepadStringForType(SDL_GetGamepadType(handle)),
+                 SDL_GetBooleanProperty(properties, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false) ? "yes" : "no");
+            if (const char* path = SDL_GetGamepadPath(handle)) logf("[input]   path %s", path);
         }
     }
     SDL_free(ids);
@@ -202,9 +210,26 @@ void inputMain() {
             pending = g.rumble;
             for (auto& rumble : g.rumble) rumble.dirty = false;
         }
-        for (int i = 0; i < kPads; ++i)
-            if (pending[i].dirty && g.pads[i].handle)
-                SDL_RumbleGamepad(g.pads[i].handle, pending[i].left, pending[i].right, 0xFFFFFFFFu);
+        // The game's motor speeds, scaled by the vibration setting; still while the menu pauses
+        // the game (its effects resume when it closes).
+        const bool paused = overlay::isOpen();
+        const uint32_t strength = uint32_t(settings().rumble);
+        for (int i = 0; i < kPads; ++i) {
+            Pad& pad = g.pads[i];
+            if (!pad.handle) continue;
+            const uint16_t left = paused ? 0 : uint16_t(pending[i].left * strength / 100);
+            const uint16_t right = paused ? 0 : uint16_t(pending[i].right * strength / 100);
+            if (left == pad.left && right == pad.right) continue;
+            pad.left = left;
+            pad.right = right;
+            // SDL stops an effect after its duration (at most about a minute): the game sends 0.
+            const bool sent = SDL_RumbleGamepad(pad.handle, left, right, 0xFFFFu);
+            TZ_TRACE("rumble", "[rumble] controller %d: %u %u%s", i + 1, left, right, sent ? "" : " (failed)");
+            if (!sent && !pad.rumbleFailed) {
+                pad.rumbleFailed = true;
+                logf("[input] controller %d cannot vibrate: %s", i + 1, SDL_GetError());
+            }
+        }
         // Poll faster than the title's 60 Hz reads.
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }

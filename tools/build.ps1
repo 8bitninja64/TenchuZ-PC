@@ -60,7 +60,7 @@ if (-not (Test-Path "build/deps/ffmpeg/include/libavcodec/avcodec.h")) {
     Invoke-Python tools/build_xma_codec.py; Assert-Exit "Building FFmpeg (needs MSYS2: https://www.msys2.org)"
   }
 }
-if (-not (Test-Path "build/deps/SDL3/include/SDL3/SDL.h")) { Invoke-Python tools/fetch_sdl.py; Assert-Exit "Fetching SDL3" }
+Invoke-Python tools/fetch_sdl.py; Assert-Exit "Fetching SDL3"  # replaces an older pinned version
 if (-not (Test-Path "build/deps/imgui/imgui.h")) { Invoke-Python tools/fetch_imgui.py; Assert-Exit "Fetching Dear ImGui" }
 
 # 4. Configure and build.

@@ -3,7 +3,7 @@
 #   vkd3d 1.19 (vkd3d-shader: HLSL -> DXBC for the translated shaders; with
 #     tools/patches/vkd3d-clipdistance.patch, which lets HLSL write SV_ClipDistance),
 #   DXVK 3.1.1 native (Direct3D 11 / DXGI on Vulkan, SDL3 windows),
-#   SDL3 3.2.10 (window, audio, input; the version the Windows build uses),
+#   SDL3 3.4.18 (window, audio, input; the version the Windows build uses),
 #   FFmpeg (tools/build_xma_codec.py) and Dear ImGui (tools/fetch_imgui.py).
 # Needs clang or gcc, cmake, ninja, meson, glslang, pkg-config, perl with JSON, bison, flex,
 # nasm, the Vulkan and X11/Wayland development headers (Ubuntu/Debian: tools/install_linux_deps.sh).
@@ -46,14 +46,15 @@ if [ ! -f "$DEPS/vkd3d/lib/libvkd3d-shader.so.1" ]; then
 fi
 
 # ---- SDL3 --------------------------------------------------------------------------------
-if [ ! -f "$DEPS/SDL3/lib/libSDL3.so.0" ]; then
-  fetch https://github.com/libsdl-org/SDL/releases/download/release-3.2.10/SDL3-3.2.10.tar.gz SDL3-3.2.10.tar.gz \
-    f87be7b4dec66db4098e9c167b2aa34e2ca10aeb5443bdde95ae03185ed513e0
-  rm -rf "$WORK/SDL3-3.2.10" && tar xf "$WORK/src/SDL3-3.2.10.tar.gz" -C "$WORK"
-  cmake -S "$WORK/SDL3-3.2.10" -B "$WORK/SDL3-build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+if [ "$(cat "$DEPS/SDL3/VERSION" 2>/dev/null)" != 3.4.18 ]; then
+  fetch https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz SDL3-3.4.18.tar.gz \
+    9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
+  rm -rf "$WORK/SDL3-3.4.18" "$WORK/SDL3-build" "$DEPS/SDL3" && tar xf "$WORK/src/SDL3-3.4.18.tar.gz" -C "$WORK"
+  cmake -S "$WORK/SDL3-3.4.18" -B "$WORK/SDL3-build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$DEPS/SDL3" -DCMAKE_INSTALL_LIBDIR=lib -DSDL_TESTS=OFF -DSDL_STATIC=OFF >/dev/null
   cmake --build "$WORK/SDL3-build" >/dev/null && cmake --install "$WORK/SDL3-build" >/dev/null
-  cp "$WORK/SDL3-3.2.10/LICENSE.txt" "$DEPS/SDL3/LICENSE.txt"
+  cp "$WORK/SDL3-3.4.18/LICENSE.txt" "$DEPS/SDL3/LICENSE.txt"
+  echo 3.4.18 > "$DEPS/SDL3/VERSION"
 fi
 
 # ---- DXVK native -------------------------------------------------------------------------
