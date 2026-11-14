@@ -17,6 +17,7 @@
 #include <string>
 
 #include "host/settings.h"
+#include "host/portable_paths.h"
 #include "kernel/kernel.h"
 #include "kernel/module_loader.h"
 #include "kernel/xdvdfs.h"
@@ -46,7 +47,8 @@ constexpr const char* kKitFiles[] = {
 // Needed to build a module, not part of the stamp.
 constexpr const char* kKitTools[] = {
 #ifdef _WIN32
-    "tools/XenonRecomp.exe", "tools/make_module.ps1", "tools/vsenv.ps1", "tools/python.ps1"};
+    "tools/XenonRecomp.exe", "tools/make_module.ps1", "tools/vsenv.ps1", "tools/python.ps1",
+    "tools/prerequisites.ps1"};
 #else
     "tools/XenonRecomp", "tools/make_module.sh"};
 #endif
@@ -211,6 +213,11 @@ std::filesystem::path findGameFolder() {
 // The disc: the command line (a file or folder), TENCHU_DISC, the remembered disc, an
 // extracted folder (development), or the player's choice.
 bool chooseGame(int argc, wchar_t** argv, GameSource& source) {
+    auto& settings = host::editableSettings();
+    const auto remember = [&](const std::filesystem::path& path) {
+        settings.disc = utf8(host::rememberDiscPath(path, executableDirectory()));
+        host::saveSettings();
+    };
     std::wstring problem;
     std::filesystem::path given;
     for (int i = 1; i < argc; ++i) {
@@ -220,19 +227,23 @@ bool chooseGame(int argc, wchar_t** argv, GameSource& source) {
     wchar_t value[MAX_PATH]{};
     if (given.empty() && GetEnvironmentVariableW(L"TENCHU_DISC", value, MAX_PATH)) given = value;
     if (!given.empty()) {
-        if (openGame(given, source, problem)) return true;
+        if (openGame(given, source, problem)) {
+            if (host::portableMode(executableDirectory())) remember(given);
+            return true;
+        }
         showError(problem);
         return false;
     }
-    auto& settings = host::editableSettings();
     std::filesystem::path remembered;
     try {
-        remembered = std::filesystem::u8path(settings.disc);
+        remembered = host::resolveDiscPath(std::filesystem::u8path(settings.disc), executableDirectory());
     } catch (const std::exception&) {
     }
     std::error_code error;
-    if (!remembered.empty() && std::filesystem::exists(remembered, error) && openGame(remembered, source, problem))
+    if (!remembered.empty() && std::filesystem::exists(remembered, error) && openGame(remembered, source, problem)) {
+        if (host::portableMode(executableDirectory())) remember(remembered);
         return true;
+    }
     if (const auto folder = findGameFolder(); !folder.empty() && openGame(folder, source, problem)) return true;
     std::filesystem::path start = remembered;
     for (;;) {
@@ -242,8 +253,7 @@ bool chooseGame(int argc, wchar_t** argv, GameSource& source) {
             return false;
         }
         if (openGame(chosen, source, problem)) {
-            settings.disc = utf8(chosen);
-            host::saveSettings();
+            remember(chosen);
             return true;
         }
         showError(problem);
@@ -366,7 +376,8 @@ bool loadModule(const GameSource& source) {
                     L"Tenchu Z needs to compile the game code from your disc. This is done once and takes "
                     L"a few minutes (about 2 on an 8-core PC, longer on fewer cores).\n\n"
                     L"Requirements: Python 3.11 or newer, and Visual Studio 2022 Build Tools with "
-                    L"'Desktop development with C++' and 'C++ Clang tools for Windows'.\n\nCompile now?",
+                    L"C++, Clang and Windows SDK. Run Setup.cmd in the game folder to check and install "
+                    L"these automatically.\n\nCompile now?",
                     L"Tenchu Z Recomp - first start", MB_YESNO | MB_ICONINFORMATION) != IDYES)
         return false;
 
@@ -391,6 +402,7 @@ bool loadModule(const GameSource& source) {
 }  // namespace
 
 bool prepareGame(int argc, wchar_t** argv, GameSource& source) {
+    (void)host::gameLanguage();  // Freeze the startup language before the menu or guest threads run.
     if (!chooseGame(argc, argv, source)) return false;
     logf("[boot] game: %s", utf8(source.disc ? source.disc->path() : source.folder).c_str());
     return loadModule(source);

@@ -291,6 +291,13 @@ bool D3D11Renderer::initialize(HWND target) {
     IDXGIFactory2* factory = nullptr;
     device_->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice));
     dxgiDevice->GetAdapter(&adapter);
+    DXGI_ADAPTER_DESC adapterInfo{};
+    if (SUCCEEDED(adapter->GetDesc(&adapterInfo))) {
+        logf("[d3d11] GPU vendor %04X device %04X, dedicated video memory %llu MB, feature level %04X",
+             adapterInfo.VendorId, adapterInfo.DeviceId,
+             static_cast<unsigned long long>(adapterInfo.DedicatedVideoMemory / (1024 * 1024)),
+             unsigned(device_->GetFeatureLevel()));
+    }
     adapter->GetParent(__uuidof(IDXGIFactory2), reinterpret_cast<void**>(&factory));
     DXGI_SWAP_CHAIN_DESC1 desc{};
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;

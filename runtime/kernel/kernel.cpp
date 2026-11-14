@@ -2,6 +2,7 @@
 #include "xex.h"
 #include "guest/host.h"
 #include "module_loader.h"
+#include "host/portable_paths.h"
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
@@ -658,6 +659,10 @@ void installDataImports(const XexImage& xex);
 void startTimeStampBundle(uint32_t bundle);
 
 std::filesystem::path userDataDirectory() {
+    wchar_t executable[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, executable, MAX_PATH);
+    const auto directory = std::filesystem::path(executable).parent_path();
+    if (host::portableMode(directory)) return directory / "user";
 #ifdef _WIN32
     wchar_t* appData = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) {
@@ -671,9 +676,7 @@ std::filesystem::path userDataDirectory() {
     if (const char* home = getenv("HOME"); home && *home)
         return std::filesystem::path(home) / ".local" / "share" / "TenchuZRecomp";
 #endif
-    wchar_t executable[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, executable, MAX_PATH);
-    return std::filesystem::path(executable).parent_path() / "user";
+    return directory / "user";
 }
 
 void initializeKernel(const std::vector<uint8_t>& xexData) {

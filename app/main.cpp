@@ -341,13 +341,38 @@ int run(int argc, wchar_t** argv) {
 
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && std::wcscmp(argv[1], L"--version") == 0) {
+        std::printf("%s\n", tz::host::update::version());
+        return 0;
+    }
     SetUnhandledExceptionFilter(crashFilter);
+    // Explorer launches own their console (or have no stderr at all). Keep the
+    // crash stack after that console closes, preserving inherited/redirected output.
+    const HANDLE errorHandle = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD consoleProcesses[2]{};
+    const bool ownConsole = GetFileType(errorHandle) == FILE_TYPE_CHAR &&
+                            GetConsoleProcessList(consoleProcesses, 2) == 1;
+    if (ownConsole || !errorHandle || errorHandle == INVALID_HANDLE_VALUE || GetFileType(errorHandle) == FILE_TYPE_UNKNOWN) {
+        std::error_code error;
+        const auto directory = tz::userDataDirectory();
+        std::filesystem::create_directories(directory, error);
+        const auto path = directory / L"TenchuZ.log";
+        std::filesystem::copy_file(path, directory / L"TenchuZ.previous.log",
+                                   std::filesystem::copy_options::overwrite_existing, error);
+        FILE* log = nullptr;
+        if (_wfreopen_s(&log, path.c_str(), L"w", stderr) == 0)
+            setvbuf(stderr, nullptr, _IONBF, 0);
+    }
     // Real pixels: fullscreen uses the monitor's native resolution.
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     return run(argc, argv);
 }
 #else
 int main(int argc, char** argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
+        std::printf("%s\n", tz::host::update::version());
+        return 0;
+    }
     installCrashHandler();
     // Started without a terminal (Steam, a file manager, Game Mode): everything logged, DXVK's
     // messages included, goes to TenchuZ.log in the user folder (overwritten at each start).

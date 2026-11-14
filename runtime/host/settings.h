@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include "host/language.h"
 
 namespace tz::host {
 
@@ -32,6 +33,7 @@ struct Settings {
     bool stableBloom = true;      // bloom from the 720p footprint at resolution scales above 1
     // Game
     std::string disc;             // the disc image chosen on the first start (UTF-8)
+    GameLanguage language = GameLanguage::English;  // applied at the next start
     bool updateCheck = true;      // look for a newer release on GitHub at startup (F1 > Update)
     // Audio
     int volume = 100;             // master volume, percent
@@ -47,6 +49,8 @@ struct Settings {
 };
 
 const Settings& settings();
+// Captured before guest threads start; menu edits affect only the next launch.
+uint32_t gameLanguage();
 // The same settings for the F1 menu (command processor thread), and writing them
 // back to TenchuZ.ini: changed values replace their lines, comments are kept.
 Settings& editableSettings();

@@ -48,7 +48,7 @@ put COPYING COPYING
 # The kit: generator, scripts, export tables, configuration, module headers, simde.
 put "$generator" tools/XenonRecomp
 strip "$out/tools/XenonRecomp"
-for f in tools/recompile.py tools/xex_image.py tools/compile_module.py tools/make_module.sh tools/setup_generator.py \
+for f in tools/recompile.py tools/xex_image.py tools/compile_module.py tools/make_module.sh tools/setup_generator.py tools/enable_portable.py \
          config/tenchuz.toml config/tenchuz_switch_tables.toml config/tenchuz_switch_tables_manual.toml \
          config/overrides.txt runtime/guest/ppc_context.template.h runtime/guest/ppc_config.h \
          runtime/guest/module_abi.h runtime/guest/module_rt.cpp; do

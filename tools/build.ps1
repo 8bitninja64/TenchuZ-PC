@@ -69,7 +69,7 @@ Write-Host "# Building"
 $ninja = Join-Path $BuildDir "build.ninja"
 $needsModule = (Test-Path build/generated/sources.cmake) -and (Test-Path $ninja) -and
   -not (Select-String -LiteralPath $ninja -Pattern "tenchu_game" -SimpleMatch -Quiet)
-if ($Configure -or -not (Test-Path $ninja) -or $needsModule) {
+if ($Configure -or $env:TENCHU_VERSION -or -not (Test-Path $ninja) -or $needsModule) {
   cmake -S . -B $BuildDir -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_LINKER=lld-link
   Assert-Exit "Configuring"
 }

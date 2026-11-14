@@ -4,6 +4,7 @@
 #include "kernel.h"
 #include "kernel/memory.h"
 #include "host/settings.h"
+#include "host/frame_delta.h"
 #include "host/overlay.h"
 #include "guest/host.h"
 
@@ -96,27 +97,8 @@ TZ_OVERRIDE(8228E5C8) {
     const uint32_t bits = load32(0x82B577BC);
     float measured;
     std::memcpy(&measured, &bits, 4);
-    static double average = 0.0, owed = 0.0;
-    // The menu paused the game during this frame: it lasted one ordinary frame.
-    if (host::overlay::takePause() && average > 0.0) {
-        measured = float(average);
-        owed = 0.0;
-    }
-    if (!(measured > 0.0f) || measured > 0.1f) {  // the first frame, loads, hitches: as measured
-        if (measured > 0.0f) average = measured;
-        owed = 0.0;
-        return;
-    }
-    average = average > 0.0 ? average + (measured - average) * 0.1 : measured;
-    double step = average;
-    if (const int limit = host::activeFrameRateLimit(); limit > 0) {
-        const double period = 1.0 / limit;
-        if (std::abs(average - period) < period * 0.1) step = period;
-    }
-    owed += measured;
-    const double given = std::clamp(step + (owed - step) * 0.1, step * 0.5, step * 1.5);
-    owed -= given;
-    const float out = float(given);
+    static host::FrameDeltaSmoother smoother;
+    const float out = smoother.update(measured, host::activeFrameRateLimit(), host::overlay::takePause());
     uint32_t outBits;
     std::memcpy(&outBits, &out, 4);
     store32(0x82B577BC, outBits);

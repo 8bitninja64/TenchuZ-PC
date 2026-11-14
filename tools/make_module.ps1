@@ -32,8 +32,10 @@ try {
   Write-Host ""
   Set-Location -LiteralPath $root
   # Visual Studio's own Clang first: another LLVM on PATH may not match its C++ library.
-  . (Join-Path $PSScriptRoot "vsenv.ps1")
-  . (Join-Path $PSScriptRoot "python.ps1")
+  . (Join-Path $PSScriptRoot "prerequisites.ps1")
+  if ($prerequisiteErrors.Count) {
+    throw (($prerequisiteErrors -join "`n") + "`nRun Setup.cmd in the game folder to install the missing requirements, then start the game again.")
+  }
 
   # Every unit is rewritten; units of another version must not be compiled in.
   $gen = Join-Path $Work "gen"

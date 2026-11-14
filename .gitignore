@@ -4,6 +4,11 @@
 *.xex
 basefile.exe
 
+# Local portable installations may contain compiled game code and saves.
+/user/
+/portable.txt
+/portable-migration-*/
+
 # Build output, including all generated game code.
 /build/
 /build_*/

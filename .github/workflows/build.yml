@@ -32,15 +32,16 @@ jobs:
       - name: Package
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File tools/package.ps1 -Zip
+      - name: Regression checks (no game data)
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_regressions.ps1
+      - name: Verify packaged version
+        shell: pwsh
+        run: python tools/check_build_version.py dist/TenchuZ/TenchuZ.exe "$env:TENCHU_VERSION"
       - uses: actions/upload-artifact@v5
         with:
           name: TenchuZ-windows-x64
           path: dist/TenchuZ-windows-x64.zip
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/TenchuZ-windows-x64.zip
 
   linux:
     runs-on: ubuntu-24.04
@@ -77,12 +78,30 @@ jobs:
           mkdir -p "$HOME/zig" && tar -C "$HOME/zig" -xJf zig.tar.xz && rm zig.tar.xz
       - name: Package
         run: TENCHU_MAX_GLIBC=2.35 sh tools/package_linux.sh build/linux-release
+      - name: Verify packaged version
+        run: python3 tools/check_build_version.py dist/TenchuZ/TenchuZ "$TENCHU_VERSION"
       - uses: actions/upload-artifact@v5
         with:
           name: TenchuZ-linux-x64
           path: dist/TenchuZ-linux-x64.tar.xz
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+
+  release:
+    needs: [windows, linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: TenchuZ-*-x64
+          path: release-assets
+          merge-multiple: true
+      - name: Publish both platform packages
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/TenchuZ-linux-x64.tar.xz
+          body_path: .github/release-notes.txt
+          fail_on_unmatched_files: true
+          make_latest: true
+          files: |
+            release-assets/TenchuZ-windows-x64.zip
+            release-assets/TenchuZ-linux-x64.tar.xz

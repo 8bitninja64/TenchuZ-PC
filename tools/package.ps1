@@ -23,7 +23,7 @@ function Copy-To([string]$destination, [string[]]$sources) {
 }
 
 # The runtime and the libraries it loads (the game module is built on the player's PC).
-Copy-To "." (@("$BuildDir/TenchuZ.exe", "assets/gamecontrollerdb.txt", "README.md", "COPYING") +
+Copy-To "." (@("$BuildDir/TenchuZ.exe", "assets/gamecontrollerdb.txt", "README.md", "COPYING", "Setup.cmd") +
   @(Get-ChildItem "$BuildDir/*.dll" | Where-Object { $_.Name -ne "tenchu_game.dll" } | ForEach-Object FullName))
 # The Visual C++ runtime, app-local, for PCs without the redistributable.
 . "$PSScriptRoot\vsenv.ps1"
@@ -32,7 +32,8 @@ Copy-To "." @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll" | ForEach
 
 # The kit: generator, scripts and export tables.
 Copy-To "tools" @($generator, "tools/recompile.py", "tools/xex_image.py", "tools/compile_module.py",
-  "tools/make_module.ps1", "tools/vsenv.ps1", "tools/python.ps1", "tools/setup_generator.py")
+  "tools/make_module.ps1", "tools/vsenv.ps1", "tools/python.ps1", "tools/setup_generator.py", "tools/enable_portable.py",
+  "tools/prerequisites.ps1", "tools/setup_windows.ps1")
 Copy-To "tools/xbox" @("$tools/XenonUtils/xbox/xboxkrnl_table.inc", "$tools/XenonUtils/xbox/xam_table.inc")
 # The generator's corresponding source: the pinned upstream commit (tools/setup_generator.py) and these patches.
 Copy-To "tools/patches" @(Get-ChildItem "tools/patches/*" | ForEach-Object FullName)

@@ -10,8 +10,20 @@ foreach ($exe in @(Get-Command python.exe -CommandType Application -All -ErrorAc
 foreach ($candidate in $candidates) {
   $arguments = @($candidate | Select-Object -Skip 1)
   # The Store's placeholder python.exe fails this probe (exit 9009), so it is skipped.
-  & $candidate[0] @arguments -c "import sys; sys.exit(sys.version_info < (3, 11))" 2>$null | Out-Null
-  if ($LASTEXITCODE -eq 0) { $script:pythonCommand = $candidate; break }
+  # Windows PowerShell turns native stderr into a terminating error when the
+  # caller uses Stop. A broken launcher must not prevent trying python.exe.
+  $probePreference = $ErrorActionPreference
+  $probeSucceeded = $false
+  try {
+    $ErrorActionPreference = 'Continue'
+    & $candidate[0] @arguments -c "import sys; sys.exit(sys.version_info < (3, 11))" 2>$null | Out-Null
+    $probeSucceeded = $LASTEXITCODE -eq 0
+  } catch {
+    # The executable may also have disappeared or be inaccessible.
+  } finally {
+    $ErrorActionPreference = $probePreference
+  }
+  if ($probeSucceeded) { $script:pythonCommand = $candidate; break }
 }
 if (-not $script:pythonCommand.Count) {
   throw "Python 3.11 or newer is required (https://www.python.org/downloads/; tick 'Add python.exe to PATH')."

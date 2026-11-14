@@ -37,10 +37,12 @@ The executable is built with XDK 2.0.4552 and imports `xboxkrnl.exe` and `xam.xe
 
 1. Download `TenchuZ-windows-x64.zip` from the [Releases](../../releases) page and unzip it
    anywhere you can write to (not Program Files).
-2. Install [Python 3.11 or newer](https://www.python.org/downloads/) (tick *Add python.exe
-   to PATH*) and [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-   with *Desktop development with C++* and *C++ Clang tools for Windows*. They are needed
-   once: on its first start the game compiles itself from your disc.
+2. Double-click **Setup.cmd**. It checks all prerequisites together and offers to install
+   anything missing: Python, Microsoft C++ build tools, Clang and Windows SDK. It selects
+   the compiler components automatically and can add them to an existing Visual Studio
+   installation. Allow the official installers to finish (administrator approval may be
+   required). These tools compile the game from your disc on first start and after updates
+   that change the game code; downloads and several GB of disk space may be needed.
 3. Run `TenchuZ.exe` and pick your `Tenchu Z (USA, Europe)` disc image (`.iso`) when asked.
    Confirm the compile: a console window shows the progress (about 2 minutes on an
    8-core PC, longer with fewer cores), then the game starts. Later starts are instant.
@@ -55,6 +57,20 @@ Unzipping a newer release over the old one works too. The release contains no ga
 data; never share the `tenchu_game.dll` built from your disc.
 
 Windows 10/11 64-bit with a Direct3D 11 graphics card. The Visual C++ runtime is included.
+
+For manual setup, install [Python 3.11 or newer](https://www.python.org/downloads/)
+(tick *Add python.exe to PATH*) and [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+with **MSVC x64/x86 build tools**, **C++ Clang Compiler for Windows**, and a **Windows 10/11 SDK**.
+Setup uses Windows App Installer (`winget`) for Python; if it is unavailable, install Python
+manually and rerun Setup.cmd. To check without installing, run
+`powershell -NoProfile -ExecutionPolicy Bypass -File tools/setup_windows.ps1 -CheckOnly`.
+
+If the game crashes, include the runtime log with your report: `TenchuZ.log` in
+`%APPDATA%\TenchuZRecomp` (or `user` beside the executable in portable mode).
+Windows launches from Explorer save this log automatically; the previous run
+is retained as `TenchuZ.previous.log`. Include the mission/training step, GPU and
+graphics settings. First-start compilation errors have a separate `module_build\build.log`
+in the same user folder. Logs may contain local file paths; review them before sharing.
 
 ## Playing on Linux and Steam Deck
 
@@ -71,6 +87,30 @@ Arch, SteamOS) and a Vulkan 1.3 driver. On a Steam Deck in Game Mode, add `Tench
 non-Steam game (no Proton). The compiled game code (`tenchu_game.so`), saves and profile
 settings live in `~/.local/share/TenchuZRecomp` (`$XDG_DATA_HOME`). Updates work as on
 Windows (F1 > Update, with the system's `curl`). HDR output is Windows-only for now.
+
+## Portable mode
+
+Create an empty `portable.txt` beside `TenchuZ.exe` (Linux: `TenchuZ`) before starting
+the game. The compiled module, saves, profile and caches then live in a `user` folder
+beside the executable. `TenchuZ.ini` stays beside the executable as usual.
+
+To keep an existing installation's compiled module and saves, **close the game** and
+run `python tools/enable_portable.py` from the installation folder (Linux: `python3`).
+Do this before creating `portable.txt`. The tool copies and verifies your current
+account's data, preserves the originals, and refuses to overwrite existing portable
+data. `--source <folder>` can import a backup instead. In a source checkout, also pass
+`--directory build/windows-clang` to select the built installation.
+
+Start the game once before moving it: portable mode remembers the selected disc as
+a path relative to the executable where possible. Keep the ISO in the installation
+folder or on the same external drive, and move both together, preserving their relative
+locations. A disc on another drive retains its absolute path and may need selecting again.
+Saved relative disc paths are always resolved against the executable folder.
+
+Move the entire installation, including `user` and `portable.txt`, between compatible
+PCs running the same operating system. Changing PCs does not require recompilation;
+an update that changes the game module still can. Removing `portable.txt` switches back
+to the account's original data; it does not copy portable saves back automatically.
 
 ## Building from source
 
@@ -128,6 +168,12 @@ The game code is a separate module, `tenchu_game.dll`, translated from your
 on the NFL Blitz 2003 port).
 
 ## Playing
+
+To change the game's text language, open **Esc > Game > Language**, choose English,
+French, German, Spanish or Italian, and restart the game. You can also set
+`language = fr` under `[game]` in `TenchuZ.ini` (codes: `en`, `fr`, `de`, `es`, `it`).
+English remains the default. This uses the translations on your supported multilingual
+disc; the recomp settings menu remains in English. No recompilation is needed.
 
 Settings live in `TenchuZ.ini` next to the executable, written with comments
 on first run: the disc image, fullscreen, window size, vsync, `resolution_scale` (1 = 720p,

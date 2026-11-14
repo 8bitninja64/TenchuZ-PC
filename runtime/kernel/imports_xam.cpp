@@ -5,6 +5,7 @@
 #include "host/gamepad.h"
 #include "host/overlay.h"
 #include "host/input.h"
+#include "host/settings.h"
 #include "filesystem.h"
 #include "guest/host.h"
 #include <chrono>
@@ -624,14 +625,14 @@ TZ_IMPORT(XamLoaderTerminateTitle) {
 
 TZ_IMPORT(XGetAVPack) { ctx.r3.u64 = 6; }        // HDMI
 TZ_IMPORT(XGetGameRegion) { ctx.r3.u64 = 0xFF; }  // North America
-TZ_IMPORT(XGetLanguage) { ctx.r3.u64 = 1; }       // English
+TZ_IMPORT(XGetLanguage) { ctx.r3.u64 = host::gameLanguage(); }
 
 TZ_IMPORT(ExGetXConfigSetting) {
     // (category, setting, buffer, bufferSize, requiredSize*)
     const uint16_t category = uint16_t(ctx.r3.u32), setting = uint16_t(ctx.r4.u32);
     const uint32_t buffer = ctx.r5.u32, bufferSize = ctx.r6.u32, requiredPtr = ctx.r7.u32;
     uint32_t value = 0, size = 4;
-    if (category == 3 && setting == 0x9) value = 1;                 // user language: English
+    if (category == 3 && setting == 0x9) value = host::gameLanguage();  // user language
     else if (category == 3 && setting == 0xA) value = 0x00040000;   // video flags: widescreen
     else if (category == 3 && setting == 0x10) value = 0x67;        // country: United States
     else if (category == 2 && setting == 0x2) value = 0x00001000;   // AV region: NTSC-M

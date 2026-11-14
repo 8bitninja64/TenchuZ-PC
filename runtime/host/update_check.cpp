@@ -2,6 +2,7 @@
 // library; the package is unpacked with the system's tar (Windows 10 1803+ ships bsdtar, which
 // reads .zip). The Linux side follows the NFL Blitz 2003 port's updater.
 #include "host/update_check.h"
+#include "host/release_layout.h"
 
 #include "platform/crypto.h"
 #ifdef _WIN32
@@ -663,15 +664,17 @@ bool canInstall(const Release& release, std::string& why) {
         return false;
     }
     if (release.asset.name.empty()) {
-        why = "the release has no Windows package";
+        why = "the release has no package for this platform";
         return false;
     }
     const fs::path directory = exeDir();
     std::error_code ignored;
-    if (!fs::exists(directory / "tools" / "make_module.ps1", ignored) || !fs::exists(directory / kExe, ignored)) {
-        why = "this is not an installed release (a development build)";
-        return false;
-    }
+#ifdef _WIN32
+    why = releaseLayoutError(directory, true);
+#else
+    why = releaseLayoutError(directory, false);
+#endif
+    if (!why.empty()) return false;
     const fs::path probe = directory / ".update-probe";
     {
         std::ofstream file(probe);

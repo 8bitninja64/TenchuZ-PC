@@ -188,7 +188,8 @@ std::shared_ptr<GuestThread> threadByKthread(uint32_t kthread);
 // SuspendThread/ResumeThread: return the previous suspend count.
 uint32_t suspendThread(GuestThread& thread);
 uint32_t resumeThread(GuestThread& thread);
-// The per-user data folder (Windows %APPDATA%\TenchuZRecomp, Linux $XDG_DATA_HOME/TenchuZRecomp).
+// The data folder: executable-local user/ when portable.txt exists, otherwise
+// Windows %APPDATA%\TenchuZRecomp or Linux $XDG_DATA_HOME/TenchuZRecomp.
 std::filesystem::path userDataDirectory();
 
 // Kernel bring-up: loads the executable, data imports and the function table.

@@ -64,8 +64,8 @@ bool g_padCaptureArmed = false;
 ULONGLONG g_padCaptureSince = 0;
 std::atomic<bool> g_popupOpen{false};
 
-enum Section { kDisplay, kGraphics, kAudio, kControls, kMissions, kCheats, kUpdate, kAbout, kSectionCount };
-const char* kSectionNames[kSectionCount] = {"Display", "Graphics", "Audio", "Controls", "Missions",
+enum Section { kDisplay, kGraphics, kAudio, kGame, kControls, kMissions, kCheats, kUpdate, kAbout, kSectionCount };
+const char* kSectionNames[kSectionCount] = {"Display", "Graphics", "Audio", "Game", "Controls", "Missions",
                                             "Cheats",  "Update",   "About"};
 int g_section = 0;
 // Two panes: choosing a section moves the highlight into its options; B
@@ -304,6 +304,24 @@ void drawFps(float fps) {
                                    ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
     if (ImGui::Begin("##fps", nullptr, flags)) ImGui::Text("%.0f fps", fps);
     ImGui::End();
+}
+
+bool drawGame(Settings& st) {
+    bool changed = false;
+    focusFirstOption();
+    if (ImGui::BeginCombo("Language", languageOption(st.language).name)) {
+        for (const auto& option : kLanguages) {
+            const bool selected = st.language == option.value;
+            if (ImGui::Selectable(option.name, selected)) {
+                st.language = option.value;
+                changed = true;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::TextWrapped("Game text language. Restart the game to apply changes.");
+    return changed;
 }
 
 bool drawDisplay(Settings& st) {
@@ -807,6 +825,7 @@ void drawMenu() {
     case kDisplay: changed |= drawDisplay(st); break;
     case kGraphics: changed |= drawGraphics(st); break;
     case kAudio: changed |= drawAudio(st); break;
+    case kGame: changed |= drawGame(st); break;
     case kControls: changed |= drawControls(st); break;
     case kMissions: drawMissions(); break;
     case kCheats: drawCheats(); break;

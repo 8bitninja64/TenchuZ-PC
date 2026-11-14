@@ -19,6 +19,8 @@ const char* kDefaultFile = R"(; Tenchu Z Recomp settings. Delete this file to re
 [game]
 ; Your Tenchu Z (USA, Europe) disc image, chosen on the first start.
 disc =
+; Game text language: en, fr, de, es, it. Changes apply after restarting the game.
+language = en
 ; Look for a newer release on GitHub when the game starts (F1 > Update installs it).
 update_check = true
 
@@ -158,6 +160,7 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
     try {
         if (section == "game") {
             if (key == "disc") settings.disc = value;
+            else if (key == "language") parseGameLanguage(value, settings.language);
             else if (key == "update_check") settings.updateCheck = parseBool(value);
         } else if (section == "display") {
             if (key == "fullscreen") settings.fullscreen = parseBool(value);
@@ -247,6 +250,10 @@ std::string text(bool value) { return value ? "true" : "false"; }
 }  // namespace
 
 const Settings& settings() { return instance(); }
+uint32_t gameLanguage() {
+    static const uint32_t language = uint32_t(instance().language);
+    return language;
+}
 Settings& editableSettings() { return instance(); }
 std::string settingsFilePath() {
     const std::u8string text = settingsPath().u8string();
@@ -310,6 +317,7 @@ void saveSettings() {
     const Settings& s = instance();
     std::vector<std::tuple<std::string, std::string, std::string>> values = {
         {"game", "disc", s.disc},
+        {"game", "language", languageOption(s.language).code},
         {"game", "update_check", text(s.updateCheck)},
         {"display", "fullscreen", text(s.fullscreen)},
         {"display", "vsync", text(s.vsync)},

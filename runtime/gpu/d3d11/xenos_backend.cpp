@@ -241,6 +241,9 @@ struct XenosBackend::Impl {
     uint64_t uploadedBytes = 0;  // per frame (trace 'hosttime')
     std::map<std::pair<uint32_t, uint32_t>, uint32_t> vertexStats;  // trace 'vbstats
     uint8_t* ringMapped = nullptr;
+    bool dynamicUploads = false;
+    bool uploadErrorLogged = false;
+    std::vector<uint8_t> uploadPadding;
 
     // ---- Guest memory mirror: physical memory on the GPU, uploaded per 4 KiB page ----
     // Vertex data is read from here in place: a page is uploaded once and write-watched
@@ -333,11 +336,22 @@ struct XenosBackend::Impl {
         mirrorWindowStart = frames;
     }
 
-    void beginUploads() {
-        if (ringMapped) return;
+    bool beginUploads() {
+        if (ringMapped) return true;
+        if (!ring) return false;
         D3D11_MAPPED_SUBRESOURCE mapped{};
-        context->Map(ring, 0, ringOffset == 0 ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped);
+        const HRESULT result = context->Map(ring, 0,
+            ringOffset == 0 ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped);
+        if (FAILED(result) || !mapped.pData) {
+            if (!uploadErrorLogged) {
+                logf("[d3d11] GPU upload failed (0x%08X, device status 0x%08X); skipping affected draws",
+                     unsigned(result), unsigned(device->GetDeviceRemovedReason()));
+                uploadErrorLogged = true;
+            }
+            return false;
+        }
         ringMapped = static_cast<uint8_t*>(mapped.pData);
+        return true;
     }
     void endUploads() {
         if (!ringMapped) return;
@@ -357,18 +371,34 @@ struct XenosBackend::Impl {
 
     // Returns the byte offset of the copy, or ~0u if it does not fit.
     uint32_t upload(const void* data, uint32_t size) {
+        const uint32_t dataSize = size;
+        if (size > kRingSize || !ring || !ringView) return ~0u;
         size = (size + 15) & ~15u;
-        if (size > kRingSize) return ~0u;
         if (ringOffset + size > kRingSize) {
             // Only reachable when a draw's uploads exceed the whole ring.
             logf("[d3d11] upload ring wrapped inside a draw");
             endUploads();
             ringOffset = 0;
         }
-        beginUploads();
         const uint32_t offset = ringOffset;
+        if (!size) return offset;
+        if (dynamicUploads) {
+            if (!beginUploads()) return ~0u;
+            std::memcpy(ringMapped + offset, data, dataSize);
+            std::memset(ringMapped + offset + dataSize, 0, size - dataSize);
+        } else {
+            // NO_OVERWRITE for shader-resource buffers is an optional D3D11.1
+            // capability. DEFAULT + UpdateSubresource also works on 11.0 drivers.
+            const void* source = data;
+            if (size != dataSize) {
+                uploadPadding.assign(size, 0);
+                std::memcpy(uploadPadding.data(), data, dataSize);
+                source = uploadPadding.data();
+            }
+            const D3D11_BOX box{offset, 0, 0, offset + size, 1, 1};
+            context->UpdateSubresource(ring, 0, &box, source, 0, 0);
+        }
         uploadedBytes += size;
-        std::memcpy(ringMapped + offset, data, size);
         ringOffset += size;
         return offset;
     }
@@ -767,11 +797,44 @@ struct XenosBackend::Impl {
     };
     std::map<uint32_t, ResolvedTexture> resolved;  // by physical base address
 
+    void discardResolved(std::map<uint32_t, ResolvedTexture>::iterator it) {
+        release(it->second.target);
+        release(it->second.view);
+        release(it->second.texture);
+        resolved.erase(it);
+    }
+
+    // Resolve copies live only on the host GPU. Once the CPU writes their guest
+    // allocation (for example, loading UI artwork into a freed mission buffer),
+    // the guest bytes take precedence over the old rendered image.
+    bool validResolved(std::map<uint32_t, ResolvedTexture>::iterator it) {
+        if (it == resolved.end() || !it->second.view) return false;
+        if (memory->rangeWatched(Memory::kWatchResolves, it->first >> 12,
+                                (it->first + it->second.guestSize - 1) >> 12)) return true;
+        TZ_TRACE("texture", "[texture] discard overwritten resolve %08X", it->first);
+        discardResolved(it);
+        return false;
+    }
+
+    void watchResolved(uint32_t address, const ResolvedTexture& target) {
+        const uint32_t first = address >> 12, last = (address + target.guestSize - 1) >> 12;
+        // Rearming shared page bits must not make an older overlapping image
+        // appear valid again. Partial tiled copies use the containing entry.
+        for (auto it = resolved.begin(); it != resolved.end();) {
+            auto old = it++;
+            if (old->first != address && (old->first >> 12) <= last &&
+                ((old->first + old->second.guestSize - 1) >> 12) >= first) discardResolved(old);
+        }
+        if (!memory->rangeWatched(Memory::kWatchResolves, first, last))
+            memory->watchPages(Memory::kWatchResolves, first, last - first + 1);
+    }
+
     // The resolved texture covering an address, and the pixel offset of that address.
     ResolvedTexture* containingResolved(uint32_t address, uint32_t& baseAddress, UINT& x, UINT& y) {
         auto it = resolved.upper_bound(address);
         if (it == resolved.begin()) return nullptr;
         --it;
+        if (!validResolved(it)) return nullptr;
         if (!it->second.texture || address >= it->first + it->second.guestSize) return nullptr;
         // 32x32 macro tiles of 4 KiB, row-major across the 32-aligned width.
         const uint32_t macroTile = (address - it->first) / 4096;
@@ -903,11 +966,15 @@ struct XenosBackend::Impl {
     // ---- Setup ---------------------------------------------------------------------
     Impl(D3D11Renderer& r, const std::atomic<uint32_t>* regs, ShaderSource source)
         : renderer(r), device(r.device()), context(r.context()), registers(regs), shaderSource(std::move(source)) {
+        D3D11_FEATURE_DATA_D3D11_OPTIONS options{};
+        dynamicUploads = SUCCEEDED(device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof(options))) &&
+                         options.MapNoOverwriteOnDynamicBufferSRV && !traceEnabled("defaultuploads");
+        if (!dynamicUploads) logf("[d3d11] using compatible GPU uploads (DEFAULT buffers)");
         D3D11_BUFFER_DESC desc{};
         desc.ByteWidth = kRingSize;
-        desc.Usage = D3D11_USAGE_DYNAMIC;
+        desc.Usage = dynamicUploads ? D3D11_USAGE_DYNAMIC : D3D11_USAGE_DEFAULT;
         desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        desc.CPUAccessFlags = dynamicUploads ? D3D11_CPU_ACCESS_WRITE : 0;
         desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
         device->CreateBuffer(&desc, nullptr, &ring);
         D3D11_SHADER_RESOURCE_VIEW_DESC view{};
@@ -915,7 +982,8 @@ struct XenosBackend::Impl {
         view.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
         view.BufferEx.NumElements = kRingSize / 4;
         view.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
-        device->CreateShaderResourceView(ring, &view, &ringView);
+        if (ring) device->CreateShaderResourceView(ring, &view, &ringView);
+        if (!ring || !ringView) logf("[d3d11] cannot allocate GPU upload buffer");
         createMirror();
         vertexConstants = createConstantBuffer(256 * 16);
         pixelConstants = createConstantBuffer(256 * 16);
@@ -1066,7 +1134,7 @@ struct XenosBackend::Impl {
             shared.textureSize[slot][1] = float(fetch.height());
             states[slot] = textures.sampler(fetch, info.textures[slot].filters);
             auto it = resolved.find(fetch.baseAddress() & 0x1FFFFFFF);
-            if (it != resolved.end() && it->second.view) {
+            if (validResolved(it)) {
                 if (traceFrame())
                     logf("[draw]   texture %u uses resolved %08X (%ux%u; fetch %ux%u)", uint32_t(slot), it->first,
                          it->second.width, it->second.height, fetch.width(), fetch.height());
@@ -1094,7 +1162,7 @@ struct XenosBackend::Impl {
         for (int i = 0; i < 6; ++i)
             fetch.words[i] = reg(reg::SHADER_CONSTANT_FETCH_00_0 + info.textures[slot].fetchConstant * 6 + i);
         auto it = resolved.find(fetch.baseAddress() & 0x1FFFFFFF);
-        return it != resolved.end() && it->second.view ? &it->second : nullptr;
+        return validResolved(it) ? &it->second : nullptr;
     }
 
     // Enhanced lighting: the scene composite reads its scene (fetch constant 2) with
@@ -1378,6 +1446,7 @@ struct XenosBackend::Impl {
             if (streams[slot].mirrored) shared.vertexEndian[slot] |= 4;  // read from the mirror
             else total += (uint64_t(streams[slot].length) + 15) & ~15ull;
         }
+        if (total > kRingSize) { ++dropped[5]; return; }
         reserveUploads(total);
         for (size_t slot = 0; slot < streamCount; ++slot) {
             const auto& stream = streams[slot];
@@ -1386,8 +1455,9 @@ struct XenosBackend::Impl {
                 continue;
             }
             const uint32_t offset = upload(memory->host(Memory::fromPhysical(stream.address + stream.start)), stream.length);
+            if (offset == ~0u) { endUploads(); ++dropped[5]; return; }
             // The shader adds (index * stride + offset) * 4 to the base; wraparound is intended.
-            shared.vertexBase[slot] = offset == ~0u ? ~0u : offset - stream.start;
+            shared.vertexBase[slot] = offset - stream.start;
         }
         shared.draw[0] = upload(indices.data(), uint32_t(indices.size() * 4));
         shared.draw[1] = reg(reg::VGT_INDX_OFFSET);
@@ -1873,6 +1943,7 @@ struct XenosBackend::Impl {
                     sourceView = source->resolveScratchView;
                 }
                 if (!sourceView || !copyShader) return;
+                watchResolved(base, *target);
                 const bool swap = !depthSource && ((reg(reg::RB_COPY_DEST_INFO) >> 24) & 1);
                 const bool float24 = depthSource && ((reg(reg::RB_DEPTH_INFO) >> 16) & 1);
                 const int32_t constants[8] = {int32_t(scaled(rect.left)), int32_t(scaled(rect.top)),
@@ -2031,6 +2102,7 @@ struct XenosBackend::Impl {
             memory->probeWrites(probeRange.first, probeRange.second - probeRange.first + 1);
         auto it = resolved.find(frontBuffer & 0x1FFFFFFF);
         if (it == resolved.end()) it = resolved.find(Memory::physicalAddress(frontBuffer));
+        if (!validResolved(it)) it = resolved.end();
         if (dumpFrame()) {
             CreateDirectoryA("build/resolved", nullptr);
             for (const auto& [address, entry] : resolved) {
