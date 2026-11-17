@@ -35,6 +35,9 @@ jobs:
       - name: Regression checks (no game data)
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_regressions.ps1
+      - name: Verify standalone Windows setup
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_standalone_windows.ps1
       - name: Verify packaged version
         shell: pwsh
         run: python tools/check_build_version.py dist/TenchuZ/TenchuZ.exe "$env:TENCHU_VERSION"

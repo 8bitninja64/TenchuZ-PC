@@ -3,10 +3,20 @@
 param([switch]$CheckOnly)
 $ErrorActionPreference = 'Stop'
 try {
+  if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'bundled-tools.txt')) {
+    foreach ($file in 'python/python.exe', 'zig.zip') {
+      if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $file))) {
+        throw 'The release is incomplete. Extract the full release ZIP again; no system software needs to be installed.'
+      }
+    }
+  }
   . (Join-Path $PSScriptRoot 'prerequisites.ps1')
   if (-not $prerequisiteErrors.Count) {
     Write-Host 'Setup is ready. Run TenchuZ.exe and choose your disc image.'
     exit 0
+  }
+  if ($standaloneRelease) {
+    throw (($prerequisiteErrors -join "`n") + "`nExtract the full release ZIP again. No system software needs to be installed.")
   }
   Write-Host 'Tenchu Z needs these tools to compile your own disc on first start:'
   foreach ($problem in $prerequisiteErrors) { Write-Host " - $problem" }

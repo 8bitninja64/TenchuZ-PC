@@ -1,16 +1,15 @@
-Fixes and easier setup for Windows and Linux / SteamOS.
+Simpler Windows setup: unzip, open TenchuZ.exe, and choose your own disc image.
 
-- Fixed character movement slowing down after loading, especially noticeable at 4K.
-- Fixed black loading-tip rectangles and solid white dialog panels after returning from missions to the ninja village. Verified with missions 1 and 2 at 4K.
-- Added game text language selection under Esc > Game: English, French, German, Spanish and Italian. Restart the game after changing it.
-- Added portable mode and a migration helper for existing saves, settings and compiled game data. See the README for instructions.
-- Fixed Linux release builds reporting "dev" and the updater incorrectly treating Linux packages as development installations.
-- Added Setup.cmd on Windows to check prerequisites and offer installation of the required Python and C++ build tools, reusing existing installations where possible.
-- Improved Python/toolchain detection and missing-component messages.
-- Added safer GPU buffer uploads, adapter diagnostics and persistent Windows crash logs.
+- Windows now includes portable Python and the compiler. No separate Python, Visual Studio, Clang, or Windows SDK installation is needed.
+- First-start preparation works offline without administrator access or PATH changes. It takes a few minutes and removes temporary compiler files when finished.
+- Setup.cmd opens the game directly. Incomplete packages report that the full ZIP needs to be extracted, instead of asking players to install developer tools.
+- Added a release check that builds and loads a test DLL with system Python and compiler paths removed.
+- Includes all v0.3.3 fixes for loading-related movement slowdown, loading/dialog textures, portable saves, language selection, and Linux version/updater detection.
+
+Tested locally: full disc preparation with Windows-only PATH and empty compiler environment, village movement, mission loading, and the existing regression suite. The Windows download is larger because it now carries its own setup tools. Keep the included tools folder for future game-code updates.
 
 Both packages are built from this tag and checked for the correct version before publication. The Linux package targets glibc 2.35 for Ubuntu 22.04 and newer, including SteamOS.
 
-Updating: close the game and extract the package over your existing installation, preserving your saves and settings. Linux users whose previous release reports "dev" should install this update manually once; this version fixes release identification and the Linux updater check.
+Updating: use the in-game updater, or close the game and extract the package over your existing installation, preserving your saves and settings. Linux users whose older release reports "dev" should install this update manually once. Third-party launchers may still show an outdated prerequisite checklist; open TenchuZ.exe directly.
 
-Known reports still under investigation: overbright training floors on some AMD GPUs and a reported mission-start crash. The robustness changes in this release are not a confirmed fix for those reports.
+Known reports still under investigation: overbright training floors on some AMD GPUs and a reported mission-start crash. This release does not claim to fix those reports.

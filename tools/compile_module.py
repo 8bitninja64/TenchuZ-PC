@@ -1,7 +1,7 @@
 """Compile the game module's sources in parallel and link tenchu_game.dll / tenchu_game.so.
 
-Used by the player's first start: tools/make_module.ps1 on Windows (clang-cl and lld-link
-from the Visual Studio environment, tools/vsenv.ps1), tools/make_module.sh on Linux ($CXX:
+Used by the player's first start: tools/make_module.ps1 on Windows (bundled Zig, or
+clang-cl and lld-link in source checkouts), tools/make_module.sh on Linux ($CXX:
 the bundled Zig's "zig c++" or clang++). The flags match the tenchu_game target in
 CMakeLists.txt. Prints "[n/N] file" per finished unit and, on the first failure, that
 unit's compiler output.
@@ -48,12 +48,12 @@ def physical_memory_gb() -> float:
     return status.total / (1 << 30)
 
 
-def content_hash(sources: list[Path], include_dirs: list[Path], compiler: list[str]) -> str:
+def content_hash(sources: list[Path], include_dirs: list[Path], compiler: list[str], flags=None) -> str:
     """What the module is compiled from: every source, every header the includes can reach and
     the compiler command. An update that changes only the scripts around the build leaves it
     the same, and the module built before is kept."""
     digest = hashlib.sha256()
-    digest.update(repr((compiler, FLAGS if WINDOWS else LINUX_FLAGS)).encode())
+    digest.update(repr((compiler, flags if flags is not None else FLAGS if WINDOWS else LINUX_FLAGS)).encode())
     files = sorted(set(sources) | {header for directory in include_dirs for header in directory.rglob("*.h")})
     for path in files:
         digest.update(path.name.encode() + b"\0")
@@ -82,13 +82,22 @@ def main() -> int:
     parser.add_argument("--obj", type=Path, required=True)
     parser.add_argument("--include", type=Path, action="append", default=[])
     parser.add_argument("--extra", type=Path, action="append", default=[], help="additional source")
+    parser.add_argument("--zig", type=Path, help="portable Windows compiler (no Visual Studio or SDK required)")
     args = parser.parse_args()
 
     sources = [args.gen / line.strip()
                for line in (args.gen / "sources.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
     sources += args.extra
     compiler = ["clang-cl"] if WINDOWS else shlex.split(os.environ.get("CXX", "clang++"))
-    content = content_hash(sources, [args.gen] + args.include, compiler)
+    portable_windows = WINDOWS and args.zig is not None
+    flags = FLAGS if WINDOWS else LINUX_FLAGS
+    if portable_windows:
+        compiler = [str(args.zig.resolve()), "c++", "-target", "x86_64-windows-gnu"]
+        flags = ["-std=c++20", "-O2", "-DNDEBUG", "-ffp-model=strict", "-mssse3", "-msse4.1",
+                 "-DNOMINMAX", "-DWIN32_LEAN_AND_MEAN", "-w"]
+    link_flags = ["-static-libstdc++", "-static-libgcc"] if portable_windows else ["-Wl,-Bsymbolic"]
+    content = content_hash(sources, [args.gen] + args.include, compiler,
+                           flags + (link_flags if portable_windows else []))
     stamp = args.out.with_name(args.out.name + ".content")
     if args.out.exists() and stamp.exists() and stamp.read_text().strip() == content:
         print(f"# The game code is unchanged: keeping {args.out.name}", flush=True)
@@ -112,8 +121,8 @@ def main() -> int:
         if failed.is_set():
             return
         target = args.obj / (source.stem + suffix)
-        command = (["clang-cl", *FLAGS, *includes, "-c", str(source), f"/Fo{target}"] if WINDOWS else
-                   [*compiler, *LINUX_FLAGS, *includes, "-c", str(source), "-o", str(target)])
+        command = (["clang-cl", *FLAGS, *includes, "-c", str(source), f"/Fo{target}"] if WINDOWS and not portable_windows else
+                   [*compiler, *flags, *includes, "-c", str(source), "-o", str(target)])
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         with lock:
             if result.returncode:
@@ -131,19 +140,25 @@ def main() -> int:
         return 1
 
     print("# Linking", flush=True)
-    if not WINDOWS:
-        temporary = args.out.with_name(args.out.name + ".tmp")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    if not WINDOWS or portable_windows:
+        temporary = args.out.with_suffix(".tmp.dll") if portable_windows else args.out.with_name(args.out.name + ".tmp")
         response = args.obj / "link.rsp"
-        response.write_text("\n".join(shlex.quote(str(args.obj / (source.stem + suffix))) for source in sources),
+        quote = (lambda s: '"' + s.replace('\\', '/') + '"') if portable_windows else shlex.quote
+        response.write_text("\n".join(quote(str(args.obj / (source.stem + suffix))) for source in sources),
                             encoding="utf-8")
         # Its own symbols bind inside it (the runtime defines some of the same names).
-        result = subprocess.run([*compiler, "-shared", "-s", "-Wl,-Bsymbolic", "-o", str(temporary), f"@{response}"],
+        result = subprocess.run([*compiler, "-shared", "-s", *link_flags, "-o", str(temporary), f"@{response}"],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if result.returncode:
             sys.stdout.write(result.stdout.decode(errors="replace"))
             print(f"linking {args.out.name} failed", flush=True)
             return 1
-        args.out.parent.mkdir(parents=True, exist_ok=True)
+        if portable_windows:
+            with temporary.open("rb") as dll:
+                if dll.read(2) != b"MZ":
+                    print("The compiler did not produce a Windows DLL.", flush=True)
+                    return 1
         os.replace(temporary, args.out)
         stamp.write_text(content)
         return 0

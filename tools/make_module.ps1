@@ -1,7 +1,7 @@
 # Builds only the game module (tenchu_game.dll) from default.xex: translate it with
-# XenonRecomp (tools/recompile.py), compile with clang-cl (tools/compile_module.py). The
+# XenonRecomp (tools/recompile.py), compile with tools/compile_module.py. The
 # game's first start runs this on the player's PC; the runtime (TenchuZ.exe) is not rebuilt.
-# Needs Python 3.11+ and Visual Studio 2022 Build Tools with C++ and its Clang compiler.
+# Releases carry Python and Zig; source checkouts can use Python and Visual Studio.
 #   powershell -ExecutionPolicy Bypass -File tools/make_module.ps1 -Xex <default.xex> [-Out <dll>] [-Work <dir>] [-PauseOnError]
 param(
   [string]$Xex = "build/xex/default.xex",
@@ -31,10 +31,23 @@ try {
   Write-Host "Tenchu Z: compiling the game code from your disc. This is done once."
   Write-Host ""
   Set-Location -LiteralPath $root
-  # Visual Studio's own Clang first: another LLVM on PATH may not match its C++ library.
+  # Release tools take priority over developer tools installed on the machine.
   . (Join-Path $PSScriptRoot "prerequisites.ps1")
   if ($prerequisiteErrors.Count) {
+    if ($standaloneRelease) { throw ($prerequisiteErrors -join "`n") }
     throw (($prerequisiteErrors -join "`n") + "`nRun Setup.cmd in the game folder to install the missing requirements, then start the game again.")
+  }
+  $compilerArgs = @()
+  $compilerWork = Join-Path $Work 'compiler'
+  if (Test-Path -LiteralPath $bundledCompiler) {
+    Write-Host '# Preparing the included compiler'
+    Invoke-Logged { Invoke-Python -m zipfile -e $bundledCompiler $compilerWork }
+    if ($LASTEXITCODE) { throw 'Could not unpack the included compiler. Extract the release ZIP again.' }
+    $zig = Join-Path $compilerWork 'zig-x86_64-windows-0.17.1/zig.exe'
+    if (-not (Test-Path -LiteralPath $zig)) { throw 'The included compiler is incomplete.' }
+    $env:ZIG_GLOBAL_CACHE_DIR = Join-Path $compilerWork 'cache'
+    $env:ZIG_LOCAL_CACHE_DIR = Join-Path $compilerWork 'local-cache'
+    $compilerArgs = @('--zig', $zig)
   }
 
   # Every unit is rewritten; units of another version must not be compiled in.
@@ -50,11 +63,17 @@ try {
   if (-not $simde) { throw "simde headers are missing (third_party\simde)." }
   $obj = Join-Path $Work "obj"
   Invoke-Logged { Invoke-Python tools/compile_module.py --gen $gen --out $Out --obj $obj `
-    --include "$root\runtime\guest" --include $simde --extra "$root\runtime\guest\module_rt.cpp" }
+    --include "$root\runtime\guest" --include $simde --extra "$root\runtime\guest\module_rt.cpp" @compilerArgs }
   if ($LASTEXITCODE) { throw "Compiling the game code failed." }
 
   # The sources and objects are only needed again after an update.
   Remove-Item -LiteralPath $gen, $obj -Recurse -Force -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $compilerWork) {
+    if ([IO.Path]::GetFullPath($compilerWork) -ne (Join-Path ([IO.Path]::GetFullPath($Work)) 'compiler')) {
+      throw 'Unexpected compiler work directory.'
+    }
+    Remove-Item -LiteralPath $compilerWork -Recurse -Force
+  }
   Write-Host ("# Done in {0:N0} s: {1}" -f ((Get-Date) - $started).TotalSeconds, $Out)
 } catch {
   Write-Host ""

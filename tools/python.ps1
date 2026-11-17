@@ -2,6 +2,11 @@
 # Microsoft Store install) and defines Invoke-Python, which runs it in isolated, UTF-8 mode.
 $script:pythonCommand = @()
 $candidates = @()
+$bundledPython = Join-Path $PSScriptRoot 'python/python.exe'
+if (Test-Path -LiteralPath $bundledPython) { $candidates += ,@($bundledPython) }
+elseif (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'bundled-tools.txt')) {
+  throw 'The bundled Python runtime is missing. Extract the full release ZIP again.'
+}
 $launcher = Get-Command py.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($launcher) { $candidates += ,@($launcher.Source, "-3") }
 foreach ($exe in @(Get-Command python.exe -CommandType Application -All -ErrorAction SilentlyContinue)) {
@@ -24,6 +29,9 @@ foreach ($candidate in $candidates) {
     $ErrorActionPreference = $probePreference
   }
   if ($probeSucceeded) { $script:pythonCommand = $candidate; break }
+  if ($candidate[0] -eq $bundledPython -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'bundled-tools.txt'))) {
+    throw 'The bundled Python runtime could not start. Extract the full release ZIP again.'
+  }
 }
 if (-not $script:pythonCommand.Count) {
   throw "Python 3.11 or newer is required (https://www.python.org/downloads/; tick 'Add python.exe to PATH')."

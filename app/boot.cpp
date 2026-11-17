@@ -375,9 +375,8 @@ bool loadModule(const GameSource& source) {
         MessageBoxW(nullptr,
                     L"Tenchu Z needs to compile the game code from your disc. This is done once and takes "
                     L"a few minutes (about 2 on an 8-core PC, longer on fewer cores).\n\n"
-                    L"Requirements: Python 3.11 or newer, and Visual Studio 2022 Build Tools with "
-                    L"C++, Clang and Windows SDK. Run Setup.cmd in the game folder to check and install "
-                    L"these automatically.\n\nCompile now?",
+                    L"Everything needed is included in the release. No additional software or "
+                    L"downloads are required.\n\nPrepare the game now?",
                     L"Tenchu Z Recomp - first start", MB_YESNO | MB_ICONINFORMATION) != IDYES)
         return false;
 

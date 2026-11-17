@@ -15,7 +15,14 @@ $tools = (Resolve-Path "..\_Tools\XenonRecomp").Path
 $generator = Join-Path $tools "build-tenchu\XenonRecomp\XenonRecomp.exe"
 if (-not (Test-Path $generator)) { throw "The generator is missing: run tools/build.ps1 first." }
 
-if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
+$Out = [IO.Path]::GetFullPath((Join-Path $root $Out))
+$allowedOutput = @('build', 'dist') | Where-Object {
+  $Out.StartsWith((Join-Path $root $_) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+}
+if (-not $allowedOutput) {
+  throw 'Package output must be a subdirectory of build or dist.'
+}
+if (Test-Path -LiteralPath $Out) { Remove-Item -LiteralPath $Out -Recurse -Force }
 New-Item -ItemType Directory -Force $Out | Out-Null
 function Copy-To([string]$destination, [string[]]$sources) {
   New-Item -ItemType Directory -Force (Join-Path $Out $destination) | Out-Null
@@ -35,6 +42,9 @@ Copy-To "tools" @($generator, "tools/recompile.py", "tools/xex_image.py", "tools
   "tools/make_module.ps1", "tools/vsenv.ps1", "tools/python.ps1", "tools/setup_generator.py", "tools/enable_portable.py",
   "tools/prerequisites.ps1", "tools/setup_windows.ps1")
 Copy-To "tools/xbox" @("$tools/XenonUtils/xbox/xboxkrnl_table.inc", "$tools/XenonUtils/xbox/xam_table.inc")
+. "$PSScriptRoot/python.ps1"
+Invoke-Python tools/bundle_windows_tools.py "$Out/tools"
+if ($LASTEXITCODE) { throw 'Bundling the standalone setup tools failed.' }
 # The generator's corresponding source: the pinned upstream commit (tools/setup_generator.py) and these patches.
 Copy-To "tools/patches" @(Get-ChildItem "tools/patches/*" | ForEach-Object FullName)
 Copy-To "config" @("config/tenchuz.toml", "config/tenchuz_switch_tables.toml",
@@ -73,14 +83,15 @@ Copy-To "$licenses/simde" @("$simde/COPYING")
 
 # Never ship anything derived from the game.
 $forbidden = '^(tenchu_game\.(dll|lib|exp|pdb)|ppc_recomp\.\d+\.cpp|ppc_func_mapping\.cpp|ppc_module\.cpp|ppc_recomp_shared\.h|default\.xex|TenchuZ\.ini)$'
-$bad = Get-ChildItem -Recurse -File $Out | Where-Object { $_.Name -match $forbidden -or $_.Extension -in ".iso", ".xex", ".obj", ".pdb" }
+$bad = Get-ChildItem -LiteralPath $Out -Recurse -File | Where-Object { $_.Name -match $forbidden -or $_.Extension -in ".iso", ".xex", ".obj", ".pdb" }
 if ($bad) { throw "Refusing to package game-derived files: $($bad.FullName -join ', ')" }
 
-$size = (Get-ChildItem -Recurse -File $Out | Measure-Object Length -Sum).Sum / 1MB
+$size = (Get-ChildItem -LiteralPath $Out -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
 Write-Host ("Packaged {0} ({1:N1} MB)" -f $Out, $size)
 if ($Zip) {
   $archive = "dist/TenchuZ-windows-x64.zip"
   if (Test-Path $archive) { Remove-Item -Force $archive }
-  Compress-Archive -Path "$Out\*" -DestinationPath $archive
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [IO.Compression.ZipFile]::CreateFromDirectory($Out, (Join-Path $root $archive))
   Write-Host ("Wrote {0} ({1:N1} MB)" -f $archive, ((Get-Item $archive).Length / 1MB))
 }

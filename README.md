@@ -37,15 +37,16 @@ The executable is built with XDK 2.0.4552 and imports `xboxkrnl.exe` and `xam.xe
 
 1. Download `TenchuZ-windows-x64.zip` from the [Releases](../../releases) page and unzip it
    anywhere you can write to (not Program Files).
-2. Double-click **Setup.cmd**. It checks all prerequisites together and offers to install
-   anything missing: Python, Microsoft C++ build tools, Clang and Windows SDK. It selects
-   the compiler components automatically and can add them to an existing Visual Studio
-   installation. Allow the official installers to finish (administrator approval may be
-   required). These tools compile the game from your disc on first start and after updates
-   that change the game code; downloads and several GB of disk space may be needed.
-3. Run `TenchuZ.exe` and pick your `Tenchu Z (USA, Europe)` disc image (`.iso`) when asked.
-   Confirm the compile: a console window shows the progress (about 2 minutes on an
-   8-core PC, longer with fewer cores), then the game starts. Later starts are instant.
+2. Open **TenchuZ.exe** and choose your `Tenchu Z (USA, Europe)` disc image (`.iso`).
+3. Confirm the one-time preparation and wait for the game to start. A console window
+   shows progress; preparation takes a few minutes, depending on your PC. Later starts
+   use the prepared game automatically.
+
+**No Python, Visual Studio, Windows SDK, or other developer tools need to be installed.**
+The Windows release includes everything needed to prepare your disc, works offline,
+and does not need administrator access or changes to PATH. `Setup.cmd` also opens the game.
+Temporary compiler files are removed after successful preparation. Keep the included
+`tools` folder: updates that change the game code may need it again.
 
 The disc image is read in place (nothing is extracted) and remembered in `TenchuZ.ini`.
 The compiled game code (`tenchu_game.dll`), saves and profile settings live in
@@ -58,12 +59,10 @@ data; never share the `tenchu_game.dll` built from your disc.
 
 Windows 10/11 64-bit with a Direct3D 11 graphics card. The Visual C++ runtime is included.
 
-For manual setup, install [Python 3.11 or newer](https://www.python.org/downloads/)
-(tick *Add python.exe to PATH*) and [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-with **MSVC x64/x86 build tools**, **C++ Clang Compiler for Windows**, and a **Windows 10/11 SDK**.
-Setup uses Windows App Installer (`winget`) for Python; if it is unavailable, install Python
-manually and rerun Setup.cmd. To check without installing, run
-`powershell -NoProfile -ExecutionPolicy Bypass -File tools/setup_windows.ps1 -CheckOnly`.
+Older releases may still ask for Python and Visual Studio. Replace them with a current
+release ZIP, keeping your saves. Third-party launchers may show the old setup checklist;
+use the release's `TenchuZ.exe` directly. Developer prerequisites are listed below under
+building from source.
 
 If the game crashes, include the runtime log with your report: `TenchuZ.log` in
 `%APPDATA%\TenchuZRecomp` (or `user` beside the executable in portable mode).
