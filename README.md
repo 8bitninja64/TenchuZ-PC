@@ -25,7 +25,12 @@ hideout and missions with D3D11 rendering at the original 30 fps.
 | Input | any controller via SDL3 (Xbox, PlayStation, Switch, 8BitDo...), keyboard and mouse (rebindable) |
 | Modern features | 60 fps and higher, resolution scaling up to 4x (4K = scale 3), borderless fullscreen, HDR10, ambient occlusion, sharpening, MSAA up to 8x |
 
-Multiplayer support is being worked on and is not yet available.
+**Multiplayer beta testers wanted:** [v0.4.0-beta.1](https://github.com/8bitninja64/TenchuZ-PC/releases/tag/v0.4.0-beta.1)
+adds experimental System Link / online play through a private VPN. Please read
+the [beta setup guide](docs/multiplayer-beta.md) and
+[report problems or successful tests](https://github.com/8bitninja64/TenchuZ-PC/issues/new?template=multiplayer-beta.yml).
+Real internet sessions and SteamOS hardware still need verification. The stable
+release remains v0.3.5; this beta is a separate, opt-in download.
 
 Not done yet: widescreen beyond 16:9, achievements.
 

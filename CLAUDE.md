@@ -27,6 +27,42 @@ project is GPLv3 too and may reuse its code with credit).
   translated to host setjmp/longjmp by the generator.
 
 ## Runtime layout (runtime/)
+### Experimental System Link (2026-11-24)
+- Disabled by default. Set `TENCHU_SYSTEM_LINK=1` and `TENCHU_NET_BIND` to a
+  local IPv4 address to enable the native socket bridge. `TENCHU_NET_JOIN`
+  redirects discovery to a host IPv4 address; `TENCHU_NET_NAME` sets the name.
+- `tools/start_system_link_test.ps1 -SaveDirectory <fixture-save-folder>` starts
+  isolated host/guest copies on 127.0.0.1 and 127.0.0.2 at 30 FPS. Saves are copied
+  only on first use. It uses control files under `build/multiplayer/{host,guest}`;
+  these replace controller input. Drive them with `tools/drive.py`. Append `quit`
+  to each control file to stop the test. `-Visible` shows the test windows.
+- Rebuild the generator with the complete patch series before regenerating the
+  game module: multiplayer uses the FLOAT16_2 vector unpack instruction. The
+  isolated generator used for initial testing is `../_Tools/XenonRecomp-tenchu-net`.
+- Verified: two Windows instances discover/join, enter mission 1, reach matching
+  shared results, return to the village, leave and immediately rejoin without
+  restarting. A Windows guest joins a Linux host's village and movement replicates.
+  Windows/Linux socket ABI tests and both runtime builds pass. Linux software
+  rendering timed out during mission entry; a headless Linux host with a rendered
+  Windows guest subsequently entered a mission, killed the objective using an
+  assisted attack and returned to the village. Headless tests cap at 30 FPS too.
+  Two headless Linux peers also entered a mission with simulated WAN delay and
+  returned under jitter/loss; village positions replicated exactly. This does
+  not verify the Linux renderer. Cross-platform missions on hardware,
+  separate machines, high FPS and internet remain unverified. Four Windows
+  instances now also join, complete mission 1 with assisted test saves, show
+  matching shared results and return to the village. Reverse XNADDR lookup must
+  reconstruct abEnet consistently: the title's sub_8236B180 matches peers by it.
+- Native ports are UDP 11000/11001/11004 and TCP 11003 (guest ports 1000-1004
+  are translated). Outgoing TCP uses ephemeral ports to avoid TIME_WAIT preventing
+  immediate reconnects. TCP destruction half-closes send before joining the
+  title's receive worker. Linux pending connect errors use Winsock numbering.
+- See `docs/multiplayer.md` for test procedure, evidence and remaining work.
+- No voice support; null voice-engine calls are guarded. Menus do not pause an
+  enabled session. Identity currently derives from bind address. No relay,
+  account service, persistent network identity or cheat/settings synchronization
+  is implemented. This is a developer prototype, not released multiplayer.
+
 Original code following Darkness's architecture (not copied files).
 - `kernel/memory.*`: 4 GiB placeholder reservation; 0xA0/0xC0/0xE0000000 are views
   of one 512 MiB backing (E biased by 4 KiB). Virtual 0x40-0x70M, stacks

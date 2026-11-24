@@ -19,6 +19,7 @@ void render(ID3D11RenderTargetView* target, float fps);
 
 // Any thread.
 bool isOpen();
+bool pausesGame();  // experimental network sessions keep simulating under the menu
 // True once after the menu paused the game (the next frame's time excludes the pause).
 bool takePause();
 bool ownsInput();  // the game sees neutral controls (open, or buttons still held from closing)

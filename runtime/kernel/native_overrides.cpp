@@ -2,6 +2,7 @@
 // code; TENCHU_TRACE=verifynative also runs the original and reports differences,
 // nonative disables them) and frame-rate fixes for code written for 30 fps.
 #include "kernel.h"
+#include "network.h"
 #include "kernel/memory.h"
 #include "host/settings.h"
 #include "host/frame_delta.h"
@@ -18,6 +19,33 @@
 #include <vector>
 
 using namespace tz;
+
+// The network object's destructor joins its worker. That worker drains TCP
+// until peer EOF (82377B10); two native peers can otherwise both wait forever.
+// Send FIN first, retaining the socket and the original receive/cleanup path.
+TZ_OVERRIDE(82375C10) {
+    if (net::enabled() && ctx.r3.u32) net::beginDisconnect(load32(ctx.r3.u32 + 8));
+    __imp__sub_82375C10(ctx, base);
+}
+
+// System Link can run without voice chat. The title ignores XHV engine creation
+// failure, then calls through the null engine in these voice-manager methods.
+// Preserve the original behavior when an engine exists; no voice state is
+// fabricated. Addresses and the engine field were checked against the disc.
+#define TZ_VOICE_GUARD(address) \
+    TZ_OVERRIDE(address) { \
+        if (net::enabled() && ctx.r3.u32 && !load32(ctx.r3.u32)) { ctx.r3.u64 = 0; return; } \
+        __imp__sub_##address(ctx, base); \
+    }
+TZ_VOICE_GUARD(823781D0)
+TZ_VOICE_GUARD(82378250)
+TZ_VOICE_GUARD(82378320)
+TZ_VOICE_GUARD(823783A0)
+TZ_VOICE_GUARD(82378478)
+TZ_VOICE_GUARD(82378620)
+TZ_VOICE_GUARD(823786A8)
+TZ_VOICE_GUARD(82378758)
+#undef TZ_VOICE_GUARD
 
 namespace {
 bool nativeEnabled() {

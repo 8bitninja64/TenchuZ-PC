@@ -42,3 +42,14 @@
 
 # runtime/movie/movie_player.cpp
 82296FF8
+
+# Optional System Link: tolerate an unavailable voice engine.
+82375C10
+823781D0
+82378250
+82378320
+823783A0
+82378478
+82378620
+823786A8
+82378758

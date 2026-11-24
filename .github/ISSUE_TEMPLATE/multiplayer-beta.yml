@@ -1,0 +1,56 @@
+name: Multiplayer beta report
+description: Report a multiplayer problem or a successful beta test.
+title: "[Multiplayer beta] "
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for testing! Please include host and guest details. Never upload game data, disc images, compiled game modules or saves.
+  - type: input
+    id: version
+    attributes:
+      label: Beta version
+      placeholder: v0.4.0-beta.1
+    validations:
+      required: true
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Test outcome
+      options:
+        - Problem found
+        - Successful session
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Player setup
+      description: Player count, host/guest roles, OS version (including SteamOS), GPU and FPS setting for each player.
+    validations:
+      required: true
+  - type: textarea
+    id: connection
+    attributes:
+      label: Connection
+      description: LAN or internet/VPN? VPN name, direct or relayed connection, approximate ping/loss if known. Do not post public IP addresses.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Mission and steps
+      description: Exact mission and actions; how often it happens. For a successful test, list what you completed.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual behavior
+      description: What each player saw; whether the game crashed, disconnected or became desynchronized.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs, screenshots or video
+      description: Attach host and guest logs from the beta's user folder. Review local paths/IP addresses before sharing. Include cheats or unusual settings used.

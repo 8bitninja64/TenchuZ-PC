@@ -17,4 +17,11 @@ Applied in order to hedge-dev/XenonRecomp commit
    - `vcmpbfp` / `vcmpbfp128` and their record forms (2 sites): bounds compare.
      Upstream emitted a debug trap here.
 
+4. `xenonrecomp-system-link-half.patch`: FLOAT16_2 unpack (`vupkd3d128`,
+   immediate 12), first reached while receiving another player's state. The
+   previous generator emitted a debug trap. Handles source/destination aliasing,
+   signed zeros, subnormals, infinities and NaNs; unsupported unpack formats now
+   fail the strict generation gate. `tools/test_generated_half.py` checks the
+   emitted instruction against Python's half conversion for all 65,536 inputs.
+
 The VSCR saturation bit is not modelled, matching the existing pack instructions.

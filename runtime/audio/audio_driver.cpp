@@ -227,7 +227,7 @@ void audioMain() {
     bool paused = false;
     for (;;) {
         // The menu pauses the game: no mixing and no sound until it closes.
-        if (host::overlay::isOpen() != paused) {
+        if (host::overlay::pausesGame() != paused) {
             paused = !paused;
             if (outputReady) output.pause(paused);
         }

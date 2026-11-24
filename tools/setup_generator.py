@@ -18,6 +18,7 @@ PATCHES = (
     ROOT / "tools/patches/xenonrecomp-darkness.patch",
     ROOT / "tools/patches/xenonrecomp-corrections.patch",
     ROOT / "tools/patches/xenonrecomp-tenchuz.patch",
+    ROOT / "tools/patches/xenonrecomp-system-link-half.patch",
 )
 
 
@@ -45,13 +46,18 @@ def setup(destination: Path) -> None:
     # installed series reverse-applies cleanly; a fresh tree takes the first.
     if not git(destination, "apply", "--reverse", "--check", str(PATCHES[-1]), check=False).returncode:
         print("Generator patches are already installed.")
-    elif not git(destination, "apply", "--check", str(PATCHES[0]), check=False).returncode:
-        for patch in PATCHES:
-            git(destination, "apply", "--whitespace=nowarn", str(patch))
-            print(f"Applied: {patch.name}")
     else:
-        raise RuntimeError(f"{destination} has local changes that conflict with the patch series; "
-                           "move it aside and rerun.")
+        # An existing checkout may contain an earlier prefix of the series.
+        # Pick the earliest patch that applies, then verify/apply the suffix.
+        for index, patch in enumerate(PATCHES):
+            if not git(destination, "apply", "--check", str(patch), check=False).returncode:
+                for pending in PATCHES[index:]:
+                    git(destination, "apply", "--whitespace=nowarn", str(pending))
+                    print(f"Applied: {pending.name}")
+                break
+        else:
+            raise RuntimeError(f"{destination} has local changes that conflict with the patch series; "
+                               "move it aside and rerun.")
     git(destination, "submodule", "update", "--init", "--recursive")
 
 

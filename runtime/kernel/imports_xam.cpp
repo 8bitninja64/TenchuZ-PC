@@ -1,6 +1,7 @@
 // XAM imports: user profile, content (saves), system UI, notifications, input.
 // One local profile is signed in on controller 0; online features are absent.
 #include "kernel.h"
+#include "network.h"
 #include "control.h"
 #include "host/gamepad.h"
 #include "host/overlay.h"
@@ -138,15 +139,15 @@ TZ_IMPORT(XamUserGetSigninState) { ctx.r3.u64 = ctx.r3.u32 == 0 ? 1 : 0; }  // s
 TZ_IMPORT(XamUserGetXUID) {
     // (user, typeMask, xuid*)
     if (ctx.r3.u32 != 0) { ctx.r3.u64 = kErrorNoSuchUser; return; }
-    store64(ctx.r5.u32, kXuid);
+    store64(ctx.r5.u32, net::playerId());
     ctx.r3.u64 = kErrorSuccess;
 }
 
 TZ_IMPORT(XamUserGetName) {
     // (user, buffer, length)
     if (ctx.r3.u32 != 0) { ctx.r3.u64 = kErrorNoSuchUser; return; }
-    const char name[] = "Player";
-    const uint32_t count = (std::min<uint32_t>)(ctx.r5.u32, sizeof(name));
+    const char* name = net::playerName();
+    const uint32_t count = (std::min<uint32_t>)(ctx.r5.u32, (std::min<uint32_t>)(16, uint32_t(std::strlen(name) + 1)));
     std::memcpy(memory->host(ctx.r4.u32), name, count);
     if (count) *memory->host(ctx.r4.u32 + count - 1) = 0;
     ctx.r3.u64 = kErrorSuccess;
@@ -675,17 +676,17 @@ TZ_IMPORT(XamVoiceSubmitPacket) { ctx.r3.u64 = kErrorDeviceNotConnected; }
 TZ_IMPORT(XMsgStartIORequest) {
     // (app, message, overlapped, buffer, size)
     TZ_TRACE("xam", "[xam] XMsgStartIORequest app %08X message %08X", ctx.r3.u32, ctx.r4.u32);
-    ctx.r3.u64 = complete(ctx.r5.u32, kErrorFunctionFailed);
+    ctx.r3.u64 = complete(ctx.r5.u32, net::dispatch(ctx.r3.u32, ctx.r4.u32, ctx.r6.u32, ctx.r7.u32));
 }
 
 TZ_IMPORT(XMsgStartIORequestEx) {
     TZ_TRACE("xam", "[xam] XMsgStartIORequestEx app %08X message %08X", ctx.r3.u32, ctx.r4.u32);
-    ctx.r3.u64 = complete(ctx.r5.u32, kErrorFunctionFailed);
+    ctx.r3.u64 = complete(ctx.r5.u32, net::dispatch(ctx.r3.u32, ctx.r4.u32, ctx.r6.u32, ctx.r7.u32));
 }
 
 TZ_IMPORT(XMsgInProcessCall) {
     TZ_TRACE("xam", "[xam] XMsgInProcessCall app %08X message %08X", ctx.r3.u32, ctx.r4.u32);
-    ctx.r3.u64 = kErrorFunctionFailed;
+    ctx.r3.u64 = net::dispatch(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
 }
 
 TZ_IMPORT(XMsgCancelIORequest) { ctx.r3.u64 = kStatusSuccess; }

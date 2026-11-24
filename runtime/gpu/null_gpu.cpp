@@ -134,10 +134,14 @@ gpu::XenosBackend* activeBackend() {
 std::map<uint64_t, std::pair<uint32_t, uint32_t>> predStats;  // bin mask -> (ran, skipped)
 uint32_t extentWrites = 0;
 
-// Unlocked frame rates: the host caps presents at frame_rate_limit. The title
+// Unlocked and headless frame rates: cap presents at frame_rate_limit. The title
 // measures real time, so the cap paces rendering without changing game speed.
 void limitFrameRate() {
-    if (host::settings().frameRateLimit == 30) return;  // the title's own pacing
+    // Without a display the title's present/vblank handshake does not provide
+    // the normal 30 Hz cap. Pace headless tests explicitly so their simulation
+    // does not depend on rendering work to keep frame_rate_limit=30.
+    static const bool headless = GetEnvironmentVariableW(L"TENCHU_HEADLESS", nullptr, 0) != 0;
+    if (host::settings().frameRateLimit == 30 && !headless) return;  // the title's own pacing
     const int limit = host::activeFrameRateLimit();
     if (limit <= 0 || renderer.pacedByVsync()) return;
     using Clock = std::chrono::steady_clock;
@@ -921,7 +925,7 @@ TZ_IMPORT(VdSwap) {
     cheats::applyFrame();
     // The F1 menu pauses the game here, between two frames; the command processor
     // keeps presenting the last one under the menu.
-    while (host::overlay::isOpen()) {
+    while (host::overlay::pausesGame()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
         cheats::applyFrame();
     }

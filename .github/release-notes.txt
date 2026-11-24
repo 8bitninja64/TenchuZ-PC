@@ -1,15 +1,16 @@
-High-FPS water-light and cutscene timing fixes.
+## Online Multiplayer Beta — community testers wanted
 
-- Fixed the shimmering light on walls around water animating too fast at higher FPS. Its texture animation now follows elapsed time at the original speed.
-- In-engine cutscenes now run at their authored 30 FPS, keeping camera tracks and scripted events synchronized. Your selected gameplay FPS limit resumes afterward.
-- Multiplayer support is being worked on. It is not available in this release.
+This opt-in beta adds experimental System Link multiplayer for Windows and Linux. Internet testing currently requires a private VPN between players; there is no built-in matchmaking, relay or NAT traversal.
 
-Verified in mission 1 from inside the water facing the walls, and with mission 2's intro cutscene at a 120 FPS gameplay setting. Both fixes were also confirmed in player testing. Timing regressions cover 15, 30, 60, 120, 144, and 240 FPS, and gameplay FPS restoration after cutscenes. Windows and Linux runtime builds passed; local gameplay testing was on Windows.
+**Please help us test and report any issues you experience! Successful test reports are welcome too.**
 
-Includes the simpler Windows setup from v0.3.4: unzip, open TenchuZ.exe, and choose your own disc image. Portable Python and the compiler are included; no separate developer tools are required. Keep the included tools folder for future game-code updates.
+- [Setup and testing guide](https://github.com/8bitninja64/TenchuZ-PC/blob/v0.4.0-beta.1/docs/multiplayer-beta.md)
+- [Report a multiplayer issue or successful session](https://github.com/8bitninja64/TenchuZ-PC/issues/new?template=multiplayer-beta.yml)
 
-Both packages are built from this tag and checked for the correct version before publication. The Linux package targets glibc 2.35 for Ubuntu 22.04 and newer, including SteamOS.
+Download the ZIP for Windows or tar.xz for Linux below (not the source-code archive). Extract into a new folder, keep portable.txt, and run the game once to prepare your own disc. Then use Multiplayer.cmd on Windows or `sh Multiplayer.sh` on Linux. Everyone must use this beta and start testing at 30 FPS. Keep your stable installation and saves separate.
 
-Updating: use the in-game updater, or close the game and extract the package over your existing installation, preserving your saves and settings. The game may prepare an updated game module on the next launch. Linux users whose older release reports "dev" should install this update manually once.
+Verified so far: four Windows processes completed an assisted mission; a headless Linux host and Windows guest entered a mission and returned; Linux peers handled simulated delay, jitter, packet loss and restart/rejoin after an outage. These are local/virtual tests. Real internet play, hardware SteamOS missions, mixed FPS and normal-combat synchronization still need testing. No voice chat or console compatibility is promised.
 
-Known reports still under investigation: overbright training floors on some AMD GPUs and a reported mission-start crash. This release does not claim to fix those reports.
+When reporting, include the beta version, OS/GPU for each player, player count, host/guest roles, LAN/VPN setup, mission, FPS, reproduction steps, and logs from both sides. Review logs for personal paths/IP addresses; do not upload game data or compiled modules.
+
+This is a prerelease, not a replacement for stable v0.3.5. It is not offered by the stable auto-updater. No game data is included.

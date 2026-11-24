@@ -112,7 +112,7 @@ endif()
 include(cmake/BuildVersion.cmake)
 set_source_files_properties(runtime/host/update_check.cpp PROPERTIES COMPILE_DEFINITIONS "TENCHU_VERSION=\"${TENCHU_VERSION}\"")
 if(WIN32)
-    target_link_libraries(TenchuRuntime PUBLIC TenchuXenos winhttp bcrypt xinput winmm shell32 ole32 d3d11 dxgi d3dcompiler xaudio2 dbghelp)
+    target_link_libraries(TenchuRuntime PUBLIC TenchuXenos ws2_32 winhttp bcrypt xinput winmm shell32 ole32 d3d11 dxgi d3dcompiler xaudio2 dbghelp)
 else()
     # DXVK-native (d3d11, dxgi and their Windows-compatible headers) and vkd3d-shader.
     if(NOT EXISTS "${TENCHU_DXVK}/include/dxvk/d3d11.h" OR NOT EXISTS "${TENCHU_VKD3D}/include/vkd3d/vkd3d_shader.h")

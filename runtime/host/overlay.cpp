@@ -5,6 +5,7 @@
 #include "host/settings.h"
 #include "host/update_check.h"
 #include "kernel/kernel.h"
+#include "kernel/network.h"
 #include "kernel/cheats.h"
 #include "kernel/control.h"
 
@@ -83,7 +84,7 @@ constexpr float kFontPx = 40.0f;  // rasterized large, scaled down to the window
 
 void setOpen(bool open) {
     if (g_open.exchange(open) == open) return;
-    if (open) g_paused = true;
+    if (open && !net::enabled()) g_paused = true;
     logf("[menu] %s", open ? "opened" : "closed");
     g_focusTo = Focus::Sections;
     g_capture = -1;
@@ -789,7 +790,7 @@ void drawMenu() {
     ImGui::PopFont();
     ImGui::SameLine();
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetTextLineHeight() * 0.35f);
-    ImGui::TextDisabled("SETTINGS  -  game paused");
+    ImGui::TextDisabled(net::enabled() ? "SETTINGS  -  game running (System Link test)" : "SETTINGS  -  game paused");
     ImGui::Spacing();
 
     const float footer = ImGui::GetFrameHeightWithSpacing() * 1.6f;
@@ -883,6 +884,7 @@ void finishCapture(int virtualKey) {
 }  // namespace
 
 bool isOpen() { return g_open; }
+bool pausesGame() { return g_open && !net::enabled(); }
 bool takePause() { return g_paused.exchange(false); }
 
 bool filterGamePad(uint16_t buttons) {

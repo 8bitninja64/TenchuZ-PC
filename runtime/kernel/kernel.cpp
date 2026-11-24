@@ -200,6 +200,9 @@ void registerThread(const std::shared_ptr<GuestThread>& thread) {
 
 void finishThread(ThreadObject& object, uint32_t code) {
     object.exitCode = code;
+    // GetExitCodeThread reads the XDK KTHREAD body directly (+0x140).
+    store32(object.dispatcher + 0x140, code);
+    TZ_TRACE("thread", "[thread] finish body=%08X code=%08X", object.dispatcher, code);
     signalObject(object.dispatcher, 1);
 }
 
