@@ -3,6 +3,8 @@
 
 # runtime/kernel/native_overrides.cpp
 823D4440  # zone iterator (native version)
+823A0AB0  # zero-delay stage texture atlases: elapsed 30 Hz ticks
+82273428  # in-engine cutscene script and camera: authored 30 fps
 8228E5C8  # frame delta: smoothed to the display period
 822929D0  # frame timer: carried 30 Hz ticks and whole milliseconds
 823E1F30  # game camera update: remembers its last two 16 ms steps

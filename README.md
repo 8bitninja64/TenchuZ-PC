@@ -25,6 +25,8 @@ hideout and missions with D3D11 rendering at the original 30 fps.
 | Input | any controller via SDL3 (Xbox, PlayStation, Switch, 8BitDo...), keyboard and mouse (rebindable) |
 | Modern features | 60 fps and higher, resolution scaling up to 4x (4K = scale 3), borderless fullscreen, HDR10, ambient occlusion, sharpening, MSAA up to 8x |
 
+Multiplayer support is being worked on and is not yet available.
+
 Not done yet: widescreen beyond 16:9, achievements.
 
 ## Supported game
@@ -181,7 +183,10 @@ binding.
 
 `frame_rate_limit` defaults to 60; 30 restores the console's pacing, and higher
 values (120, 144, 240) or 0 (unlimited) go further. Game speed does not change
-with the frame rate: the game measures real time. With vsync on and a refresh
+with the frame rate: the game measures real time. In-engine cutscenes run at
+their original 30 fps to keep scripted events and cameras synchronized; your
+selected limit resumes afterward. Water-light animations retain their original
+speed at higher gameplay frame rates. With vsync on and a refresh
 rate that is a multiple of the limit (60 on a 60/120/240 Hz display), frames are
 locked to the display. Missions currently reach about 75-80 fps unlimited on an
 RTX 3070 laptop; menus and the hideout run far higher.

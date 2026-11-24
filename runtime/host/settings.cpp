@@ -262,6 +262,7 @@ std::string settingsFilePath() {
 
 namespace {
 std::atomic<int64_t> frontEndFrameAt{INT64_MIN / 2};  // steady clock, ms
+std::atomic<int64_t> cutsceneFrameAt{INT64_MIN / 2};
 int64_t nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
         .count();
@@ -269,6 +270,7 @@ int64_t nowMs() {
 }  // namespace
 
 void noteFrontEndFrame() { frontEndFrameAt.store(nowMs(), std::memory_order_relaxed); }
+void noteCutsceneFrame() { cutsceneFrameAt.store(nowMs(), std::memory_order_relaxed); }
 
 namespace {
 std::atomic<bool> hdrDisplay{false};
@@ -287,7 +289,12 @@ int activeFrameRateLimit() {
     const int limit = settings().frameRateLimit;
     // TENCHU_FRONTEND_UNCAPPED: no cap (testing).
     static const bool uncapped = GetEnvironmentVariableA("TENCHU_FRONTEND_UNCAPPED", nullptr, 0) != 0;
-    if ((limit <= 0 || limit > 30) && !uncapped && nowMs() - frontEndFrameAt.load(std::memory_order_relaxed) < 250)
+    static const bool cutsceneUncapped = GetEnvironmentVariableA("TENCHU_CUTSCENE_UNCAPPED", nullptr, 0) != 0;
+    const int64_t now = nowMs();
+    const bool originalRateScene =
+        (!uncapped && now - frontEndFrameAt.load(std::memory_order_relaxed) < 250) ||
+        (!cutsceneUncapped && now - cutsceneFrameAt.load(std::memory_order_relaxed) < 250);
+    if ((limit <= 0 || limit > 30) && originalRateScene)
         return 30;
     return limit;
 }

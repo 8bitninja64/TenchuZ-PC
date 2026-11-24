@@ -9,10 +9,10 @@ $scratch = Join-Path $root ('build/regressions-' + [guid]::NewGuid().ToString('N
 function Check-Exit([string]$step) {
   if ($LASTEXITCODE -ne 0) { throw "$step failed (exit $LASTEXITCODE)." }
 }
-foreach ($test in 'frame_delta', 'portable_paths', 'language', 'release_layout', 'resolve_watch') {
+foreach ($test in 'frame_delta', 'animation_timing', 'portable_paths', 'language', 'release_layout', 'resolve_watch') {
   $sources = @("tools/test_$test.cpp")
   $includes = @('/Iruntime')
-  if ($test -eq 'language') { $sources += 'runtime/host/settings.cpp' }
+  if ($test -in @('language', 'animation_timing')) { $sources += 'runtime/host/settings.cpp' }
   if ($test -eq 'resolve_watch') {
     $sources += 'runtime/kernel/memory.cpp', 'runtime/kernel/fault.cpp'
     $includes += "/I$root/../_Tools/XenonRecomp/thirdparty/simde"
@@ -22,6 +22,8 @@ foreach ($test in 'frame_delta', 'portable_paths', 'language', 'release_layout',
 }
 & "$scratch/test_frame_delta.exe"
 Check-Exit 'Frame timing'
+& "$scratch/test_animation_timing.exe"
+Check-Exit 'Animation timing'
 & "$scratch/test_resolve_watch.exe"
 Check-Exit 'Resolve write watching'
 & "$scratch/test_portable_paths.exe" "$scratch/paths"

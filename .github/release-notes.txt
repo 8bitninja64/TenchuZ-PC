@@ -1,15 +1,15 @@
-Simpler Windows setup: unzip, open TenchuZ.exe, and choose your own disc image.
+High-FPS water-light and cutscene timing fixes.
 
-- Windows now includes portable Python and the compiler. No separate Python, Visual Studio, Clang, or Windows SDK installation is needed.
-- First-start preparation works offline without administrator access or PATH changes. It takes a few minutes and removes temporary compiler files when finished.
-- Setup.cmd opens the game directly. Incomplete packages report that the full ZIP needs to be extracted, instead of asking players to install developer tools.
-- Added a release check that builds and loads a test DLL with system Python and compiler paths removed.
-- Includes all v0.3.3 fixes for loading-related movement slowdown, loading/dialog textures, portable saves, language selection, and Linux version/updater detection.
+- Fixed the shimmering light on walls around water animating too fast at higher FPS. Its texture animation now follows elapsed time at the original speed.
+- In-engine cutscenes now run at their authored 30 FPS, keeping camera tracks and scripted events synchronized. Your selected gameplay FPS limit resumes afterward.
+- Multiplayer support is being worked on. It is not available in this release.
 
-Tested locally: full disc preparation with Windows-only PATH and empty compiler environment, village movement, mission loading, and the existing regression suite. The Windows download is larger because it now carries its own setup tools. Keep the included tools folder for future game-code updates.
+Verified in mission 1 from inside the water facing the walls, and with mission 2's intro cutscene at a 120 FPS gameplay setting. Both fixes were also confirmed in player testing. Timing regressions cover 15, 30, 60, 120, 144, and 240 FPS, and gameplay FPS restoration after cutscenes. Windows and Linux runtime builds passed; local gameplay testing was on Windows.
+
+Includes the simpler Windows setup from v0.3.4: unzip, open TenchuZ.exe, and choose your own disc image. Portable Python and the compiler are included; no separate developer tools are required. Keep the included tools folder for future game-code updates.
 
 Both packages are built from this tag and checked for the correct version before publication. The Linux package targets glibc 2.35 for Ubuntu 22.04 and newer, including SteamOS.
 
-Updating: use the in-game updater, or close the game and extract the package over your existing installation, preserving your saves and settings. Linux users whose older release reports "dev" should install this update manually once. Third-party launchers may still show an outdated prerequisite checklist; open TenchuZ.exe directly.
+Updating: use the in-game updater, or close the game and extract the package over your existing installation, preserving your saves and settings. The game may prepare an updated game module on the next launch. Linux users whose older release reports "dev" should install this update manually once.
 
 Known reports still under investigation: overbright training floors on some AMD GPUs and a reported mission-start crash. This release does not claim to fix those reports.

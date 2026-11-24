@@ -61,11 +61,13 @@ void resetKeyboardDefaults();
 void resetControllerDefaults();
 std::string settingsFilePath();
 
-// The frame rate limit in effect: frameRateLimit, except 30 while the front end (title
-// screen and main menu, whose animations advance per frame) is showing.
+// The selected frame rate, capped to 30 during front-end screens and in-engine
+// cutscenes whose scripts and animations advance once per frame.
 int activeFrameRateLimit();
 // Called by the front end's per-frame code.
 void noteFrontEndFrame();
+// Called only while the in-engine cutscene player has an active script.
+void noteCutsceneFrame();
 
 // Whether Windows HDR is on for the game window's monitor (the renderer updates it).
 bool hdrAvailable();

@@ -5,6 +5,7 @@
 #include "kernel/memory.h"
 #include "host/settings.h"
 #include "host/frame_delta.h"
+#include "host/animation_timing.h"
 #include "host/overlay.h"
 #include "guest/host.h"
 
@@ -276,6 +277,42 @@ void WavePhaseStepMidAsmHook(PPCRegister& f0) {
     f0.f64 *= frameMilliseconds() * 0.03;
 }
 TZ_MIDASM_HOOK1(WavePhaseStepMidAsmHook);
+
+// Stage texture atlas (including the water caustics on mission 1's walls).
+// f2 is already elapsed time in 30 Hz ticks, but the original zero-delay branch
+// advances once per call, even when only a fraction of a tick has passed.
+TZ_OVERRIDE(823A0AB0) {
+    if (ctx.f1.f64 != 0.0 || ctx.r5.s32 <= 0)
+        return __imp__sub_823A0AB0(ctx, base);
+    const uint32_t material = ctx.r3.u32;
+    uint32_t bits = load32(material + 0x130);
+    float fraction;
+    std::memcpy(&fraction, &bits, sizeof(fraction));
+    uint32_t frame = load32(material + 0x134);
+    const uint32_t count = ctx.r5.u32;
+    const bool advance = host::advanceFrameAtlas(fraction, frame, ctx.f2.f64, count);
+    if (advance) {
+        // Use the original atlas UV calculation, including its row layout.
+        store32(material + 0x134, frame ? frame - 1 : count - 1);
+        store32(material + 0x130, 0);
+        ctx.f2.f64 = 1.0;
+        __imp__sub_823A0AB0(ctx, base);
+    }
+    std::memcpy(&bits, &fraction, sizeof(bits));
+    store32(material + 0x130, bits);
+}
+
+// In-engine cutscene player: the event script advances a 16-bit frame at +0x22
+// (822733E4), and the camera advances its frame at +0x1968 (82273494). Events use
+// exact frame equality, so keep the whole scene at its authored rate rather than
+// skipping script frames or changing just the camera. The hold expires when the
+// player stops being called, restoring the selected gameplay limit.
+TZ_OVERRIDE(82273428) {
+    const uint32_t player = ctx.r3.u32;
+    if (player && load32(player + 0xC) && memory->host(player + 8)[0] == 0)
+        host::noteCutsceneFrame();
+    __imp__sub_82273428(ctx, base);
+}
 
 // Front end (title screen, load prompt, main menu): the game mode's per-frame
 // callbacks (task at the head of the scheduler, +24/+28). Their animations (the

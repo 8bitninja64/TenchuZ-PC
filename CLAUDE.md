@@ -329,3 +329,25 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
    widescreen/ultrawide, frame pacing.
 3. XMA loop fields (loop_start/end/count) are not implemented; check that looping
    sounds and music keep playing.
+
+## High-FPS animation fixes (2026-11-24)
+- Water caustics: mission 1, enter the water at spawn and face the stone walls.
+  Stage metadata uses a zero-delay 16-image texture atlas. sub_823A0AB0 receives
+  elapsed 30 Hz ticks in f2, but its zero-delay path advanced every presentation.
+  The override carries the fraction in material+0x130 and uses the original UV
+  calculation only when a whole tick passes. Positive-delay materials retain
+  their existing path. Freezing just this atlas in a test made the wall pixels
+  identical between shots while the water continued moving.
+- In-engine cutscenes: sub_82273428 drives frame-indexed script events
+  (sub_822725A0, +0x22) and camera tracks (+0x1968). Event dispatch compares exact
+  frame indices. Hold presentation at 30 while this player has an active script;
+  the selected gameplay limit resumes within 250 ms afterward. The diagnostic
+  TENCHU_CUTSCENE_UNCAPPED environment variable bypasses this hold.
+- Verification: Windows and Linux runtime builds passed. Full existing regression
+  suite passed; test_animation_timing covers 15/30/60/120/144/240 Hz, wrap, carried
+  fractions, invalid deltas, and the temporary cutscene cap/restoration. In-game
+  at a 120 FPS limit: mission 1 wall atlas advanced 61 images in 2.0367 s (29.95/s);
+  mission 2 intro camera advanced 15 frames per 0.5 s and completed normally.
+  Gameplay afterward measured 345 scene updates in 3 s (115/s, cap released).
+  Evidence is local and ignored under build/fps-effects-baseline; no game data
+  belongs in commits. Linux was compile-checked, not gameplay-tested here.
