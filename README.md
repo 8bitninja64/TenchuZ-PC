@@ -25,7 +25,7 @@ hideout and missions with D3D11 rendering at the original 30 fps.
 | Input | any controller via SDL3 (Xbox, PlayStation, Switch, 8BitDo...), keyboard and mouse (rebindable) |
 | Modern features | 60 fps and higher, resolution scaling up to 4x (4K = scale 3), borderless fullscreen, HDR10, ambient occlusion, sharpening, MSAA up to 8x |
 
-**Experimental multiplayer** is included since v0.3.6: System Link over a LAN, or
+**Experimental multiplayer** is included since v0.3.7: System Link over a LAN, or
 online play through a private VPN. Start it with `Multiplayer.cmd` (Windows) or
 `sh Multiplayer.sh` (Linux); see the [multiplayer guide](docs/multiplayer-guide.md) and
 [report problems or successful sessions](https://github.com/8bitninja64/TenchuZ-PC/issues/new?template=multiplayer.yml).

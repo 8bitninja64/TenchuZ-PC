@@ -1,6 +1,6 @@
 # Multiplayer guide
 
-**Experimental System Link / online multiplayer is included since v0.3.6.**
+**Experimental System Link / online multiplayer is included since v0.3.7.**
 Reports of both problems and successful sessions are welcome. Online play
 currently needs a private VPN connecting the players; there is no built-in
 matchmaking, account service, relay or automatic NAT traversal. Real internet

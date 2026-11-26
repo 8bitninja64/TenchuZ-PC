@@ -1,13 +1,11 @@
-Smoother play on weaker PCs, uncapped fullscreen with vsync off, and the experimental multiplayer now in the regular release.
+Fixes the multiplayer launchers in v0.3.6.
 
-- Less CPU load: while waiting for the GPU, the game's main thread no longer keeps a whole processor core busy. On an integrated GPU it went from 99% to about 20% of a core at the same frame rate, leaving the processor and the laptop's power budget to the graphics work. This helps most on 2- and 4-core laptops and integrated graphics.
-- Anti-aliasing can be turned off: Esc > Graphics > Anti-aliasing (MSAA) > Off. Measured +12-20% frame rate on integrated graphics.
-- Fullscreen with vsync off is no longer held to the display's refresh rate (the frame rate limit applies again).
-- Experimental System Link multiplayer is included: Multiplayer.cmd on Windows, `sh Multiplayer.sh` on Linux. See the [multiplayer guide](https://github.com/8bitninja64/TenchuZ-PC/blob/main/docs/multiplayer-guide.md). Everyone in a session needs v0.3.6. Normal starts of TenchuZ.exe are unchanged.
-- Small changes.
+- Multiplayer.cmd and `sh Multiplayer.sh` now start from a normal installation. In v0.3.6 they stopped with a message about portable.txt, left over from the multiplayer beta. The Windows launcher now writes its logs to the game's data folder (%APPDATA%\TenchuZRecomp, or `user` beside the game for a portable install) and shows where.
+- The multiplayer guide and report form are now for the regular release: see the [multiplayer guide](https://github.com/8bitninja64/TenchuZ-PC/blob/v0.3.7/docs/multiplayer-guide.md). The separate beta download is retired. Everyone in a session needs v0.3.7.
+- If you created an empty portable.txt to get around the v0.3.6 message, you can delete it: the game then returns to your normal saves.
 
-Verified on Windows: mission 1 performance and frame-time measurements on an RTX 3070 and an Intel integrated GPU, game speed at 10-60 FPS, the full regression suite, and a two-player System Link join on one PC. Linux runtime builds passed. Not yet confirmed on a 60 Hz monitor or AMD integrated graphics: reports welcome.
+Everything from v0.3.6 is included: lower CPU load while waiting for the GPU, anti-aliasing Off, and fullscreen with vsync off no longer held to the display's refresh rate.
 
-Updating: use the in-game updater, or close the game and extract the package over your existing installation, keeping your saves and settings. The game prepares its game code again once on the next start (a few minutes). The Linux package targets glibc 2.35 for Ubuntu 22.04 and newer, including SteamOS.
+Updating: use the in-game updater, or close the game and extract the package over your existing installation, keeping your saves and settings. The game code does not need to be prepared again when updating from v0.3.6. The Linux package targets glibc 2.35 for Ubuntu 22.04 and newer, including SteamOS.
 
 Known reports still under investigation: overbright training floors on some AMD GPUs, and reports of lower image quality since v0.3.5 that do not reproduce here yet. No game data is included.
