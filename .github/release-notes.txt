@@ -1,16 +1,13 @@
-## Online Multiplayer Beta — community testers wanted
+Smoother play on weaker PCs, uncapped fullscreen with vsync off, and the experimental multiplayer now in the regular release.
 
-This opt-in beta adds experimental System Link multiplayer for Windows and Linux. Internet testing currently requires a private VPN between players; there is no built-in matchmaking, relay or NAT traversal.
+- Less CPU load: while waiting for the GPU, the game's main thread no longer keeps a whole processor core busy. On an integrated GPU it went from 99% to about 20% of a core at the same frame rate, leaving the processor and the laptop's power budget to the graphics work. This helps most on 2- and 4-core laptops and integrated graphics.
+- Anti-aliasing can be turned off: Esc > Graphics > Anti-aliasing (MSAA) > Off. Measured +12-20% frame rate on integrated graphics.
+- Fullscreen with vsync off is no longer held to the display's refresh rate (the frame rate limit applies again).
+- Experimental System Link multiplayer is included: Multiplayer.cmd on Windows, `sh Multiplayer.sh` on Linux. See the [multiplayer guide](https://github.com/8bitninja64/TenchuZ-PC/blob/v0.3.6/docs/multiplayer-beta.md). Everyone in a session needs v0.3.6. Normal starts of TenchuZ.exe are unchanged.
+- Small changes.
 
-**Please help us test and report any issues you experience! Successful test reports are welcome too.**
+Verified on Windows: mission 1 performance and frame-time measurements on an RTX 3070 and an Intel integrated GPU, game speed at 10-60 FPS, the full regression suite, and a two-player System Link join on one PC. Linux runtime builds passed. Not yet confirmed on a 60 Hz monitor or AMD integrated graphics: reports welcome.
 
-- [Setup and testing guide](https://github.com/8bitninja64/TenchuZ-PC/blob/v0.4.0-beta.1/docs/multiplayer-beta.md)
-- [Report a multiplayer issue or successful session](https://github.com/8bitninja64/TenchuZ-PC/issues/new?template=multiplayer-beta.yml)
+Updating: use the in-game updater, or close the game and extract the package over your existing installation, keeping your saves and settings. The game prepares its game code again once on the next start (a few minutes). The Linux package targets glibc 2.35 for Ubuntu 22.04 and newer, including SteamOS.
 
-Download the ZIP for Windows or tar.xz for Linux below (not the source-code archive). Extract into a new folder, keep portable.txt, and run the game once to prepare your own disc. Then use Multiplayer.cmd on Windows or `sh Multiplayer.sh` on Linux. Everyone must use this beta and start testing at 30 FPS. Keep your stable installation and saves separate.
-
-Verified so far: four Windows processes completed an assisted mission; a headless Linux host and Windows guest entered a mission and returned; Linux peers handled simulated delay, jitter, packet loss and restart/rejoin after an outage. These are local/virtual tests. Real internet play, hardware SteamOS missions, mixed FPS and normal-combat synchronization still need testing. No voice chat or console compatibility is promised.
-
-When reporting, include the beta version, OS/GPU for each player, player count, host/guest roles, LAN/VPN setup, mission, FPS, reproduction steps, and logs from both sides. Review logs for personal paths/IP addresses; do not upload game data or compiled modules.
-
-This is a prerelease, not a replacement for stable v0.3.5. It is not offered by the stable auto-updater. No game data is included.
+Known reports still under investigation: overbright training floors on some AMD GPUs, and reports of lower image quality since v0.3.5 that do not reproduce here yet. No game data is included.
