@@ -2,7 +2,7 @@
 #include <cstdint>
 
 namespace tz::net {
-// Opt-in System Link beta. Explicit local address avoids choosing
+// Opt-in experimental System Link. Explicit local address avoids choosing
 // the wrong interface on PCs with VPNs or when testing two local instances.
 bool enabled();
 // Send TCP FIN before joining a worker that drains incoming data to EOF.

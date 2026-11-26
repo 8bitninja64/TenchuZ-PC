@@ -3,7 +3,7 @@ Smoother play on weaker PCs, uncapped fullscreen with vsync off, and the experim
 - Less CPU load: while waiting for the GPU, the game's main thread no longer keeps a whole processor core busy. On an integrated GPU it went from 99% to about 20% of a core at the same frame rate, leaving the processor and the laptop's power budget to the graphics work. This helps most on 2- and 4-core laptops and integrated graphics.
 - Anti-aliasing can be turned off: Esc > Graphics > Anti-aliasing (MSAA) > Off. Measured +12-20% frame rate on integrated graphics.
 - Fullscreen with vsync off is no longer held to the display's refresh rate (the frame rate limit applies again).
-- Experimental System Link multiplayer is included: Multiplayer.cmd on Windows, `sh Multiplayer.sh` on Linux. See the [multiplayer guide](https://github.com/8bitninja64/TenchuZ-PC/blob/v0.3.6/docs/multiplayer-beta.md). Everyone in a session needs v0.3.6. Normal starts of TenchuZ.exe are unchanged.
+- Experimental System Link multiplayer is included: Multiplayer.cmd on Windows, `sh Multiplayer.sh` on Linux. See the [multiplayer guide](https://github.com/8bitninja64/TenchuZ-PC/blob/v0.3.6/docs/multiplayer-guide.md). Everyone in a session needs v0.3.6. Normal starts of TenchuZ.exe are unchanged.
 - Small changes.
 
 Verified on Windows: mission 1 performance and frame-time measurements on an RTX 3070 and an Intel integrated GPU, game speed at 10-60 FPS, the full regression suite, and a two-player System Link join on one PC. Linux runtime builds passed. Not yet confirmed on a 60 Hz monitor or AMD integrated graphics: reports welcome.

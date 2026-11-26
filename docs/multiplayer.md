@@ -1,8 +1,8 @@
 # Experimental System Link
 
-Multiplayer is under development and disabled by default. Community testers
-should start with the [v0.4.0-beta.1 guide](multiplayer-beta.md). The following
-is the developer evidence and test procedure; stable v0.3.5 has no multiplayer.
+Multiplayer is under development and disabled by default. Players should
+start with the [multiplayer guide](multiplayer-guide.md); it is included since
+v0.3.6. The following is the developer evidence and test procedure.
 Both players need
 the same updated runtime and a game module generated with the full patch series,
 including `xenonrecomp-system-link-half.patch`.

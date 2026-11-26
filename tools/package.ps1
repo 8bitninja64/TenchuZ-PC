@@ -44,8 +44,7 @@ Copy-To "tools" @($generator, "tools/recompile.py", "tools/xex_image.py", "tools
 Copy-To "tools/xbox" @("$tools/XenonUtils/xbox/xboxkrnl_table.inc", "$tools/XenonUtils/xbox/xam_table.inc")
 Copy-To "." @("Multiplayer.cmd")
 Copy-To "tools" @("tools/launch_system_link.ps1")
-Copy-To "docs" @("docs/multiplayer-beta.md", "docs/multiplayer.md")
-if ($env:TENCHU_VERSION -like '*-beta*') { New-Item -ItemType File "$Out/portable.txt" | Out-Null }
+Copy-To "docs" @("docs/multiplayer-guide.md", "docs/multiplayer.md")
 . "$PSScriptRoot/python.ps1"
 Invoke-Python tools/bundle_windows_tools.py "$Out/tools"
 if ($LASTEXITCODE) { throw 'Bundling the standalone setup tools failed.' }

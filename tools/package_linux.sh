@@ -46,10 +46,9 @@ put README.md README.md
 put COPYING COPYING
 put Multiplayer.sh Multiplayer.sh
 put tools/launch_system_link.sh tools/launch_system_link.sh
-put docs/multiplayer-beta.md docs/multiplayer-beta.md
+put docs/multiplayer-guide.md docs/multiplayer-guide.md
 put docs/multiplayer.md docs/multiplayer.md
 chmod +x "$out/Multiplayer.sh" "$out/tools/launch_system_link.sh"
-case ${TENCHU_VERSION:-} in *-beta*) touch "$out/portable.txt" ;; esac
 
 # The kit: generator, scripts, export tables, configuration, module headers, simde.
 put "$generator" tools/XenonRecomp

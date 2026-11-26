@@ -1,15 +1,15 @@
-name: Multiplayer beta report
-description: Report a multiplayer problem or a successful beta test.
-title: "[Multiplayer beta] "
+name: Multiplayer report
+description: Report a multiplayer problem or a successful session.
+title: "[Multiplayer] "
 body:
   - type: markdown
     attributes:
-      value: Thanks for testing! Please include host and guest details. Never upload game data, disc images, compiled game modules or saves.
+      value: Thanks for playing and reporting! Please include host and guest details. Never upload game data, disc images, compiled game modules or saves.
   - type: input
     id: version
     attributes:
-      label: Beta version
-      placeholder: v0.4.0-beta.1
+      label: Game version
+      placeholder: v0.3.6
     validations:
       required: true
   - type: dropdown
@@ -53,4 +53,4 @@ body:
     id: evidence
     attributes:
       label: Logs, screenshots or video
-      description: Attach host and guest logs from the beta's user folder. Review local paths/IP addresses before sharing. Include cheats or unusual settings used.
+      description: Attach host and guest logs from the game's data folder (see the multiplayer guide). Review local paths/IP addresses before sharing. Include cheats or unusual settings used.

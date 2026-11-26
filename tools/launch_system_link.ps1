@@ -1,12 +1,11 @@
-# Player launcher for the portable multiplayer beta; never changes system networking.
+# Player launcher for experimental System Link multiplayer; never changes system networking.
 param([string]$LocalAddress, [string]$HostAddress)
 $ErrorActionPreference = 'Stop'
 try {
     $root = Split-Path -Parent $PSScriptRoot
-    if (-not (Test-Path -LiteralPath "$root/portable.txt")) { throw 'Extract the beta into its own folder with portable.txt. See docs/multiplayer-beta.md.' }
-    if (-not (Test-Path -LiteralPath "$root/TenchuZ.exe")) { throw 'Run this launcher from the extracted beta package.' }
-    Write-Host 'Experimental multiplayer beta: use the same beta version on every PC.'
-    Write-Host 'Use your LAN address, or your private VPN address for internet testing.'
+    if (-not (Test-Path -LiteralPath "$root/TenchuZ.exe")) { throw 'Run Multiplayer.cmd from the extracted game folder.' }
+    Write-Host 'Experimental multiplayer: use the same game version on every PC.'
+    Write-Host 'Use your LAN address, or your private VPN address for internet play.'
     if (-not $LocalAddress) { $LocalAddress = Read-Host 'This PC IPv4 address' }
     if (-not $PSBoundParameters.ContainsKey('HostAddress')) { $HostAddress = Read-Host 'Host IPv4 address (leave blank to host)' }
     foreach ($address in @($LocalAddress, $HostAddress)) {
@@ -28,9 +27,12 @@ try {
     $env:TENCHU_NO_UPDATE_CHECK = '1'
     $env:TENCHU_TRACE = 'net,xam'
     Remove-Item Env:TENCHU_CONTROL -ErrorAction SilentlyContinue
-    [IO.Directory]::CreateDirectory("$root/user") | Out-Null
+    # The game's data folder: user\ beside the executable for portable installs, otherwise %APPDATA%.
+    $data = if (Test-Path -LiteralPath "$root/portable.txt") { "$root/user" } else { "$env:APPDATA/TenchuZRecomp" }
+    [IO.Directory]::CreateDirectory($data) | Out-Null
+    Write-Host "Logs: $data"
     Start-Process -FilePath "$root/TenchuZ.exe" -WorkingDirectory $root -Wait `
-        -RedirectStandardError "$root/user/multiplayer.log" -RedirectStandardOutput "$root/user/multiplayer-stdout.log"
+        -RedirectStandardError "$data/multiplayer.log" -RedirectStandardOutput "$data/multiplayer-stdout.log"
 } catch {
     Write-Host $_ -ForegroundColor Red
     exit 1

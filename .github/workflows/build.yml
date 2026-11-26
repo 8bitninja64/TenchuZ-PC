@@ -41,12 +41,11 @@ jobs:
       - name: Verify packaged version
         shell: pwsh
         run: python tools/check_build_version.py dist/TenchuZ/TenchuZ.exe "$env:TENCHU_VERSION"
-      - name: Verify beta launch files
-        if: contains(env.TENCHU_VERSION, '-beta')
+      - name: Verify multiplayer launch files
         shell: pwsh
         run: |
-          foreach ($file in 'portable.txt', 'Multiplayer.cmd', 'tools/launch_system_link.ps1', 'docs/multiplayer-beta.md') {
-            if (-not (Test-Path -LiteralPath "dist/TenchuZ/$file" -PathType Leaf)) { throw "Missing beta file: $file" }
+          foreach ($file in 'Multiplayer.cmd', 'tools/launch_system_link.ps1', 'docs/multiplayer-guide.md') {
+            if (-not (Test-Path -LiteralPath "dist/TenchuZ/$file" -PathType Leaf)) { throw "Missing multiplayer file: $file" }
           }
       - uses: actions/upload-artifact@v5
         with:
@@ -90,13 +89,11 @@ jobs:
         run: TENCHU_MAX_GLIBC=2.35 sh tools/package_linux.sh build/linux-release
       - name: Verify packaged version
         run: python3 tools/check_build_version.py dist/TenchuZ/TenchuZ "$TENCHU_VERSION"
-      - name: Verify beta launch files
-        if: contains(env.TENCHU_VERSION, '-beta')
+      - name: Verify multiplayer launch files
         run: |
-          test -f dist/TenchuZ/portable.txt
           test -x dist/TenchuZ/Multiplayer.sh
           test -x dist/TenchuZ/tools/launch_system_link.sh
-          test -f dist/TenchuZ/docs/multiplayer-beta.md
+          test -f dist/TenchuZ/docs/multiplayer-guide.md
       - uses: actions/upload-artifact@v5
         with:
           name: TenchuZ-linux-x64

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run from an isolated portable test package; normal controller input stays enabled.
+# Experimental System Link launcher; normal controller input stays enabled.
 set -eu
 if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
     echo "Usage: $0 LOCAL_IPV4 [HOST_IPV4] [GAME_DATA_FOLDER]" >&2
@@ -22,8 +22,7 @@ if [ -n "${3:-}" ]; then
     game_path=$(CDPATH= cd -- "$3" && pwd)
 fi
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-[ -x "$root/TenchuZ" ] || { echo "Place this script in the test package's tools folder." >&2; exit 1; }
-[ -f "$root/portable.txt" ] || { echo "Use a separate portable test package with portable.txt and copied test saves." >&2; exit 1; }
+[ -x "$root/TenchuZ" ] || { echo "Place this script in the game package's tools folder." >&2; exit 1; }
 export TENCHU_SYSTEM_LINK=1 TENCHU_NET_BIND="$1" TENCHU_NET_JOIN="${2:-}"
 export TENCHU_NET_NAME="${TENCHU_NET_NAME:-Player}" TENCHU_FRAME_RATE=30
 export TENCHU_TRACE="${TENCHU_TRACE:-net,xam}" TENCHU_NO_UPDATE_CHECK=1
