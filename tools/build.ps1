@@ -21,11 +21,11 @@ Set-Location -LiteralPath $root
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw "Git is required (https://git-scm.com)." }
 function Assert-Exit([string]$step) { if ($LASTEXITCODE) { throw "$step failed (exit code $LASTEXITCODE)." } }
 
-# 1. The generator: pinned XenonRecomp with the patch series in ../_Tools/XenonRecomp,
+# 1. The generator: pinned XenonRecomp with the patch series in ../_Tools/XenonRecomp-tenchu,
 #    built with MSVC (a Clang-built generator emits weak aliases instead of wrappers).
 Write-Host "# Generator"
 Invoke-Python tools/setup_generator.py; Assert-Exit "Generator setup"
-$tools = (Resolve-Path "..\_Tools\XenonRecomp").Path
+$tools = (Resolve-Path "..\_Tools\XenonRecomp-tenchu").Path
 $generatorBuild = Join-Path $tools "build-tenchu"
 $generator = Join-Path $generatorBuild "XenonRecomp\XenonRecomp.exe"
 $inputs = @(Get-Item tools/setup_generator.py) + @(Get-ChildItem tools/patches/*.patch | Sort-Object Name)

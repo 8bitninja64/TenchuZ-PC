@@ -5,7 +5,7 @@
 #   tools/package_linux.sh [build dir] [out, default dist/TenchuZ]
 # The build dir is tools/build_linux_release.sh's (runtime/, xenonrecomp/, xenonrecomp-src/,
 # deps/) or tools/build_linux.sh's (default build/linux-clang, with the generator in
-# ../_Tools/XenonRecomp/build-linux and the libraries in build/deps-linux).
+# ../_Tools/XenonRecomp-tenchu/build-linux and the libraries in build/deps-linux).
 # TENCHU_MAX_GLIBC=2.35 (the release) refuses a runtime that needs a newer glibc. The compiler is
 # Zig 0.17.0 (ZIG_DIR, default ~/zig/zig-x86_64-linux-0.17.0), as in the NFL Blitz 2003 port.
 set -e
@@ -16,8 +16,8 @@ cd "$root"
 if [ -f "$bdir/runtime/TenchuZ" ]; then
   bin="$bdir/runtime" generator="$bdir/xenonrecomp/XenonRecomp/XenonRecomp" xenon="$bdir/xenonrecomp-src" deps="$bdir/deps"
 else
-  bin="$bdir" generator="$root/../_Tools/XenonRecomp/build-linux/XenonRecomp/XenonRecomp"
-  xenon="$root/../_Tools/XenonRecomp" deps="$root/build/deps-linux"
+  bin="$bdir" generator="$root/../_Tools/XenonRecomp-tenchu/build-linux/XenonRecomp/XenonRecomp"
+  xenon="$root/../_Tools/XenonRecomp-tenchu" deps="$root/build/deps-linux"
 fi
 [ -f "$bin/TenchuZ" ] || { echo "build the runtime first (tools/build_linux.sh or tools/build_linux_release.sh)" >&2; exit 1; }
 [ -x "$generator" ] || { echo "the generator is missing: $generator" >&2; exit 1; }

@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
 if (-not (Test-Path "$BuildDir/TenchuZ.exe")) { throw "Build the runtime first: tools/build.ps1 (-SkipRecomp is enough)." }
-$tools = (Resolve-Path "..\_Tools\XenonRecomp").Path
+$tools = (Resolve-Path "..\_Tools\XenonRecomp-tenchu").Path
 $generator = Join-Path $tools "build-tenchu\XenonRecomp\XenonRecomp.exe"
 if (-not (Test-Path $generator)) { throw "The generator is missing: run tools/build.ps1 first." }
 

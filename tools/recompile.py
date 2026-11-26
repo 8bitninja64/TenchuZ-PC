@@ -24,18 +24,18 @@ except ImportError:  # Python 3.10 (Ubuntu 22.04): the subset config/tenchuz.tom
 
 ROOT = Path(__file__).resolve().parents[1]
 # A release kit carries the generator and export tables in tools/; a source checkout
-# uses the shared ../_Tools/XenonRecomp (tools/setup_generator.py, tools/build.ps1).
+# uses its own ../_Tools/XenonRecomp-tenchu (tools/setup_generator.py, tools/build.ps1).
 # Linux builds of the generator: tools/XenonRecomp in a release, TENCHU_GENERATOR or
-# ../_Tools/XenonRecomp/build-linux in a checkout (tools/build_linux.sh).
+# ../_Tools/XenonRecomp-tenchu/build-linux in a checkout (tools/build_linux.sh).
 if sys.platform == "win32":
     _GENERATORS = (ROOT / "tools/XenonRecomp.exe",
-                   ROOT.parent / "_Tools/XenonRecomp/build-tenchu/XenonRecomp/XenonRecomp.exe",
-                   ROOT.parent / "_Tools/XenonRecomp/build/XenonRecomp/Release/XenonRecomp.exe")
+                   ROOT.parent / "_Tools/XenonRecomp-tenchu/build-tenchu/XenonRecomp/XenonRecomp.exe",
+                   ROOT.parent / "_Tools/XenonRecomp-tenchu/build/XenonRecomp/Release/XenonRecomp.exe")
 else:
     _GENERATORS = tuple(Path(path) for path in [os.environ.get("TENCHU_GENERATOR")] if path) + (
-        ROOT / "tools/XenonRecomp", ROOT.parent / "_Tools/XenonRecomp/build-linux/XenonRecomp/XenonRecomp")
+        ROOT / "tools/XenonRecomp", ROOT.parent / "_Tools/XenonRecomp-tenchu/build-linux/XenonRecomp/XenonRecomp")
 GENERATOR = next((path for path in _GENERATORS if path.exists()), _GENERATORS[0])
-TABLES = next((path for path in (ROOT / "tools/xbox", ROOT.parent / "_Tools/XenonRecomp/XenonUtils/xbox")
+TABLES = next((path for path in (ROOT / "tools/xbox", ROOT.parent / "_Tools/XenonRecomp-tenchu/XenonUtils/xbox")
                if path.exists()), ROOT / "tools/xbox")
 CONFIG = ROOT / "config/tenchuz.toml"
 MANUAL_TABLES = ROOT / "config/tenchuz_switch_tables_manual.toml"

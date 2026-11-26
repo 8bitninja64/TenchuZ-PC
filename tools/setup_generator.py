@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-DESTINATION = ROOT.parent / "_Tools/XenonRecomp"
+DESTINATION = ROOT.parent / "_Tools/XenonRecomp-tenchu"
 UPSTREAM = "https://github.com/hedge-dev/XenonRecomp.git"
 COMMIT = "c5bfd90d87f2ed0db8cff5c19ea3aff0e161e527"
 PATCHES = (

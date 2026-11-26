@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds Tenchu Z on Linux in one command (the counterpart of build.ps1): the generator
-# (XenonRecomp in ../_Tools/XenonRecomp/build-linux), the game code translated from your disc
+# (XenonRecomp in ../_Tools/XenonRecomp-tenchu/build-linux), the game code translated from your disc
 # (tenchu_game.so) and the runtime (TenchuZ) with its libraries (tools/setup_linux_deps.sh).
 # Needs what tools/install_linux_deps.sh installs (Ubuntu/Debian; other distributions: the
 # same tools and headers).
@@ -17,7 +17,7 @@ cd "$root"
 #    translated code is the same as the Windows (MSVC-built) generator's.
 echo "# Generator"
 python3 tools/setup_generator.py
-tools=$(cd "$root/../_Tools/XenonRecomp" && pwd)
+tools=$(cd "$root/../_Tools/XenonRecomp-tenchu" && pwd)
 gen="$tools/build-linux"
 stamp=$(cat tools/setup_generator.py tools/patches/*.patch | sha256sum | cut -c1-64)
 if [ ! -x "$gen/XenonRecomp/XenonRecomp" ] || [ "$(cat "$gen/patches.stamp" 2>/dev/null)" != "$stamp" ]; then

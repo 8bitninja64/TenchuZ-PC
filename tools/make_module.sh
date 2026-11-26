@@ -64,7 +64,7 @@ echo "# Translating the game code"
 python3 -I tools/recompile.py --xex "$xex" --output "$work/gen" --strict
 # simde: the release's third_party copy, or the generator's in a source checkout.
 simde="$root/third_party/simde"
-[ -f "$simde/x86/avx.h" ] || simde="$root/../_Tools/XenonRecomp/thirdparty/simde"
+[ -f "$simde/x86/avx.h" ] || simde="$root/../_Tools/XenonRecomp-tenchu/thirdparty/simde"
 [ -f "$simde/x86/avx.h" ] || { echo "simde headers are missing (third_party/simde)" >&2; exit 1; }
 python3 -I tools/compile_module.py --gen "$work/gen" --out "$out" --obj "$work/obj" \
   --include "$root/runtime/guest" --include "$simde" --extra "$root/runtime/guest/module_rt.cpp"

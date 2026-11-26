@@ -15,7 +15,7 @@ foreach ($test in 'frame_delta', 'animation_timing', 'portable_paths', 'language
   if ($test -in @('language', 'animation_timing')) { $sources += 'runtime/host/settings.cpp' }
   if ($test -in @('resolve_watch', 'network')) {
     $sources += 'runtime/kernel/memory.cpp', 'runtime/kernel/fault.cpp'
-    $includes += "/I$root/../_Tools/XenonRecomp/thirdparty/simde"
+    $includes += "/I$root/../_Tools/XenonRecomp-tenchu/thirdparty/simde"
   }
   if ($test -eq 'network') {
     $sources += 'runtime/kernel/imports_net.cpp', 'runtime/kernel/host_registry.cpp', 'ws2_32.lib'
