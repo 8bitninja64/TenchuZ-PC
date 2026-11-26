@@ -157,6 +157,7 @@ void refresh(Gamepads& g) {
 }
 
 void inputMain() {
+    nameHostThread("gamepads");
     auto& g = gamepads();
     // No SDL window exists: accept input whatever window has focus (as XInput does).
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");

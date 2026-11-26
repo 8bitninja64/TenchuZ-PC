@@ -26,7 +26,7 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
 endif()
 
 set(TENCHU_GENERATED_DIR "${CMAKE_SOURCE_DIR}/build/generated" CACHE PATH "XenonRecomp output (tools/recompile.py)")
-set(TENCHU_SIMDE_DIR "${CMAKE_SOURCE_DIR}/../_Tools/XenonRecomp/thirdparty/simde" CACHE PATH "simde headers")
+set(TENCHU_SIMDE_DIR "${CMAKE_SOURCE_DIR}/../_Tools/XenonRecomp-tenchu/thirdparty/simde" CACHE PATH "simde headers")
 if(NOT EXISTS "${TENCHU_SIMDE_DIR}/x86/avx.h")
     message(FATAL_ERROR "simde is missing at ${TENCHU_SIMDE_DIR}: run tools/build.ps1 (or python tools/setup_generator.py)")
 endif()
@@ -94,6 +94,7 @@ add_library(TenchuRuntime OBJECT
     runtime/kernel/module_loader.cpp
     runtime/kernel/xdvdfs.cpp
     runtime/gpu/null_gpu.cpp
+    runtime/gpu/gpu_progress.cpp
     runtime/gpu/d3d11/renderer.cpp
     runtime/gpu/d3d11/xenos_backend.cpp
     runtime/gpu/d3d11/texture_cache.cpp
@@ -112,7 +113,7 @@ endif()
 include(cmake/BuildVersion.cmake)
 set_source_files_properties(runtime/host/update_check.cpp PROPERTIES COMPILE_DEFINITIONS "TENCHU_VERSION=\"${TENCHU_VERSION}\"")
 if(WIN32)
-    target_link_libraries(TenchuRuntime PUBLIC TenchuXenos ws2_32 winhttp bcrypt xinput winmm shell32 ole32 d3d11 dxgi d3dcompiler xaudio2 dbghelp)
+    target_link_libraries(TenchuRuntime PUBLIC TenchuXenos ws2_32 winhttp bcrypt synchronization xinput winmm shell32 ole32 d3d11 dxgi d3dcompiler xaudio2 dbghelp)
 else()
     # DXVK-native (d3d11, dxgi and their Windows-compatible headers) and vkd3d-shader.
     if(NOT EXISTS "${TENCHU_DXVK}/include/dxvk/d3d11.h" OR NOT EXISTS "${TENCHU_VKD3D}/include/vkd3d/vkd3d_shader.h")

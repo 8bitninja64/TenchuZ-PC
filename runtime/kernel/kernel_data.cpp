@@ -43,6 +43,7 @@ uint32_t createModuleEntry(const XexImage& xex) {
 void startTimeStampBundle(uint32_t bundle) {
     // { u64 interrupt time; u64 system time; u32 tick count (ms) }, updated every millisecond.
     std::thread([bundle] {
+        nameHostThread("timestamp-bundle");
 #ifdef _WIN32
         timeBeginPeriod(1);
 #endif

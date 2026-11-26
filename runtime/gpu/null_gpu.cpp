@@ -8,6 +8,7 @@
 #include "host/overlay.h"
 #include "gpu/d3d11/renderer.h"
 #include "gpu/d3d11/xenos_backend.h"
+#include "gpu/gpu_progress.h"
 #include <map>
 #include <unordered_map>
 #include "guest/host.h"
@@ -224,6 +225,7 @@ uint32_t gpuSwap(uint32_t value, uint32_t endian) {
 void writePhysical(uint32_t address, uint32_t value) {
     TZ_TRACE("cp", "[cp] write %08X = %08X", address, value);
     *memory->host<uint32_t>(Memory::fromPhysical(address & ~3u)) = gpuSwap(value, address & 3);
+    gpu::noteProgress();
 }
 uint32_t readPhysical(uint32_t address) {
     return gpuSwap(*memory->host<uint32_t>(Memory::fromPhysical(address & ~3u)), address & 3);
@@ -238,6 +240,7 @@ void dispatchInterrupt(uint32_t source, uint32_t processor) {
     std::lock_guard lock(gs.interruptMutex);
     *memory->host(currentContext().r13.u32 + 0x10C) = uint8_t(processor);
     callGuest(callback, {source, gs.interruptData.load()});
+    gpu::noteProgress();
     if (source != 0) TZ_TRACE("irq", "[irq] source %u handled; scratch0 memory %08X", source,
                               load32(Memory::fromPhysical(gs.registers[kRegScratchAddr])));
 }
@@ -255,6 +258,7 @@ void writeRegister(uint32_t index, uint32_t value) {
         const uint32_t slot = index - kRegScratch0;
         if (gs.registers[kRegScratchUmsk] & (1u << slot))
             store32(Memory::fromPhysical(gs.registers[kRegScratchAddr] + slot * 4), value);
+        gpu::noteProgress();
     } else if (index == kRegCoherStatusHost) {
         // Cache flushes complete immediately.
         gs.registers[index] = value & ~0x80000000u;
@@ -608,6 +612,7 @@ void executeType3(Reader& reader, uint32_t header, int depth) {
 void publishReadPointer(uint32_t index) {
     gs.registers[kRegRbRptr] = index;
     if (gs.rptrWriteback) store32(Memory::fromPhysical(gs.rptrWriteback), index);
+    gpu::noteProgress();
 }
 
 void execute(Reader& reader, int depth) {
@@ -716,6 +721,7 @@ void vblankMain() {
         while (std::chrono::steady_clock::now() < next) _mm_pause();
         gs.lastVblankNs = std::chrono::steady_clock::now().time_since_epoch().count();
         ++gs.vblanks;
+        gpu::noteProgress();
         inVblankInterrupt = true;
         dispatchInterrupt(0, 2);
         inVblankInterrupt = false;

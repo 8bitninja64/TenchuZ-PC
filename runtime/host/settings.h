@@ -29,7 +29,7 @@ struct Settings {
     int aoRadius = 80;            // game units (about centimeters)
     bool indirectLight = false;   // experimental color bleeding with the ambient occlusion
     int sharpening = 0;           // contrast-adaptive sharpening, percent (0 = off)
-    int msaa = 2;                 // samples of the title's 2x MSAA targets: 2, 4 or 8 (next start)
+    int msaa = 2;                 // samples of the title's 2x MSAA targets: 1 (off), 2, 4 or 8 (next start)
     bool stableBloom = true;      // bloom from the 720p footprint at resolution scales above 1
     // Game
     std::string disc;             // the disc image chosen on the first start (UTF-8)

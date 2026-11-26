@@ -446,8 +446,9 @@ bool drawGraphics(Settings& st) {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextDisabled("Applied on the next start:");
-    static const std::pair<int, const char*> msaa[] = {{2, "2x (original)"}, {4, "4x"}, {8, "8x"}};
-    const char* samples = msaa[0].second;
+    static const std::pair<int, const char*> msaa[] = {
+        {1, "Off (fastest)"}, {2, "2x (original)"}, {4, "4x"}, {8, "8x"}};
+    const char* samples = msaa[1].second;
     for (const auto& [value, label] : msaa)
         if (value == st.msaa) samples = label;
     if (ImGui::BeginCombo("Anti-aliasing (MSAA)", samples)) {

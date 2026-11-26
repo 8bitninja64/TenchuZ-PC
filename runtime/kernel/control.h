@@ -21,6 +21,7 @@
 //   watchw <addr>          hardware watchpoint: log the guest code writing those 4 bytes
 //   clock                  log host milliseconds (timing measurements)
 //   cheat <id> [on|off]    F1 > Cheats (ids in kernel/cheats.cpp); actions run with on
+//   fps <limit>            frame_rate_limit for the rest of the run (testing game speed)
 //   quit                   exit the process
 #include <cstdint>
 #include <string>

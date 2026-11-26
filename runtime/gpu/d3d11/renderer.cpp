@@ -226,6 +226,7 @@ void pollSdrWhite(HMONITOR monitor) {
     static std::once_flag started;
     std::call_once(started, [] {
         std::thread([] {
+            nameHostThread("sdr-white-poll");
             for (;;) {
                 if (const HMONITOR polled = sdrWhiteMonitor.load()) {
                     const float nits = windowsSdrWhiteNits(polled);
@@ -305,6 +306,15 @@ bool D3D11Renderer::initialize(HWND target) {
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     desc.BufferCount = 2;
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    IDXGIFactory5* factory5 = nullptr;
+    BOOL tearing = FALSE;
+    if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory5), reinterpret_cast<void**>(&factory5))) &&
+        SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof(tearing))) &&
+        tearing)
+        swapChainFlags_ = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    release(factory5);
+    logf("[d3d11] tearing (vsync off without the refresh-rate cap): %s", swapChainFlags_ ? "supported" : "not supported");
+    desc.Flags = swapChainFlags_;
     const HRESULT hr = factory->CreateSwapChainForHwnd(device_, window_, &desc, nullptr, nullptr, &swapChain_);
     factory->MakeWindowAssociation(window_, DXGI_MWA_NO_ALT_ENTER);
     release(factory);
@@ -494,7 +504,7 @@ void D3D11Renderer::updateHdr() {
     releaseHdrTextures();
     unbindBackBuffer();
     const DXGI_FORMAT format = want ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
-    if (FAILED(swapChain_->ResizeBuffers(0, 0, 0, format, 0))) {
+    if (FAILED(swapChain_->ResizeBuffers(0, 0, 0, format, swapChainFlags_))) {
         logf("[d3d11] cannot switch the swap chain to %s", want ? "HDR10" : "SDR");
         return;
     }
@@ -558,7 +568,7 @@ void D3D11Renderer::resizeIfNeeded() {
     release(backBufferView_);
     releaseHdrTextures();
     unbindBackBuffer();
-    if (FAILED(swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0)))
+    if (FAILED(swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, swapChainFlags_)))
         logf("[d3d11] cannot resize the swap chain to %ux%u", width, height);
     ID3D11Texture2D* backBuffer = nullptr;
     swapChain_->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBuffer));
@@ -685,7 +695,10 @@ void D3D11Renderer::presentFrame(ID3D11ShaderResourceView* source, bool swapRedB
     } else {
         host::overlay::render(backBufferView_, fps_);
     }
-    const HRESULT presented = swapChain_->Present(syncInterval(), 0);
+    // Vsync off: tearing, or a fullscreen window would still wait for the display's refresh.
+    const UINT interval = syncInterval();
+    const HRESULT presented =
+        swapChain_->Present(interval, interval == 0 && swapChainFlags_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
 #ifdef _WIN32
     if (frame_ % 300 == 0)
         TZ_TRACE("window", "[window] foreground %d iconic %d present %08X", GetForegroundWindow() == window_,

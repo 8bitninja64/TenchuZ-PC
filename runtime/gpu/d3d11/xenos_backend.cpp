@@ -701,7 +701,7 @@ struct XenosBackend::Impl {
             samples = supported(4) ? 4 : 1;
             logf("[d3d11] 2x MSAA is not supported for every target format");
         }
-        if (samples != 2) logf("[d3d11] %ux MSAA for the title's 2x targets", samples);
+        if (samples != 2) logf("[d3d11] %ux MSAA for the title's 2x targets%s", samples, samples == 1 ? " (off)" : "");
         return samples;
     }
 

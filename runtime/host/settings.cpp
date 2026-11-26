@@ -68,8 +68,9 @@ sharpening = 0
 ; At resolution_scale 2 and above, bloom samples the scene averaged to 720p like the
 ; original, instead of sparkling on small highlights.
 stable_bloom = true
-; Multisample anti-aliasing of the 3D scene: 2 (the original), 4 or 8 samples. Applied
-; at the next start; more samples need more video memory (at most 4 from resolution_scale 3).
+; Multisample anti-aliasing of the 3D scene: 1 (off: fastest, for integrated graphics),
+; 2 (the original), 4 or 8 samples. Applied at the next start; more samples need more video
+; memory (at most 4 from resolution_scale 3).
 msaa = 2
 
 [audio]
@@ -185,7 +186,7 @@ void apply(Settings& settings, const std::string& section, const std::string& ke
             else if (key == "stable_bloom") settings.stableBloom = parseBool(value);
             else if (key == "msaa") {
                 const int samples = std::stoi(value);
-                settings.msaa = samples >= 8 ? 8 : samples >= 4 ? 4 : 2;
+                settings.msaa = samples >= 8 ? 8 : samples >= 4 ? 4 : samples >= 2 ? 2 : 1;
             }
         } else if (section == "audio") {
             if (key == "volume") settings.volume = std::clamp(std::stoi(value), 0, 100);

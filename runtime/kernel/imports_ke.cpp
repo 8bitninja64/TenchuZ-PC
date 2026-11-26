@@ -237,6 +237,7 @@ TZ_IMPORT(NtSetTimerEx) {
     }
     GuestThread* owner = currentThread();
     std::thread([timer, due, routine, context, period, generation, owner] {
+        nameHostThread("guest-timer");
         auto next = std::chrono::steady_clock::now() +
                     std::chrono::nanoseconds(due < 0 ? -due * 100 : 0);
         for (;;) {

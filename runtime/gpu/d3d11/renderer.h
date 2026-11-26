@@ -44,6 +44,9 @@ private:
     void hdrLevels(float& paperWhite, float& peak) const;
     void updateHdrMetadata(float paperWhite, float peak);
     bool hdr_ = false;  // the swap chain is HDR10 now
+    // DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING when the system supports it: with vsync off, a
+    // borderless fullscreen window (independent flip) is otherwise held to the refresh rate.
+    UINT swapChainFlags_ = 0;
     // Output enumeration for monitorHdr, kept until DXGI marks the factory stale or the
     // window moves to another monitor (enumerating every adapter costs milliseconds).
     IDXGIFactory1* outputFactory_ = nullptr;

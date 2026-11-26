@@ -82,6 +82,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 // The game window lives on its own thread so the guest never blocks input.
 void startWindowThread() {
     std::thread([] {
+        tz::nameHostThread("window");
         WNDCLASSEXW windowClass{sizeof(windowClass)};
         windowClass.lpfnWndProc = windowProc;
         windowClass.hInstance = GetModuleHandleW(nullptr);
@@ -240,6 +241,7 @@ void windowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
 // The game window lives on its own thread so the guest never blocks input.
 void startWindowThread() {
     std::thread([] {
+        tz::nameHostThread("window");
         if (!SDL_Init(SDL_INIT_VIDEO)) tz::fatal("Cannot open a window: %s", SDL_GetError());
         const auto& settings = tz::host::settings();
         SDL_Window* window = SDL_CreateWindow("Tenchu Z Recomp", settings.windowWidth, settings.windowHeight,

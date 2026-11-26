@@ -8,10 +8,12 @@
 #include "host/frame_delta.h"
 #include "host/animation_timing.h"
 #include "host/overlay.h"
+#include "gpu/gpu_progress.h"
 #include "guest/host.h"
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -57,6 +59,29 @@ bool verifyNative() {
     return verify;
 }
 }  // namespace
+
+// D3D's GPU wait step (sub_82425790): one round of a busy wait for a fence or command buffer
+// space (callers sub_82425B10, 82425BA8, 824267D0, 82431820 loop while it returns 1; 0 after a
+// 5000-unit hang timeout). The Xbox 360's waiting hardware thread spins; on a PC the frame
+// thread spun a whole core (99% even at 31 fps on an integrated GPU), which a 2-4 core CPU
+// needs for the command processor and the graphics driver, and a laptop APU's GPU for power.
+// After 50 us of spinning (short waits keep their latency) the thread sleeps until the command
+// processor makes progress (gpu/gpu_progress.h), at most 1 ms at a time; the check itself stays
+// the game's. TENCHU_TRACE=gpuspin keeps the original spin.
+TZ_OVERRIDE(82425790) {
+    static const bool spin = traceEnabled("gpuspin");
+    const uint32_t seen = gpu::progress();
+    __imp__sub_82425790(ctx, base);
+    if (spin || ctx.r3.u32 == 0) return;
+    using Clock = std::chrono::steady_clock;
+    thread_local Clock::time_point spinStart, lastRound;
+    const auto now = Clock::now();
+    if (now - lastRound > std::chrono::microseconds(200)) spinStart = now;  // a new wait began
+    lastRound = now;
+    if (now - spinStart < std::chrono::microseconds(50)) return;
+    gpu::waitProgress(seen, 1000);
+    lastRound = Clock::now();
+}
 
 // Zone iterator: returns the first 80-byte record in the table at 0x833B1DD8
 // ({u32 count, u32 records}) whose key (+0) matches r3 and whose order value (+4,

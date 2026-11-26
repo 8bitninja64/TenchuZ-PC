@@ -3,6 +3,7 @@
 
 # runtime/kernel/native_overrides.cpp
 823D4440  # zone iterator (native version)
+82425790  # D3D's GPU wait step: sleeps instead of spinning
 823A0AB0  # zero-delay stage texture atlases: elapsed 30 Hz ticks
 82273428  # in-engine cutscene script and camera: authored 30 fps
 8228E5C8  # frame delta: smoothed to the display period

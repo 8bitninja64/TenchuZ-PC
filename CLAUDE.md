@@ -387,3 +387,30 @@ textures to build/resolved; `TENCHU_PROF=start,seconds` with trace `prof`;
   Gameplay afterward measured 345 scene updates in 3 s (115/s, cap released).
   Evidence is local and ignored under build/fps-effects-baseline; no game data
   belongs in commits. Linux was compile-checked, not gameplay-tested here.
+
+## Performance and presentation (2026-11-26, issues #7, #9, #10)
+- The frame thread spun a whole core in D3D's GPU wait step sub_82425790 (callers 82425B10,
+  82425BA8, 824267D0, 82431820): 99% CPU even at 31 fps on an Intel iGPU. The override spins
+  50 us, then sleeps on gpu/gpu_progress.h (command processor progress counter; WaitOnAddress /
+  futex, at most 1 ms per round). Measured on the Intel UHD (TENCHU_TRACE=defaultadapter): frame
+  thread 99.5% -> 21%, 1.40 -> 0.64 CPUs, same fps. TENCHU_TRACE=gpuspin restores the spin.
+- MSAA "off" (msaa = 1): Intel UHD mission 1 28-31 -> 34-35 fps; RTX 3070 +4%. Anisotropy and
+  stable_bloom changed nothing measurable on the iGPU.
+- Tearing: the swap chain has DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING when supported and vsync-off
+  presents use DXGI_PRESENT_ALLOW_TEARING; without it a borderless fullscreen window (independent
+  flip) was held to the refresh rate, and only while it had focus (#7). Not verified on a 60 Hz
+  monitor here (the laptop panel is 240 Hz).
+- Game speed holds at low fps: mission 1 run speed 387 units/s at 60 fps, 386 at 20, 374 at 15,
+  355 at 10 (build/live/speed_m1.py, control command `fps <limit>` changes the limit at runtime).
+- Measuring: build/live/perf_m1.py <label> [ini key=value...] [cpus=N] [igpu] [threads] (mission 1
+  spawn, unlimited fps, [present] trace); tools/thread_cpu.py (CPU per named thread; the runtime
+  names its threads on Windows and Linux). An exact 20.0 fps run = NVIDIA's background-window cap
+  (the test window lost focus): discard it. The laptop's speed varies between sessions; compare
+  A/B runs taken back to back.
+- #10 (v0.3.5 "worse visuals"): the released v0.3.4 and v0.3.5 packages, each with its own
+  bundled-Zig module, render mission 1 at resolution_scale 2 identically here (0.05% of 3D pixels
+  differ, animation timing). Needs the reporter's v0.3.5 screenshot, GPU and settings.
+- Generator: Tenchu now uses its own tree ../_Tools/XenonRecomp-tenchu. The shared
+  ../_Tools/XenonRecomp (also used by the Lollipop Chainsaw port) carries a manual float16_2 edit
+  that duplicates xenonrecomp-system-link-half.patch, so it no longer compiles with Tenchu's
+  series ("case value '3' already used").

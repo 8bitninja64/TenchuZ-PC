@@ -349,7 +349,20 @@ std::shared_ptr<GuestThread> threadByKthread(uint32_t kthread) {
     return it == threadsByKthread.end() ? nullptr : it->second.lock();
 }
 
+// The host thread's name as debuggers, profilers and tools/thread_cpu.py show it.
+void nameHostThread(const char* name) {
+#ifdef _WIN32
+    const std::wstring wide(name, name + std::strlen(name));
+    SetThreadDescription(GetCurrentThread(), wide.c_str());
+#else
+    char shortName[16];  // the kernel keeps 15 characters
+    snprintf(shortName, sizeof(shortName), "%s", name);
+    pthread_setname_np(pthread_self(), shortName);
+#endif
+}
+
 std::shared_ptr<GuestThread> attachThread(uint32_t stackSize, const char* name) {
+    nameHostThread(name);
     auto thread = std::make_shared<GuestThread>();
     setupThreadState(*thread, stackSize, 0);
     thread->name = name;
@@ -457,6 +470,9 @@ uint32_t createThread(uint32_t stackSize, uint32_t entry, uint32_t argument, uin
                                CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
     if (!host) fatal("CreateThread failed");
     object->thread->host = host;
+    wchar_t hostName[16];
+    swprintf(hostName, 16, L"g%08X", entry);
+    SetThreadDescription(host, hostName);
 #else
     object->thread->suspendCount = 1;
     pthread_attr_t attributes;

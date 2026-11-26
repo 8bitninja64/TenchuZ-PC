@@ -176,6 +176,8 @@ struct ThreadExit { uint32_t code; };
 
 // Creates the guest thread state for the calling host thread.
 std::shared_ptr<GuestThread> attachThread(uint32_t stackSize, const char* name);
+// Names the calling host thread (debuggers, profilers, tools/thread_cpu.py).
+void nameHostThread(const char* name);
 // Creates and optionally starts a new guest thread. Returns its handle.
 uint32_t createThread(uint32_t stackSize, uint32_t entry, uint32_t argument, uint32_t startup,
                       bool suspended, uint32_t& threadId, uint32_t* kthreadOut = nullptr, int processor = -1);

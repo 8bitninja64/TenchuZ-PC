@@ -1,5 +1,6 @@
 #include "control.h"
 #include "cheats.h"
+#include "host/settings.h"
 
 #include <windows.h>
 
@@ -206,6 +207,12 @@ void execute(Controller& c, Clock::time_point now) {
             const int cheat = cheats::find(id);
             if (cheat < 0) logf("[control] unknown cheat %s", id.c_str());
             else cheats::set(cheat, state != "off");
+        } else if (command == "fps") {
+            // fps <limit>: frame_rate_limit for the rest of the run (0 = unlimited; not saved).
+            int limit = 60;
+            stream >> limit;
+            host::editableSettings().frameRateLimit = (std::max)(0, limit);
+            logf("[control] frame rate limit %d", limit);
         } else if (command == "traceframe" || command == "dumpframe" || command == "profile") {
             c.flags.insert(command);
         } else if (command == "peek") {
